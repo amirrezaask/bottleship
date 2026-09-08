@@ -8,6 +8,20 @@
 import { Logger, LogCategory } from "../../core/logger";
 import { drawTextPrefixOptions, fillTextWithMnemonic } from "../win32-text";
 import type { GDIContext } from './context';
+import { System } from '../../core/system';
+import { SystemResourceProvider } from '../../core/resources/system-resource-provider';
+import { writeMonochromeDib } from './monochrome-dib';
+
+function flushTextDib(gdi: GDIContext, hdc: number): void {
+    const state = gdi.hdcStates.get(hdc);
+    const obj = state?.hBitmap ? SystemResourceProvider.getInstance().getUserObject(state.hBitmap) : null;
+    const canvas = gdi.contexts.get(hdc);
+    if (obj?.dibBpp !== 1 || !obj.bitsPtr || !canvas) return;
+    const pixels = canvas.getImageData(0, 0, obj.width, obj.height).data;
+    writeMonochromeDib(pixels, System.getInstance().process!.getCurrentMemory(),
+        obj.bitsPtr, obj.width, obj.height, obj.dibStride, !!obj.dibTopDown, obj.dibPalette);
+}
+
 
 export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text: string): boolean {
     if (!text) return false;
@@ -115,12 +129,8 @@ export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text
         const bitmapCtx = linkedBitmap.getContext('2d');
         if (bitmapCtx) {
             // Apply same font and color
-            if (state.appliedFont !== state.font) {
-                bitmapCtx.font = state.font;
-            }
-            if (state.appliedFillStyle !== state.textColor) {
-                bitmapCtx.fillStyle = state.textColor;
-            }
+            bitmapCtx.font = state.font;
+            bitmapCtx.fillStyle = state.textColor;
             bitmapCtx.textBaseline = 'top';
             bitmapCtx.textAlign = 'left';
 
@@ -149,6 +159,7 @@ export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text
         }
     }
 
+    flushTextDib(gdi, hdc);
     return true;
 }
 
@@ -241,12 +252,8 @@ export function drawText(gdi: GDIContext, hdc: number, text: string, rect?: { le
         const bitmapCtx = linkedBitmap.getContext('2d');
         if (bitmapCtx) {
             // Apply same settings and draw
-            if (state.appliedFont !== state.font) {
-                bitmapCtx.font = state.font;
-            }
-            if (state.appliedFillStyle !== state.textColor) {
-                bitmapCtx.fillStyle = state.textColor;
-            }
+            bitmapCtx.font = state.font;
+            bitmapCtx.fillStyle = state.textColor;
             bitmapCtx.textBaseline = 'top';
             bitmapCtx.textAlign = 'left';
 
@@ -275,5 +282,6 @@ export function drawText(gdi: GDIContext, hdc: number, text: string, rect?: { le
         }
     }
 
+    flushTextDib(gdi, hdc);
     return true;
 }

@@ -32,6 +32,8 @@ export interface MSSContext {
 
     initialized: boolean;
     digitalDriverHandle: number;
+    digitalMasterVolume: number;
+    driverHwnd?: number;
     driverDummyBuffer: number;
     driverWaveFormat: number;
     driverNoopStub: number;
@@ -74,7 +76,7 @@ export interface MSSContext {
     /** Queue of pending timer callbacks - processed during _AIL_serve to avoid corrupting CPU state */
     pendingTimerCallbacks: Array<{ callback: number; user: number }>;
     /** Queue of pending EOS callbacks - processed during _AIL_serve to avoid corrupting CPU state */
-    pendingEOSCallbacks: Array<{ callback: number; handle: number; user: number }>;
+    pendingEOSCallbacks: Array<{ callback: number; handle: number; user: number; args?: number[] }>;
     /** Flag to track if we're inside _AIL_serve (safe to invoke callbacks) */
     insideAilServe: boolean;
     /** H3 Async: reentrancy depth of _AIL_serve (nested serve = possible stack/callback conflict) */
@@ -109,6 +111,7 @@ export function createMSSContext(process: Process, memory: Uint8Array): MSSConte
 
         initialized: false,
         digitalDriverHandle: 0,
+        digitalMasterVolume: 1,
         driverDummyBuffer: 0,
         driverWaveFormat: 0,
         driverNoopStub: 0,

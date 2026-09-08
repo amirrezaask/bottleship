@@ -644,8 +644,8 @@ export class GDIContext {
      * the bitmap has no usable backing DC/canvas.
      */
     getBitmapRenderedPixels(hbitmap: number): Uint8ClampedArray | null {
-        const dc = this.createBitmapDC(hbitmap);
-        if (dc === null) return null;
+        const dc = this.bitmapDCCache.get(hbitmap);
+        if (dc === undefined || !this.contexts.has(dc)) return null;
         const ctx = this.contexts.get(dc);
         if (!ctx) return null;
         const cw = ctx.canvas.width, ch = ctx.canvas.height;

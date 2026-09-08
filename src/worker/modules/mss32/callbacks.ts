@@ -77,7 +77,7 @@ export function processPendingEOSCallbacks(ctx: MSSContext): boolean {
     if (!pending) return false;
 
     try {
-        cm.invokeCallback(pending.callback, [pending.handle, pending.user], 0);
+        cm.invokeCallback(pending.callback, pending.args ?? [pending.handle, pending.user], 0);
         Logger.verbose(LogCategory.SYSTEM,
             `MSS32: Processed EOS callback 0x${pending.callback.toString(16)} (${ctx.pendingEOSCallbacks.length} remaining)`);
         return true;

@@ -605,6 +605,8 @@ export function setStreamStatus(ctx: MSSContext, stream: MSSStream, status: numb
     const mem = getMemory(ctx);
     const view = makeView(mem);
     if (MemoryGuard.isValidRange(mem, stream.handle, 4)) {
+        if (status === SMP_DONE && view.getUint32(stream.handle, true) === SMP_PLAYING && stream.endCallback)
+            ctx.pendingEOSCallbacks.push({ callback: stream.endCallback, handle: stream.handle, user: 0, args: [stream.handle] });
         view.setUint32(stream.handle + 0x00, status, true);
     }
 }

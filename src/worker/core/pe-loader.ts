@@ -1136,7 +1136,7 @@ export class PELoader {
                     stubInfos.push({ name, argCount, stackCleanupBytes, callingConvention });
                 }
 
-                const stubDll = this.thunkGenerator.generateStubDll(dllName, stubInfos);
+                const stubDll = this.thunkGenerator.generatePeStubDll(dllName, stubInfos, this.memory);
 
                 // One-time inline x86 stub generation for kernel32!HeapAlloc/HeapFree.
                 // Happens on first kernel32 import; cached for later DLLs' IAT patching.
@@ -1317,7 +1317,7 @@ export class PELoader {
                         return { name, argCount: 0, stackCleanupBytes: 0, callingConvention: 'stdcall' };
                     });
 
-                    const stubDll = this.thunkGenerator.generateStubDll(dllName, stubInfos);
+                    const stubDll = this.thunkGenerator.generatePeStubDll(dllName, stubInfos, this.memory);
 
                     // Patch IAT with stub addresses
                     for (const func of functions) {
@@ -1493,7 +1493,7 @@ export class PELoader {
             return { name, argCount, stackCleanupBytes, callingConvention };
         });
 
-        const stubDll = this.thunkGenerator.generateStubDll(dllName, stubInfos);
+        const stubDll = this.thunkGenerator.generatePeStubDll(dllName, stubInfos, this.memory);
 
         // Patch IAT
         let addr = iatAddr;

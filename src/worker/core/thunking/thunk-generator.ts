@@ -1,6 +1,8 @@
 // thunk-generator.ts
 // Generates x86 stubs that trigger UD2 exceptions for WinAPI interception
 
+import { compatibleExportAliases } from "./export-aliases";
+import { PeImage, PE_IMAGE_SIZE } from "./pe-image";
 export interface ThunkStub {
     address: number;
     dllName: string;
@@ -37,6 +39,8 @@ const DATA_EXPORT_DLL_FORWARDS: Record<string, string> = {
 export class ThunkGenerator {
     private baseAddress = 0x02000000; // Default fallback, will be set dynamically
     private currentAddress = 0x02000000;
+    private peImages = new Map<string, PeImage>();
+    private allocationLimit = Infinity;
     private nextFunctionId = 1;
     private stubs: Map<number, ThunkStub> = new Map();
     private addressToStub: Map<number, ThunkStub> = new Map();
@@ -85,7 +89,8 @@ export class ThunkGenerator {
      * Set base address for thunk stubs (called from Process initialization).
      * Reserves the first TRAP_STUB_SIZE bytes for the shared "missing import" trap.
      */
-    setBaseAddress(address: number): void {
+    setBaseAddress(address: number, size = 1024 * 1024): void {
+        this.allocationLimit = address + size;
         this.baseAddress = address;
         this.currentAddress = address + TRAP_STUB_SIZE;
     }
@@ -149,7 +154,8 @@ export class ThunkGenerator {
                 continue; // Reuse existing stub, don't create duplicate
             }
 
-            const stubAddress = this.currentAddress;
+            this.requireCapacity(16);
+        const stubAddress = this.currentAddress;
             const functionId = this.nextFunctionId++;
 
             // Stub format for 32-bit protected mode (16 bytes aligned):
@@ -237,6 +243,7 @@ export class ThunkGenerator {
         callingConvention?: string,
         stackCleanupBytes?: number
     ): { address: number; code: Uint8Array } {
+        this.requireCapacity(16);
         const stubAddress = this.currentAddress;
         const functionId = this.nextFunctionId++;
         const isStdcall = !callingConvention || callingConvention === 'stdcall';
@@ -288,11 +295,39 @@ export class ThunkGenerator {
      * guest code executes them like any other thunk-region code. Returns the
      * base address of the reserved area.
      */
+    private requireCapacity(bytes: number): void {
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || this.currentAddress + bytes > this.allocationLimit)
+            throw new Error('BottleShip thunk code capacity exceeded');
+    }
+
     allocateRawCodeArea(sizeBytes: number): number {
+        this.requireCapacity(Math.ceil(sizeBytes / 16) * 16);
         const address = this.currentAddress;
         const slots = Math.ceil(sizeBytes / 16);
         this.currentAddress += slots * 16;
         return address;
+    }
+
+    generatePeStubDll(dllName: string, exports: Parameters<ThunkGenerator['generateStubDll']>[1], mem: Uint8Array) {
+        const stubs = this.generateStubDll(dllName, exports);
+        mem.set(stubs.stubCode, stubs.baseAddress);
+        let image = this.peImages.get(dllName);
+        if (!image) {
+            this.allocateRawCodeArea((0x1000 - (this.currentAddress & 0xfff)) & 0xfff);
+            image = new PeImage(dllName, this.allocateRawCodeArea(PE_IMAGE_SIZE));
+            this.peImages.set(dllName, image);
+        }
+        const symbols = this.getAllStubs().filter(s => s.dllName === dllName)
+            .map(s => ({ name: s.functionName, address: s.address, data: false }));
+        for (const info of exports) {
+            const address = this.lookupDataExportAddress(dllName, info.name);
+            if (address !== undefined) symbols.push({ name: info.name, address, data: true });
+        }
+        return { baseAddress: image.base, stubCode: image.update(symbols), exportTable: image.exports };
+    }
+
+    getPeDllName(base: number): string | undefined {
+        for (const [name, image] of this.peImages) if (image.base === base) return name;
     }
 
     getStubById(id: number): ThunkStub | undefined {
@@ -319,7 +354,7 @@ export class ThunkGenerator {
         if (exact && exact.length > 0) {
             return exact;
         }
-        return this.normalizedNameToStubs.get(buildNormalizedThunkKey(dllName, functionName)) ?? [];
+        return compatibleExportAliases(functionName, this.normalizedNameToStubs.get(buildNormalizedThunkKey(dllName, functionName)) ?? []);
     }
 
     /**
@@ -346,6 +381,7 @@ export class ThunkGenerator {
     reset(): void {
         this.currentAddress = this.baseAddress + TRAP_STUB_SIZE;
         this.nextFunctionId = 1;
+        this.peImages.clear();
         this.stubs.clear();
         this.addressToStub.clear();
         this.nameToAddress.clear();
@@ -361,7 +397,8 @@ export class ThunkGenerator {
      */
     allocateVTableMemory(sizeInBytes: number): number {
         // Align to 16 bytes for consistency
-        const alignedSize = (sizeInBytes + 15) & ~15;
+        const alignedSize = Math.ceil(sizeInBytes / 16) * 16;
+        this.requireCapacity(alignedSize);
         const addr = this.currentAddress;
         this.currentAddress += alignedSize;
         return addr;

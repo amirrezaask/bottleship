@@ -132,7 +132,7 @@ export function playSample(ctx: MSSContext, sample: MSSSample): void {
 
     if (!sample.decodedData || sample.decodedData.length === 0) {
         if (sample.fileData && isEncodedFormat(sample.fileFormat)) {
-            const volume = sample.volume / 127.0;
+            const volume = sample.volume / 127.0 * ctx.digitalMasterVolume;
             const pan = (sample.pan - 64) / 63;
             const payloadData = sample.fileData.slice();
 
@@ -186,7 +186,7 @@ export function playSample(ctx: MSSContext, sample: MSSSample): void {
 
     // Set control fields
     setCtrl(sab, CTRL_DATA_LENGTH, dataBytes);
-    setCtrl(sab, CTRL_VOLUME, volumeToCentibels(sample.volume));
+    setCtrl(sab, CTRL_VOLUME, volumeToCentibels(sample.volume * ctx.digitalMasterVolume));
     setCtrl(sab, CTRL_PAN, panToCentibels(sample.pan));
     const freqHz = sample.playbackRateHz || Math.round(sample.sampleRate * sample.playbackRate);
     setCtrl(sab, CTRL_FREQUENCY, freqHz);
@@ -211,7 +211,7 @@ export function updateSamplePlayback(ctx: MSSContext, sample: MSSSample): void {
     const entry = ringBuffers.get(sample.id);
     if (entry) {
         // Update via Atomics — zero latency
-        setCtrl(entry.sab, CTRL_VOLUME, volumeToCentibels(sample.volume));
+        setCtrl(entry.sab, CTRL_VOLUME, volumeToCentibels(sample.volume * ctx.digitalMasterVolume));
         setCtrl(entry.sab, CTRL_PAN, panToCentibels(sample.pan));
         const freqHz = (sample.playbackRateHz && !isEncodedFormat(sample.fileFormat))
             ? sample.playbackRateHz
@@ -222,7 +222,7 @@ export function updateSamplePlayback(ctx: MSSContext, sample: MSSSample): void {
     }
 
     // Fallback: legacy postMessage path (encoded or no ring buffer)
-    const volume = sample.volume / 127.0;
+    const volume = sample.volume / 127.0 * ctx.digitalMasterVolume;
     const pan = (sample.pan - 64) / 63;
     const payload: {
         id: number;
@@ -380,7 +380,7 @@ function tryKickPendingSampleStart(ctx: MSSContext, sample: MSSSample): void {
 export function playStream(ctx: MSSContext, stream: MSSStream): void {
     if (!stream.decodedData || stream.decodedData.length === 0) {
         if (stream.fileData && isEncodedFormat(stream.fileFormat)) {
-            const volume = stream.volume / 127.0;
+            const volume = stream.volume / 127.0 * ctx.digitalMasterVolume;
             const pan = (stream.pan - 64) / 63;
             const payloadData = stream.fileData.slice();
 
@@ -430,7 +430,7 @@ export function playStream(ctx: MSSContext, stream: MSSStream): void {
 
     // Set control fields
     setCtrl(sab, CTRL_DATA_LENGTH, dataBytes);
-    setCtrl(sab, CTRL_VOLUME, volumeToCentibels(stream.volume));
+    setCtrl(sab, CTRL_VOLUME, volumeToCentibels(stream.volume * ctx.digitalMasterVolume));
     setCtrl(sab, CTRL_PAN, panToCentibels(stream.pan));
     const freqHz = stream.playbackRateHz || Math.round(stream.sampleRate * stream.playbackRate);
     setCtrl(sab, CTRL_FREQUENCY, freqHz);
@@ -453,7 +453,7 @@ export function playStream(ctx: MSSContext, stream: MSSStream): void {
 export function updateStreamPlayback(ctx: MSSContext, stream: MSSStream): void {
     const entry = ringBuffers.get(stream.id);
     if (entry) {
-        setCtrl(entry.sab, CTRL_VOLUME, volumeToCentibels(stream.volume));
+        setCtrl(entry.sab, CTRL_VOLUME, volumeToCentibels(stream.volume * ctx.digitalMasterVolume));
         setCtrl(entry.sab, CTRL_PAN, panToCentibels(stream.pan));
         const freqHz = (stream.playbackRateHz && !isEncodedFormat(stream.fileFormat))
             ? stream.playbackRateHz
@@ -464,7 +464,7 @@ export function updateStreamPlayback(ctx: MSSContext, stream: MSSStream): void {
     }
 
     // Fallback: legacy postMessage path (encoded or no ring buffer)
-    const volume = stream.volume / 127.0;
+    const volume = stream.volume / 127.0 * ctx.digitalMasterVolume;
     const pan = (stream.pan - 64) / 63;
 
     const payload: {

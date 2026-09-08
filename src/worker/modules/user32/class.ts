@@ -633,7 +633,8 @@ export function createClassExports(): Record<string, ThunkImplementation> {
         if (win.classId !== undefined) {
             return getWindowClass(win.classId) ?? null;
         }
-        return getWindowClassByName(win.title) ?? null;
+        const name = resolveWindowClassName(hWnd);
+        return name ? getWindowClassByName(name) ?? null : null;
     }
 
     exports['GetClassLongA'] = (ctx, mem, args) => {

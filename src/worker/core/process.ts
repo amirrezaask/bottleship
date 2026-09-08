@@ -696,7 +696,7 @@ export class Process {
 
         // Initialize thunk generator with dynamic base address
         const regions = this.thunkMemoryManager.getRegions();
-        this.thunkGenerator.setBaseAddress(regions.thunkGeneratorBase);
+        this.thunkGenerator.setBaseAddress(regions.thunkGeneratorBase, regions.thunkGeneratorSize);
         // Materialize the shared "missing import" UD2 trap (guarded — memory may not be
         // ready this early; pe-loader re-ensures it lazily before patching IATs).
         this.thunkGenerator.writeTrapStub(getMemory());
@@ -807,7 +807,7 @@ export class Process {
         // Must await to ensure regions are allocated before using them
         await this.thunkMemoryManager.initialize(this.memory, this.getMemory);
         const thunkRegions = this.thunkMemoryManager.getRegions();
-        this.thunkGenerator.setBaseAddress(thunkRegions.thunkGeneratorBase);
+        this.thunkGenerator.setBaseAddress(thunkRegions.thunkGeneratorBase, thunkRegions.thunkGeneratorSize);
         // Re-materialize the missing-import UD2 trap (see initialization path above).
         this.thunkGenerator.writeTrapStub(this.getMemory());
 

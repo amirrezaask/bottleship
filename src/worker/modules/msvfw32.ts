@@ -22,6 +22,16 @@ export class Msvfw32 implements IModule {
     initialize(process: Process): void {
         this.process = process;
 
+        // No VCM codec handles are allocated. Report the documented failure
+        // values so callers can skip optional movies without using a fake codec.
+        this.exports["ICLocate"] = () => 0;
+        this.exports["ICSendMessage"] = () => -8; // ICERR_BADHANDLE
+        this.exports["ICClose"] = () => -8;
+        this.exports["ICDecompress"] = () => -8;
+
+        // VideoForWindowsVersion() is the ordinal-2 import used by older games.
+        this.exports["ord_2"] = () => 0x040003B6;
+
         // DrawDibOpen() → HDRAWDIB
         this.exports["DrawDibOpen"] = (_ctx, _mem, _args) => {
             const handle = nextDrawDibHandle++;

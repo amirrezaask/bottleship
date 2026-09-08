@@ -536,6 +536,9 @@ export function createSampleExports(ctx: MSSContext): Record<string, ThunkImplem
         return sample ? sample.position : 0;
     };
 
+    exports['_AIL_sample_user_data@8'] = (ctxThunk, _mem, args) =>
+        ctx.samples.get(args[0])?.userData?.[args[1] | 0] ?? 0;
+
     // _AIL_set_sample_user_data@12
     exports["_AIL_set_sample_user_data@12"] = (ctxThunk, mem, args) => {
         const sample = args[0];

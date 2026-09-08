@@ -34,6 +34,12 @@ export const avifil32Module: ModuleDescriptor = {
         makeFunc("AVIFileRelease", 1),            // pfile → ref count
         makeFunc("AVIFileInfoA", 3),              // pfile, pfi (LPAVIFILEINFOA), lSize
         makeFunc("AVIFileGetStream", 4),          // pfile, ppavi, fccType, lParam
+        makeFunc("AVIFileCreateStreamA", 3),        // pfile, ppavi, psi
+        makeFunc("AVISaveOptions", 5),              // hwnd, flags, streams, ppavi, options
+        makeFunc("AVISaveOptionsFree", 2),          // streams, options
+        makeFunc("AVIMakeCompressedStream", 4),     // ppavi, source, options, handler
+        makeFunc("AVIStreamSetFormat", 4),          // pavi, position, format, formatBytes
+        makeFunc("AVIStreamWrite", 8),              // pavi, start, samples, data, bytes, flags, samplesWritten, bytesWritten
 
         // Stream open/close
         makeFunc("AVIStreamOpenFromFileA", 6),   // ppavi, szFile, fccType, lParam, mode, pclsidHandler

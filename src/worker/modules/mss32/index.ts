@@ -23,6 +23,7 @@ import { createWavInfoExports } from "./wav-info";
 import { createSequenceExports } from "./sequence";
 import { createMidiDriverExports } from "./midi-driver";
 
+import { registerMilesCompatibility } from "./miles-compat";
 export class MSS32 implements IModule {
     name = "mss32";
     exports: Record<string, ThunkImplementation> = {};
@@ -61,6 +62,8 @@ export class MSS32 implements IModule {
         Object.assign(this.exports, createWavInfoExports(this.ctx));
         Object.assign(this.exports, createSequenceExports(this.ctx));
         Object.assign(this.exports, createMidiDriverExports(this.ctx));
+
+        registerMilesCompatibility(this.ctx, this.exports);
 
         // SmartHeap/MSS compatibility probes used by some games during startup.
         this.exports["_MemSetPatching@4"] = () => 0;

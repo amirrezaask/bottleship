@@ -7,6 +7,7 @@ import { System } from '../../core/system';
 import { Marshaler } from '../../core/memory/marshaler';
 import { encodeAnsi } from '../codepage-utils';
 
+import { registerFontResourceExports } from "./font-resources";
 let nextMetafileHandle = 0x50000;
 
 export function registerPaintingMiscExports(exports: Record<string, ThunkImplementation>): void {
@@ -33,6 +34,19 @@ export function registerPaintingMiscExports(exports: Record<string, ThunkImpleme
         Logger.verbose(
             LogCategory.GDI32,
             `EnumFontFamiliesExA(hdc=0x${hdc.toString(16)}, proc=0x${lpCallback.toString(16)}, flags=0x${dwFlags.toString(16)})`,
+        );
+        if (!lpCallback) return 0;
+        return 1;
+    };
+
+    // int EnumFontFamiliesExW(HDC hdc, LPLOGFONTW lpLogfont, FONTENUMPROCW lpCallback, LPARAM lParam, DWORD dwFlags)
+    exports['EnumFontFamiliesExW'] = (ctx, mem, args): number => {
+        const hdc = args[0];
+        const lpCallback = args[2];
+        const dwFlags = args[4] >>> 0;
+        Logger.verbose(
+            LogCategory.GDI32,
+            `EnumFontFamiliesExW(hdc=0x${hdc.toString(16)}, proc=0x${lpCallback.toString(16)}, flags=0x${dwFlags.toString(16)})`,
         );
         if (!lpCallback) return 0;
         return 1;
@@ -164,6 +178,8 @@ export function registerPaintingMiscExports(exports: Record<string, ThunkImpleme
         Logger.verbose(LogCategory.GDI32, `RemoveFontResourceA("${path}")`);
         return 1;
     };
+
+    registerFontResourceExports(exports);
 
     // BOOL GetICMProfileW(HDC hdc, LPDWORD pBufSize, LPWSTR pszFilename)
     //

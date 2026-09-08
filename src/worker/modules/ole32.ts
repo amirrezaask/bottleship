@@ -27,6 +27,7 @@ const BF_MAX_KEY_LEN = 0x38;
 // Thread-local storage for COM initialization state
 const comInitialized = new Map<number, boolean>(); // Thread ID -> initialized
 
+import { createDirectMusic } from "./gamebox-directmusic";
 export class Ole32 implements IModule {
     name = "ole32";
     exports: Record<string, ThunkImplementation> = {};
@@ -710,6 +711,8 @@ export class Ole32 implements IModule {
         const interfaceRegistry = InterfaceRegistry.getInstance();
         const process = this.process;
 
+        if (clsidNormalized === "636b9f10-0c7d-11d1-95b2-0020afdc7421")
+            return createDirectMusic(process, iidNormalized, ppv);
         let targetIID = iidNormalized;
         if (clsidNormalized === "d7b70ee0-4340-11cf-b063-0020afc2cd35") {
             if (!interfaceRegistry.isRegistered(iidNormalized)) {

@@ -168,6 +168,16 @@ export const IDirectInputDevice8W: InterfaceDescriptor = {
     methods: IDirectInputDevice8A.methods.map(m => ({ ...m, name: m.name })),
 };
 
+export const IDirectInput7A: InterfaceDescriptor = {
+    name: "IDirectInput7A", inherits: "IDirectInputA",
+    iid: "9a4cb684-236d-11d3-8e9d-00c04f6844ae",
+    methods: [...IDirectInputA.methods, makeMethod("FindDevice", 4), makeMethod("CreateDeviceEx", 5)],
+};
+export const IDirectInputDevice7A: InterfaceDescriptor = {
+    name: "IDirectInputDevice7A", inherits: "IDirectInputDevice2A",
+    iid: "57d7c6bc-2356-11d3-8e9d-00c04f6844ae",
+    methods: [...IDirectInputDevice2A.methods, makeMethod("EnumEffectsInFile", 5), makeMethod("WriteEffectToFile", 5)],
+};
 export const dinputModule: ModuleDescriptor = {
     name: "dinput",
     version: "8.0",
@@ -209,7 +219,7 @@ export const dinputModule: ModuleDescriptor = {
             description: "Creates a DirectInput8 object",
         }),
     ],
-    interfaces: [
+    interfaces: [IDirectInput7A, IDirectInputDevice7A,
         IDirectInputA,
         IDirectInput8A,
         IDirectInput8W,

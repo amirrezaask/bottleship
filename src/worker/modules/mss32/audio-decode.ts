@@ -155,7 +155,7 @@ export function decodeStreamFile(ctx: MSSContext, stream: MSSStream): boolean {
     stream.pcmBytes = undefined;
     stream.encodedDurationMs = undefined;
 
-    if (isMp3(stream.fileData)) {
+    if (stream.filename?.toLowerCase().endsWith(".mp3") || isMp3(stream.fileData)) {
         const info = inspectEncodedAudio(stream.fileData, "mp3");
         stream.fileFormat = "mp3";
         stream.decodedData = null;

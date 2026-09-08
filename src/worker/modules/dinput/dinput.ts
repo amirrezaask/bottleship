@@ -1520,6 +1520,58 @@ export class DInput implements IModule {
         this.exports["IDirectInputDevice8W_BuildActionMap"] = this.exports["IDirectInputDevice8A_BuildActionMap"];
         this.exports["IDirectInputDevice8W_SetActionMap"] = this.exports["IDirectInputDevice8A_SetActionMap"];
         this.exports["IDirectInputDevice8W_GetImageInfo"] = this.exports["IDirectInputDevice8A_GetImageInfo"];
+        // DirectInput 7 adds CreateDeviceEx at slot 9; DX8 uses that slot for
+        // EnumDevicesBySemantics and cannot substitute for this interface.
+        const guidHex = (mem: Uint8Array, ptr: number) => ptr > 0 && ptr + 16 <= mem.length
+            ? Array.from(mem.subarray(ptr, ptr + 16), b => b.toString(16).padStart(2, "0")).join("") : "";
+        const input7 = "84b64c9a6d23d3118e9d00c04f6844ae";
+        const device7 = "bcc6d7575623d3118e9d00c04f6844ae";
+        const oldCreateEx = this.exports["DirectInputCreateEx"];
+        this.exports["DirectInputCreateEx"] = (ctx, mem, args) => {
+            if (!args[3] || args[3] + 4 > mem.length) return DIERR_INVALIDPARAM;
+            new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(args[3], 0, true);
+            if (args[4]) return 0x80040110; // CLASS_E_NOAGGREGATION
+            const iid = guidHex(mem, args[2]);
+            if (iid === "601352898aaacf11bfc7444553540000") return oldCreateEx(ctx, mem, args);
+            if (iid !== input7) return 0x80004002;
+            const vtable = this.vtables.IDirectInput7A.address;
+            const obj = new DirectInputObject(vtable);
+            const address = allocateComObject(this.process.memory, mem, vtable);
+            resourceProvider.mapAddressToHandle(address, obj.handle);
+            const fresh = this.getMemory();
+            new DataView(fresh.buffer, fresh.byteOffset, fresh.byteLength).setUint32(args[3], address, true);
+            return DI_OK;
+        };
+        for (const method of dinputModule.interfaces!.find(i => i.name === "IDirectInputA")!.methods)
+            this.exports[`IDirectInput7A_${method.name}`] = this.exports[`IDirectInputA_${method.name}`];
+        this.exports["IDirectInput7A_QueryInterface"] = (ctx, mem, args) => {
+            const out = args[2];
+            if (!out || out + 4 > mem.length) return DIERR_INVALIDPARAM;
+            new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(out, 0, true);
+            const iid = guidHex(mem, args[1]);
+            if (![input7, "601352898aaacf11bfc7444553540000", "62e644598aaacf11bfc7444553540000", "0000000000000000c000000000000046"].includes(iid))
+                return 0x80004002;
+            return this.exports["IDirectInputA_QueryInterface"](ctx, mem, args);
+        };
+        this.exports["IDirectInput7A_FindDevice"] = () => 0x80070002; // not found
+        this.exports["IDirectInput7A_CreateDeviceEx"] = (ctx, mem, args) => {
+            const [self, guid, riid, out, outer] = args;
+            if (!out || out + 4 > mem.length) return DIERR_INVALIDPARAM;
+            new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(out, 0, true);
+            if (outer) return 0x80040110;
+            if (guidHex(mem, riid) !== device7) return 0x80004002;
+            const vtable = this.vtables.IDirectInputDevice7A.address;
+            const obj = new DirectInputDeviceObject(vtable, "57d7c6bc-2356-11d3-8e9d-00c04f6844ae");
+            obj.deviceType = this.resolveDeviceType(mem, guid);
+            const address = allocateComObject(this.process.memory, mem, vtable);
+            resourceProvider.mapAddressToHandle(address, obj.handle);
+            const fresh = this.getMemory();
+            new DataView(fresh.buffer, fresh.byteOffset, fresh.byteLength).setUint32(out, address, true);
+            return DI_OK;
+        };
+        for (const method of dinputModule.interfaces!.find(i => i.name === "IDirectInputDevice7A")!.methods)
+            this.exports[`IDirectInputDevice7A_${method.name}`] = this.exports[`IDirectInputDevice8A_${method.name}`];
+
     }
 
     // Create an IDirectInputDevice8A/W COM object of the given type, mapped into guest memory.

@@ -144,6 +144,14 @@ function readDibSectionRgbaGeneric(
                 out[di + 2] = color & 0xff;
                 out[di + 3] = (color >>> 24) & 0xff;
             }
+        } else if (dibBpp === 1) {
+            for (let x = 0; x < w; x++) {
+                const index = (mem[srcRow + (x >> 3)] >> (7 - (x & 7))) & 1;
+                const color = palette?.[index] ?? (index ? 0xffffffff : 0xff000000);
+                const di = dstOff + x * 4;
+                out[di] = (color >> 16) & 255; out[di + 1] = (color >> 8) & 255;
+                out[di + 2] = color & 255; out[di + 3] = 255;
+            }
         } else if (dibBpp === 4 && palette && palette.length > 0) {
             for (let x = 0; x < w; x++) {
                 const byte = mem[srcRow + (x >> 1)];

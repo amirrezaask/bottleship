@@ -86,6 +86,7 @@ export interface MSSWaveOut {
 
 // Miles Sound System stream handle (for streaming audio playback - e.g., Smacker video audio)
 export interface MSSStream {
+    endCallback?: number;
     id: number;
     handle: number;
     fileData: Uint8Array | null;

@@ -115,7 +115,7 @@ export class ThunkMemoryManager {
         
         // Thunk generator: we'll allocate on-demand, but reserve initial chunk
         // Increased from 64KB to 1MB to avoid conflicts with heap
-        const initialThunkGeneratorSize = 1024 * 1024;
+        const initialThunkGeneratorSize = 8 * 1024 * 1024;
         
         // Spin loop: just 2 bytes (JMP $), but allocate a page (4KB) for safety
         const spinLoopSize = 0x1000;

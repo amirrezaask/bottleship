@@ -24,6 +24,15 @@ const makeFunc = (name: string, argCount: number, overrides: Partial<FunctionDes
 export const msvfw32Module: ModuleDescriptor = {
     name: "msvfw32",
     functions: [
+        // Video Compression Manager imports must have stdcall stack metadata,
+        // even when no compatible codec is installed.
+        makeFunc("ICLocate", 5),
+        makeFunc("ICSendMessage", 4),
+        makeFunc("ICClose", 1),
+        makeFunc("ICDecompress", 6),
+        // VideoForWindowsVersion is exported by ordinal 2 on Windows.
+        makeFunc("ord_2", 0, { ordinal: 2 }),
+
         // DrawDib API
         makeFunc("DrawDibOpen", 0),              // → HDRAWDIB
         makeFunc("DrawDibClose", 1),             // hdd

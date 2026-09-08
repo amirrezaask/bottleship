@@ -295,6 +295,7 @@ export const writeSurfaceDesc = (
     if (desc.width) flags |= DDSD_WIDTH;
     if (desc.height) flags |= DDSD_HEIGHT;
     if (desc.pitch) flags |= DDSD_PITCH;
+    if (desc.mipMapCount !== undefined) flags |= 0x00020000; // DDSD_MIPMAPCOUNT
     
     // We always write pixelFormat — flag is mandatory
     flags |= DDSD_PIXELFORMAT;

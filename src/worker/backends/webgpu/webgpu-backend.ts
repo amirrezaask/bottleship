@@ -72,6 +72,7 @@ export class WebGPUBackend implements RenderBackend {
 
         // Monitor device loss — after this fires, all GPU ops are no-ops (black screen)
         this.device.lost.then((info) => {
+            if (info.reason !== 'destroyed') self.postMessage({ type: 'error', message: `Graphics device lost: ${info.message || info.reason}. Close and reopen the game.` });
             Logger.error(LogCategory.SYSTEM,
                 `[WEBGPU] Device LOST! reason=${info.reason} message="${info.message}"`);
         });
@@ -418,6 +419,7 @@ export class WebGPUBackend implements RenderBackend {
      * WebGPU guarantees command ordering in the queue, so the copy will complete
      * before any subsequent render commands that use this texture.
      */
+    private overlayCpuUpload = false;
     updateOverlayTexture(source: OffscreenCanvas): void {
         if (!this.device || !this.queue) return;
 
@@ -443,11 +445,31 @@ export class WebGPUBackend implements RenderBackend {
         // Copy canvas to texture.
         // Canvas 2D uses premultiplied alpha, so we preserve it as-is.
         // Use sRGB color space (default, but explicit for clarity).
-        this.queue.copyExternalImageToTexture(
-            { source, flipY: false },
-            { texture: this.overlayTexture!, premultipliedAlpha: true, colorSpace: "srgb" },
-            { width, height }
-        );
+        if (!this.overlayCpuUpload) {
+            try {
+                this.queue.copyExternalImageToTexture(
+                    { source, flipY: false },
+                    { texture: this.overlayTexture!, premultipliedAlpha: true, colorSpace: "srgb" },
+                    { width, height }
+                );
+                return;
+            } catch (error) {
+                if (!(error instanceof TypeError)) throw error;
+                this.overlayCpuUpload = true;
+            }
+        }
+        // Software-backed Canvas2D sources may lack an external image for WebGPU.
+        const context = source.getContext('2d');
+        if (!context) throw new Error('GDI overlay has no Canvas2D context');
+        const pixels = context.getImageData(0, 0, width, height).data;
+        for (let i = 0; i < pixels.length; i += 4) {
+            const alpha = pixels[i + 3] / 255;
+            pixels[i] = Math.round(pixels[i] * alpha);
+            pixels[i + 1] = Math.round(pixels[i + 1] * alpha);
+            pixels[i + 2] = Math.round(pixels[i + 2] * alpha);
+        }
+        this.queue.writeTexture({ texture: this.overlayTexture! }, pixels,
+            { bytesPerRow: width * 4 }, { width, height });
     }
 
     /**

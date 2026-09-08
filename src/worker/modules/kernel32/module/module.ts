@@ -1304,7 +1304,7 @@ function initModuleFunctions(): void {
             }
 
             if (address === 0 && hModule !== 0) {
-                let dllName = THUNKED_DLL_PSEUDO_BY_BASE.get(hModule) ?? null;
+                let dllName = dispatcher.thunkGenerator?.getPeDllName(hModule) ?? THUNKED_DLL_PSEUDO_BY_BASE.get(hModule) ?? null;
                 if (!dllName) {
                     dllName = getHashToDllNameMap().get(hModule) ?? null;
                 }
