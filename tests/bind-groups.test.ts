@@ -57,9 +57,9 @@ it('keys every sampled stage, effective sampler, buffer range and buffer identit
 });
 
 it('bounds retained groups and discards bindings when the manager is cleared', () => {
-    const f = fixture(1); // Eight total entries.
+    const f = fixture(1); // Thirty-two total entries.
     const first = f.bind();
-    for (let i = 1; i <= 8; i++) f.bind(1, i * 256);
+    for (let i = 1; i <= 32; i++) f.bind(1, i * 256);
     expect(f.bind()).not.toBe(first);
     const beforeClear = f.bind();
     f.manager.clearCache();

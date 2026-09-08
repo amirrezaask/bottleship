@@ -111,7 +111,7 @@ export class BindGroupManager {
     constructor(device: GPUDevice, maxCacheSize = 64) {
         this.device = device;
         this.maxCacheSize = maxCacheSize;
-        this.megaBatchCache = new LruCache({ maxEntries: maxCacheSize * 8 });
+        this.megaBatchCache = new LruCache({ maxEntries: maxCacheSize * 32 });
         this.samplers = new DxSamplerCache(device);
     }
 
