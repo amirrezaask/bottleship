@@ -453,6 +453,11 @@ export class AudioEngine {
    *  gone so it can no longer stop its sources, and the worklet would otherwise
    *  loop a stale ring/encoded buffer forever. The worklet stays alive (renders
    *  silence) so the next loaded game can register fresh sources. */
+  async gameboxClose(): Promise<void> {
+    this.stopAll();
+    this.userPaused = true;
+    if (this.context && this.context.state !== 'closed') await this.context.close();
+  }
   stopAll(): void {
     this.pendingDecodes.clear();
     this.sampleMeta.clear();

@@ -14,7 +14,7 @@ let cached: GameEntry[] | null = null;
 export async function loadGamesCatalog(): Promise<GameEntry[]> {
     if (cached) return cached;
     try {
-        const resp = await fetch("/games-catalog.json");
+        const resp = new Response("[]", {headers: {"content-type":"application/json"}});
         const entries: GamesCatalogFileEntry[] = resp.ok ? await resp.json() : [];
         cached = entries.filter((g) => g.enabled !== false);
     } catch {

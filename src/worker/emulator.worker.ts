@@ -1342,7 +1342,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
         throw new Error(msg);
       }
 
-      const wasmResp = await fetch("/unpack-streaming.wasm");
+      const wasmResp = await fetch((import.meta.env.BASE_URL + "unpack-streaming.wasm"));
       const wasmBytes = await wasmResp.arrayBuffer();
       const lzma = new UnpackDecoder();
       await lzma.init(wasmBytes);
@@ -1413,7 +1413,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
         }
         if (kind === "inno") {
           let installProgressLast = 0;
-          const wasmResp = await fetch("/unpack-streaming.wasm");
+          const wasmResp = await fetch((import.meta.env.BASE_URL + "unpack-streaming.wasm"));
           const wasmBytes = await wasmResp.arrayBuffer();
 
           const lzma = new UnpackDecoder();
@@ -1480,7 +1480,8 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // overlay (bottleship/games/<containerDir>/overlay/). On a game switch the previous overlay is
     // closed and re-rooted so game B never sees game A's files (#5 isolation). Registry persistence
     // (below) keys by this same gameId.
-    const gameId = resolveGameId(bundle.manifest);
+    const gameId = gameboxGameId;
+    if (!gameId) throw new Error('Missing GameBox save identity');
     Logger.log(LogCategory.SYSTEM, `WGB: gameId="${gameId}" container="${gameIdToContainerDir(gameId)}"`);
     // Host overlay/title: surface the manifest display name as soon as we know it
     // (covers ?game=dev&load=… where the shell would otherwise keep saying "Dev").
@@ -1802,11 +1803,11 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     // DEV cache-bust: the worker's wasm fetch is NOT covered by a hard-reload's cache bypass,
     // so a rebuilt /v86.wasm would otherwise keep loading from the browser cache. Unique URL per
     // worker load forces a fresh fetch in dev. (Prod keeps the stable URL for HTTP caching.)
-    wasm_path: import.meta.env?.DEV ? `/v86.wasm?t=${Date.now()}` : "/v86.wasm",
+    wasm_path: import.meta.env?.DEV ? `${import.meta.env.BASE_URL}v86.wasm?t=${Date.now()}` : (import.meta.env.BASE_URL + "v86.wasm"),
     memory_size: ramSize,
     vga_memory_size: EMU_VGA_MEMORY_SIZE,
-    bios: { url: "/bios/seabios.bin" },
-    vga_bios: { url: "/bios/vgabios.bin" },
+    bios: { url: (import.meta.env.BASE_URL + "bios/seabios.bin") },
+    vga_bios: { url: (import.meta.env.BASE_URL + "bios/vgabios.bin") },
     autostart: false,
     log_level: 0, // Disable v86 debug logging for performance
   };
@@ -2541,8 +2542,59 @@ function resumeEmulator(): void {
 (globalThis as any).__harnessPause = pauseEmulator;
 (globalThis as any).__harnessResume = resumeEmulator;
 
+// GameBox lifecycle: pause the CPU before committing its writable filesystem and registry.
+let gameboxGameId = '';
+let gameboxStorageError = '';
+Logger.addLogTap((entry) => {
+  // Upstream reports some disk-write failures through logging instead of rejection.
+  // Remember these failures: never acknowledge a save whose buffered data may be lost.
+  if (entry.level <= LogLevel.WARN && /OPFS|registry|overlay/i.test(entry.message) &&
+      /fail|error|quota/i.test(entry.message)) gameboxStorageError = entry.message;
+});
+async function gameboxStop(id: string) {
+  try {
+    await loadBundleChain;
+    _prefetchController?.abort();
+    const system = System.getInstance();
+    isPaused = true;
+    system.isPaused = true;
+    // Pending scheduler yields must not restart the CPU while saves are committing.
+    system.isExiting = true;
+    if (gdiPresentRafId !== null) { cancelAnimationFrame(gdiPresentRafId); gdiPresentRafId = null; }
+    framePacer.stop();
+    system.windowManager.wakeWaiters();
+    await system.process?.v86?.stop();
+    cancelRegistryAutosave();
+    await system.fileSystem.flushAll();
+    const state = system.registry.serialize();
+    if (state.gameId) {
+      const root = await navigator.storage.getDirectory();
+      const bs = await root.getDirectoryHandle('bottleship', { create: true });
+      const games = await bs.getDirectoryHandle('games', { create: true });
+      const dir = await games.getDirectoryHandle(gameIdToContainerDir(state.gameId), { create: true });
+      const file = await dir.getFileHandle('registry.json', { create: true });
+      const writer = await file.createWritable();
+      try { await writer.write(JSON.stringify(state)); await writer.close(); }
+      catch (error) { await writer.abort().catch(() => {}); throw error; }
+    }
+    if (gameboxStorageError) throw new Error(gameboxStorageError);
+    WgbCache.releaseMountedSource();
+    self.postMessage({ type: 'gamebox_stopped', id });
+  } catch (error) {
+    self.postMessage({ type: 'gamebox_stopped', id, error: `BottleShip could not confirm its saves: ${String(error)}` });
+  }
+}
+
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
+  if (message?.type === 'gamebox_configure') {
+    if (!gameboxGameId && /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) && /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)) {
+      gameboxGameId = message.gameId;
+      (globalThis as any).__gameboxCacheKey = message.cacheKey;
+    }
+    return;
+  }
+  if (message?.type === 'gamebox_stop') { void gameboxStop(message.id); return; }
 
   if (message?.type === "dbg") {
     // Guest debugger bridge: window.dbg.<cmd>(...args) on the page -> here.

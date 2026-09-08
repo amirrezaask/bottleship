@@ -17,6 +17,7 @@ const LRU_META_FILE = "_cache-lru.json";
 const STAGE_QUOTA_MARGIN = 256 * 1024 * 1024;
 
 function urlToCacheKey(url: string): string {
+    if ((globalThis as any).__gameboxCacheKey) return (globalThis as any).__gameboxCacheKey;
     // "/apps/re-volt.wgb?v=2" → "re-volt.wgb"
     const path = url.split("?")[0];
     const parts = path.split("/");

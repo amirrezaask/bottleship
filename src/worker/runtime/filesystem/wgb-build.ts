@@ -242,7 +242,7 @@ function entriesFromZip(zipEntries: ZipEntry[]): StagedEntry[] {
 let _lzmaWasm: ArrayBuffer | null = null;
 async function getLzmaWasm(): Promise<ArrayBuffer> {
     if (_lzmaWasm) return _lzmaWasm;
-    const resp = await fetch("/unpack-streaming.wasm");
+    const resp = await fetch((import.meta.env.BASE_URL + "unpack-streaming.wasm"));
     _lzmaWasm = await resp.arrayBuffer();
     return _lzmaWasm;
 }

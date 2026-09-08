@@ -1,3 +1,4 @@
+import { installGameBoxBridge } from "../gamebox-bridge.js";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../ui/cx";
 import s from "./App.module.css";
@@ -312,7 +313,7 @@ export default function App() {
     return saved !== null ? saved === 'true' : false; // Default: disabled
   });
   const [devPanelOpen, setDevPanelOpen] = useState(() => {
-    if (new URLSearchParams(window.location.search).get('game') === 'dev') return true;
+    return false;
     try { return localStorage.getItem('bottleship_dev_panel') === 'true'; } catch { return false; }
   });
   const toggleDevPanel = useCallback(() => {
@@ -671,6 +672,7 @@ export default function App() {
 
       // Expose worker to console for debugging
       (window as any).worker = globalWorker;
+      installGameBoxBridge(globalWorker, async () => { await audioEngine?.gameboxClose(); });
 
       // Persisted debug flags (e.g. __noHeapSlab to A/B the WASM heap slab). Replayed to
       // the worker on EVERY page load BEFORE any game loads, so a toggle survives F5.
@@ -952,6 +954,7 @@ export default function App() {
         if (name) setBundleDisplayName(name);
       }
       if (event.data?.type === "loading_progress") {
+        if ((window as any).GameBoxBottleShip?.exited) return;
         const { phase, percent, label } = event.data;
         // A fresh load clears any prior "game exited" state.
         setExitInfo(null);
@@ -1197,6 +1200,7 @@ export default function App() {
         if (canvas) {
           canvas.style.width = `${width}px`;
           canvas.style.height = `${height}px`;
+          canvas.style.setProperty("--gamebox-aspect", `${width} / ${height}`);
           canvasRectRef.current = canvas.getBoundingClientRect();
           if (mouseCoordinateModeRef.current === "guest") {
             worker.postMessage({ type: "resize", width, height });
@@ -2486,7 +2490,7 @@ export default function App() {
       onDrop={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (e.dataTransfer.files.length > 0) handleDroppedFiles(e.dataTransfer.files);
+        // GameBox supplies the reviewed game bundle.
       }}
     >
       {/* Top bar */}

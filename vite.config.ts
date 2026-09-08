@@ -149,6 +149,7 @@ function copyPublicDirExceptApps(): Plugin {
 }
 
 export default defineConfig({
+  base: process.env.GAMEBOX_RUNTIME_BASE ?? "/",
   define: {
     __BUILD_SHA__: JSON.stringify(BUILD_SHA),
   },
@@ -171,7 +172,7 @@ export default defineConfig({
     // chunk loads, so there is nothing for Safari to choke on. Chrome is
     // unaffected. See emulator.worker.ts (await import PageTableManager, etc.).
     rollupOptions: {
-      output: { codeSplitting: false }
+      output: { codeSplitting: false, entryFileNames: "assets/[name].js", chunkFileNames: "assets/[name].js", assetFileNames: "assets/[name][extname]" }
     }
   },
   server: {
@@ -198,6 +199,7 @@ export default defineConfig({
   },
   build: {
     emptyOutDir: false,
+    rollupOptions: { output: { entryFileNames: "assets/[name].js", chunkFileNames: "assets/[name].js", assetFileNames: "assets/[name][extname]" } },
     // We copy public/ ourselves (copyPublicDirExceptApps) — Vite's built-in publicDir
     // copy would drag every public/apps/*.wgb (plus the dev-only external-wgb symlink
     // to a network drive) into dist on every build.

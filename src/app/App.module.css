@@ -98,6 +98,7 @@
 
 /* Emulator top bar */
 .emu-topbar {
+  display: none !important;
   display: flex;
   align-items: center;
   height: 44px;
@@ -460,4 +461,30 @@
 @media (prefers-reduced-motion: reduce) {
   .loading-overlay__bar-wrap.is-indeterminate .loading-overlay__bar { animation: none; width: 60%; }
   .loading-overlay__step.is-active .loading-overlay__step-dot { animation: none; }
+}
+
+/* The embedded player owns its chrome; use the remaining area for the game. */
+.app {
+  height: 100dvh;
+  padding: 0;
+}
+
+.app__panel {
+  min-width: 0;
+  container-type: size;
+}
+
+.emu-info-strip {
+  display: none;
+}
+
+/* Fit the guest's aspect ratio at any window size, including host fullscreen.
+   The canvas rect stays identical to the picture rect for mouse coordinates. */
+.app .app__panel .app__canvas,
+.app .app__panel:fullscreen .app__canvas,
+.app .app__panel:-webkit-full-screen .app__canvas {
+  width: min(100cqw, calc(100cqh * var(--gamebox-aspect, 4 / 3))) !important;
+  height: min(100cqh, calc(100cqw / (var(--gamebox-aspect, 4 / 3)))) !important;
+  min-height: 0 !important;
+  flex-shrink: 0;
 }
