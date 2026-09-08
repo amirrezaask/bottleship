@@ -165,6 +165,12 @@ export class DeferredUploadManager {
      * This is the main optimization - batches all texture uploads together.
      */
     async flushAll(queue: GPUQueue, mem: Uint8Array): Promise<void> {
+        this.flushNow(queue, mem);
+    }
+
+    // Texture conversion and queue writes are synchronous. The presenter can
+    // finish the frame without yielding to another guest CPU slice here.
+    flushNow(queue: GPUQueue, mem: Uint8Array): void {
         if (this.dirtySurfaces.size === 0) return;
 
         profiler.start("DeferredUpload:batch");

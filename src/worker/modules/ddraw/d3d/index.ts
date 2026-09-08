@@ -1,3 +1,4 @@
+import { drawVertexBuffer } from "./vertex-buffer-draw";
 /**
  * D3D Module - Entry Point
  *
@@ -54,6 +55,14 @@ export function registerFastPathD3DFunctions(dispatcher: any, context: DDrawCont
     }
 
     const resourceProvider = context.resourceProvider;
+    const lookupVB = (address: number) => resourceProvider.getComObjectByAddress(address) as
+        import("../com-objects").Direct3DVertexBufferObject | null;
+    for (const [name, indexed] of [["IDirect3DDevice7_DrawPrimitiveVB", false],
+        ["IDirect3DDevice7_DrawIndexedPrimitiveVB", true]] as const) {
+        dispatcher.registerFastPath("ddraw", name,
+            (cpu: any, mem: Uint8Array, _mem32: Uint32Array, view: DataView) =>
+                drawVertexBuffer(view, cpu.reg32[4], mem, indexed, lookupVB, sharedDrawHandler));
+    }
 
     // Device object cache: getComObjectByAddress is a Map lookup called 600K+/frame.
     // The device thisPtr is stable for the entire game session — cache it once.

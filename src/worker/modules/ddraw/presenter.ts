@@ -302,7 +302,7 @@ export class DDrawPresenter implements RenderActive {
                         }
                         if (this.counters.frames < 10) Logger.log(LogCategory.DDRAW, `drawFrame: before flushAll frame=${this.counters.frames}`);
                         const _fa = performance.now();
-                        await ddrawModule.context.deferredUploadManager.flushAll(queue, mem);
+                        ddrawModule.context.deferredUploadManager.flushNow(queue, mem);
                         _pdFlushAll += performance.now() - _fa;
                         if (this.counters.frames < 10) Logger.log(LogCategory.DDRAW, `drawFrame: after flushAll frame=${this.counters.frames}`);
                     }

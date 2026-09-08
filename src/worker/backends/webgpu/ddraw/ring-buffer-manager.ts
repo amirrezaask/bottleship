@@ -24,7 +24,12 @@ import { FfpStagesState, MAX_FFP_TEX_MATRICES } from "./ffp-stages";
  * Manages GPU ring buffers for vertex, index, and uniform data.
  * Uses triple-buffering to avoid race conditions between CPU writes and GPU reads.
  */
+import { BufferUploads } from "./buffer-uploads";
 export class RingBufferManager {
+    private vertexUploads = new BufferUploads<GPUBuffer>((buffer, offset, bytes) =>
+        this.queue.writeBuffer(buffer, offset, bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength));
+    private indexUploads = new BufferUploads<GPUBuffer>((buffer, offset, bytes) =>
+        this.queue.writeBuffer(buffer, offset, bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength));
     private device: GPUDevice;
     private queue: GPUQueue;
 
@@ -241,6 +246,8 @@ export class RingBufferManager {
      * Flush CPU-side uniform data to GPU
      */
     flushUniforms(): void {
+        this.vertexUploads.flush();
+        this.indexUploads.flush();
         const offset = this.uniformRingOffsets[this.currentFrameIndex];
         const dirtyOffset = this.uniformDirtyOffsets[this.currentFrameIndex];
 
@@ -714,13 +721,7 @@ export class RingBufferManager {
             return { buffer, offset: 0, overflow: true };
         }
 
-        this.queue.writeBuffer(
-            buffer,
-            offset,
-            data.buffer as ArrayBuffer,
-            data.byteOffset,
-            data.byteLength
-        );
+        this.vertexUploads.append(buffer, offset, data);
         this.vertexRingOffsets[this.currentFrameIndex] = offset + alignedSize;
 
         return { buffer, offset };
@@ -759,6 +760,7 @@ export class RingBufferManager {
             return { buffer, offset: 0, overflow: true };
         }
 
+        this.vertexUploads.flush();
         // Copy directly from GPU buffer to ring buffer (no CPU round-trip)
         encoder.copyBufferToBuffer(srcBuffer, srcOffset, buffer, dstOffset, size);
         this.vertexRingOffsets[this.currentFrameIndex] = dstOffset + alignedSize;
@@ -793,13 +795,7 @@ export class RingBufferManager {
             return { buffer, offset: 0, overflow: true };
         }
 
-        this.queue.writeBuffer(
-            buffer,
-            offset,
-            data.buffer as ArrayBuffer,
-            data.byteOffset,
-            data.byteLength
-        );
+        this.indexUploads.append(buffer, offset, data);
         this.indexRingOffsets[this.currentFrameIndex] = offset + alignedSize;
 
         return { buffer, offset };

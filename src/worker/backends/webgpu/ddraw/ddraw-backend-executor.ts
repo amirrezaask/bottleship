@@ -1,3 +1,4 @@
+import { indexedVertexRange } from "./indexed-vertices";
 /**
  * DirectDraw WebGPU Backend Executor
  *
@@ -2568,9 +2569,7 @@ export class DDrawWebGPUExecutor {
 
         const packedStride = computeFvfStride(vertexType);
         const stride = sourceStride && sourceStride > 0 ? Math.max(sourceStride, packedStride) : packedStride;
-        // Disabled for now: D3D8 MinIndex rebasing can regress geometry on some titles.
-        // Keep legacy behavior (no index rebasing) until we have per-game-safe criteria.
-        const requestedIndexBase = 0;
+        // Ignore caller MinIndex hints; derive a safe range from the actual index data.
 
         // D3D7 DrawIndexedPrimitive ABI uses WORD* indices, so uint16 is the default.
         // Callers that know the real index width (d3d8 with a declared INDEX32 buffer)
@@ -2597,62 +2596,15 @@ export class DDrawWebGPUExecutor {
                 return;
             }
         }
-        // Scan index array to find the actual maximum vertex index referenced.
-        // DrawIndexedPrimitiveVB passes the entire VB capacity as vCount, but indices
-        // typically reference only a small subset. Without this, we convert/upload ALL
-        // vCount vertices (e.g. 65536) when indices may only reference ~500, causing
-        // 100x+ overallocation and ring buffer overflow.
-        
-        let maxRawIdx = 0;
-        let maxRebasedIdx = 0;
-        let rebaseValid = requestedIndexBase > 0 && requestedIndexBase < vCount;
-        if (iCount > 0 && isValidAddress(memory, indicesAddr, indexDataSize)) {
-            // memory is a Uint8Array view into WASM linear memory with
-            // byteOffset ~9.5MB. Must add memory.byteOffset when constructing
-            // TypedArray views from memory.buffer.
-            const baseOff = memory.byteOffset + indicesAddr;
-            if (isUint32Indices) {
-                // Use DataView to avoid alignment issues (indicesAddr may not be 4-aligned)
-                const dv = new DataView(memory.buffer, baseOff, iCount * 4);
-                for (let i = 0; i < iCount; i++) {
-                    const rawIdx = dv.getUint32(i * 4, true);
-                    if (rawIdx > maxRawIdx) maxRawIdx = rawIdx;
-                    if (rebaseValid) {
-                        if (rawIdx < requestedIndexBase || rawIdx >= vCount) {
-                            rebaseValid = false;
-                        } else {
-                            const rebased = rawIdx - requestedIndexBase;
-                            if (rebased > maxRebasedIdx) maxRebasedIdx = rebased;
-                        }
-                    }
-                }
-            } else {
-                const dv = new DataView(memory.buffer, baseOff, iCount * 2);
-                for (let i = 0; i < iCount; i++) {
-                    const rawIdx = dv.getUint16(i * 2, true);
-                    if (rawIdx > maxRawIdx) maxRawIdx = rawIdx;
-                    if (rebaseValid) {
-                        if (rawIdx < requestedIndexBase || rawIdx >= vCount) {
-                            rebaseValid = false;
-                        } else {
-                            const rebased = rawIdx - requestedIndexBase;
-                            if (rebased > maxRebasedIdx) maxRebasedIdx = rebased;
-                        }
-                    }
-                }
-            }
-        }
-        const appliedIndexBase = rebaseValid ? requestedIndexBase : 0;
-        const sourceVerticesAddr = appliedIndexBase > 0
-            ? verticesAddr + appliedIndexBase * stride
-            : verticesAddr;
-        const availableVertexCount = appliedIndexBase > 0
-            ? (vCount - appliedIndexBase)
-            : vCount;
-        const effectiveMaxIdx = appliedIndexBase > 0 ? maxRebasedIdx : maxRawIdx;
-        const effectiveVCount = iCount > 0
-            ? Math.min(availableVertexCount, effectiveMaxIdx + 1)
-            : availableVertexCount;
+        // A draw referencing vertices 15000..15003 needs four converted vertices,
+        // not the entire 15004-vertex prefix. Existing index marshaling subtracts
+        // appliedIndexBase for both index widths and triangle-fan expansion.
+        const range = indexedVertexRange(
+            new DataView(memory.buffer, memory.byteOffset + indicesAddr, indexDataSize),
+            iCount, isUint32Indices, vCount);
+        const appliedIndexBase = range.base;
+        const sourceVerticesAddr = verticesAddr + appliedIndexBase * stride;
+        const effectiveVCount = range.count;
         const effectiveVertexBytes = effectiveVCount * OUTPUT_VERTEX_BYTES;
 
         const requiredUniformBytes = this.ringBufferManager.getUniformAlignment();
@@ -4927,7 +4879,7 @@ export class DDrawWebGPUExecutor {
                 this.scratchBufferSize
             );
         }
-        return this.scratchBuffer;
+        return this.scratchBuffer.subarray(0, requiredSize);
     }
 
 }

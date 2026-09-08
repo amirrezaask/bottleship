@@ -32,9 +32,10 @@ const warnedFVFs = new Set<number>();
 // One-off diagnostic log per FVF (fvf + posType + stride + first 1–2 verts) for "tunnel" debugging
 const diagnosticLoggedFVFs = new Set<number>();
 
-// Threshold for using GPU compute vs CPU fallback
-// Lowered from 256 to 64 to reduce ring buffer pressure for high-draw-count games (Sea Dogs)
-export const GPU_VERTEX_THRESHOLD = 64;
+// Small conversions cost less on CPU than allocating three GPU buffers,
+// uploading input and breaking the render pass for a compute dispatch.
+// CPU uploads are batched; retain compute for genuinely large vertex ranges.
+export const GPU_VERTEX_THRESHOLD = 4096;
 
 // Output vertex format: 64 bytes (16 x u32): pos(4) + normal(3) + diffuse(1) + specular(1) + uv0(2) + uv1(2) + uv2(2) + padding(1)
 export const OUTPUT_VERTEX_BYTES = 64;
