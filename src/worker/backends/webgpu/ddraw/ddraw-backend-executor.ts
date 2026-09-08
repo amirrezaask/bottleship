@@ -1,4 +1,4 @@
-import { indexedVertexRange } from "./indexed-vertices";
+import { IndexedVertexGather, indexedVertexRange } from "./indexed-vertices";
 /**
  * DirectDraw WebGPU Backend Executor
  *
@@ -354,6 +354,7 @@ export class DDrawWebGPUExecutor {
     // Scratch buffer for vertex/index conversion
     private scratchBuffer: Uint8Array | null = null;
     private scratchBufferSize = 0;
+    private readonly indexedVertexGather = new IndexedVertexGather();
     private scratchF32: Float32Array | null = null;
     private scratchDataView: DataView | null = null;
 
@@ -2602,9 +2603,50 @@ export class DDrawWebGPUExecutor {
         const range = indexedVertexRange(
             new DataView(memory.buffer, memory.byteOffset + indicesAddr, indexDataSize),
             iCount, isUint32Indices, vCount);
-        const appliedIndexBase = range.base;
-        const sourceVerticesAddr = verticesAddr + appliedIndexBase * stride;
-        const effectiveVCount = range.count;
+        let appliedIndexBase = range.base;
+        const guestMemory = memory;
+        const guestVerticesAddr = verticesAddr + appliedIndexBase * stride;
+        let sourceVerticesAddr = guestVerticesAddr;
+        let effectiveVCount = range.count;
+        // Preserve the conversion path: CPU/GPU float handling can differ.
+        const useGpuVertexConversion = effectiveVCount >= gpuVertexThreshold;
+        // Validate guest addresses before switching to host scratch offsets.
+        const vertexRange = effectiveVCount * stride;
+        if (!isValidAddress(memory, sourceVerticesAddr, vertexRange)) {
+            this.renderStats.skipBadRange++;
+            Logger.warn(
+                LogCategory.SYSTEM,
+                `DDrawWebGPUExecutor: Invalid vertex range 0x${sourceVerticesAddr.toString(16)}+${vertexRange}`
+            );
+            return;
+        }
+        if (effectiveVCount >= GPU_VERTEX_THRESHOLD) {
+            profiler.increment("IndexedVertex.span", "draws");
+            profiler.increment("IndexedVertex.span", "sourceBytes", effectiveVCount * stride);
+            profiler.increment("IndexedVertex.span", "indexVertices", iCount);
+            profiler.increment("IndexedVertex.span", "spanVertices", effectiveVCount);
+            if (effectiveVCount > iCount * 4) {
+                profiler.increment("IndexedVertex.span", "sparseDraws");
+                profiler.increment("IndexedVertex.span", "sparseSourceBytes", effectiveVCount * stride);
+                profiler.increment("IndexedVertex.span", "gatherBytes", iCount * stride);
+            }
+        }
+        // Sparse draws otherwise upload and convert the entire min..max span.
+        // Keep the original path for dense and blended draws. Sequential gathered
+        // indices preserve vertex order, including duplicate strip/fan vertices.
+        if (!blendActive && effectiveVCount >= GPU_VERTEX_THRESHOLD && effectiveVCount > iCount * 4) {
+            const gathered = this.indexedVertexGather.gather(
+                memory, verticesAddr, vCount, stride, indicesAddr, iCount, isUint32Indices);
+            if (gathered) {
+                profiler.increment("IndexedVertex.gather", "draws");
+                profiler.increment("IndexedVertex.gather", "sourceBytes", iCount * stride);
+                memory = gathered.memory;
+                indicesAddr = gathered.indicesAddr;
+                appliedIndexBase = 0;
+                sourceVerticesAddr = 0;
+                effectiveVCount = iCount;
+            }
+        }
         const effectiveVertexBytes = effectiveVCount * OUTPUT_VERTEX_BYTES;
 
         const requiredUniformBytes = this.ringBufferManager.getUniformAlignment();
@@ -2618,11 +2660,11 @@ export class DDrawWebGPUExecutor {
         }
 
         // Ensure space — only reserve ring-buffer vertex bytes for CPU-path draws.
-        // Draws with effectiveVCount >= GPU_VERTEX_THRESHOLD use the GPU compute path and
+        // Draws selected for GPU conversion use the compute path and
         // land in globalVertexBuffer (VertexConverter), NOT the ring buffer.
         // Passing vertex bytes for GPU-path draws causes false overflow detection:
         // the ring buffer would flush and stall even though no ring-buffer space is needed.
-        const ringVertexBytes = effectiveVCount >= gpuVertexThreshold ? 0 : effectiveVertexBytes;
+        const ringVertexBytes = useGpuVertexConversion ? 0 : effectiveVertexBytes;
         const storageBytes = megaBatchEnabled ? DEFAULT_STORAGE_BUFFER_CONFIG.slotSize : 0;
         this.ringBufferManager.ensureSpaceForDraw(ringVertexBytes, finalIndexSize, requiredUniformBytes, () => {
             this.renderStats.midFrameFlush++;
@@ -2656,7 +2698,7 @@ export class DDrawWebGPUExecutor {
             texMatrices,
             lighting
         );
-        maybeClampContainedUv(this, prepareResult, memory, sourceVerticesAddr, effectiveVCount, stride, vertexType);
+        maybeClampContainedUv(this, prepareResult, guestMemory, guestVerticesAddr, range.count, stride, vertexType);
         drawCostProfiler.add(DC.prepare, _tPrep);
 
         if (!target.gpuTextureView) {
@@ -2669,17 +2711,6 @@ export class DDrawWebGPUExecutor {
             return;
         }
 
-        const vertexRange = effectiveVCount * stride;
-        if (!isValidAddress(memory, sourceVerticesAddr, vertexRange)) {
-            this.renderStats.skipBadRange++;
-            Logger.warn(
-                LogCategory.SYSTEM,
-                `DDrawWebGPUExecutor: Invalid vertex range 0x${sourceVerticesAddr.toString(16)}+${vertexRange}`
-            );
-
-            return;
-        }
-
         // Convert vertices - use GPU path for large batches
         // Use effectiveVCount (clamped by max index) to avoid converting unreferenced vertices.
         const safeViewport = sanitizeViewport(viewport, target.width, target.height);
@@ -2688,7 +2719,7 @@ export class DDrawWebGPUExecutor {
         let convertedData: Uint8Array | null = null;
         let gpuConversionResult: GpuVertexConversionResult | null = null;
 
-        if (effectiveVCount >= gpuVertexThreshold) {
+        if (useGpuVertexConversion) {
             this.ensureGpuVertexConversionBudget(effectiveVCount * OUTPUT_VERTEX_BYTES);
             // GPU path requires ending current render pass
             if (this.currentRenderPass) {

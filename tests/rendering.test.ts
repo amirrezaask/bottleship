@@ -1,7 +1,93 @@
 import { expect, it } from 'bun:test';
 import { BufferUploads } from '../src/worker/backends/webgpu/ddraw/buffer-uploads';
-import { indexedVertexRange } from '../src/worker/backends/webgpu/ddraw/indexed-vertices';
+import { IndexedVertexGather, indexedVertexRange } from '../src/worker/backends/webgpu/ddraw/indexed-vertices';
 import { drawVertexBuffer } from '../src/worker/modules/ddraw/d3d/vertex-buffer-draw';
+import { VertexConverter } from '../src/worker/backends/webgpu/ddraw/compute/vertex-converter';
+
+it('resolves a growth-aware guest proxy per draw without per-byte traps', () => {
+  let live = new Uint8Array(128);
+  let numericReads = 0;
+  const proxy = new Proxy(live, {
+    get(_target, key) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) numericReads++;
+      return Reflect.get(live, key, live);
+    },
+  });
+  const gather = new IndexedVertexGather();
+  const read = () => gather.gather(proxy, 16, 4, 4, 0, 1, false)!.memory[0];
+  live[16] = 42;
+  expect(read()).toBe(42);
+  live = new Uint8Array(256); // The proxy survives memory growth; its buffer changes.
+  live[16] = 99;
+  expect(read()).toBe(99);
+  expect(numericReads).toBe(0);
+});
+
+it('converts gathered odd-length WORD draws byte-for-byte like the original vertices', () => {
+  Object.assign(globalThis, { GPUShaderStage: { VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 } });
+  const converter = new VertexConverter({ limits: {}, createBindGroupLayout: () => ({}) } as unknown as GPUDevice, {} as GPUQueue);
+  const memory = new Uint8Array(1024);
+  const source = new DataView(memory.buffer);
+  const order = [4, 20, 4];
+  const stride = 32;
+  for (const index of order) {
+    const base = 16 + index * stride;
+    [index, index + 1, index + 2, 1, 0, 0, 0.25, 0.75].forEach((v, i) => source.setFloat32(base + i * 4, v, true));
+  }
+  order.forEach((index, i) => source.setUint16(900 + i * 2, index, true));
+  const gathered = new IndexedVertexGather().gather(memory, 16, 24, stride, 900, 3, false)!;
+  expect(gathered.memory.byteLength % 4).toBe(0);
+  const actual = converter.convertSync(gathered.memory, 0, 3, 0x112);
+  order.forEach((index, i) => {
+    const expected = converter.convertSync(memory, 16 + index * stride, 1, 0x112);
+    expect(actual.slice(i * 64, (i + 1) * 64)).toEqual(expected.slice(0, 64));
+  });
+  // Alternate guest and gathered memory to exercise the converter's view cache.
+  expect(converter.convertSync(gathered.memory, 0, 3, 0x112)).toEqual(actual);
+});
+
+it.each([false, true])('gathers sparse vertices without changing indexed topology (wide=%s)', (wide) => {
+  // Guest subviews and odd addresses must work; preserve padding and attribute bits.
+  const memory = new Uint8Array(new ArrayBuffer(1500000), 1);
+  const verticesAddr = 7;
+  const stride = 13;
+  const original = [700, 4000, 4000, 99000, 700];
+  const values = wide ? original : original.map(n => n === 99000 ? 49000 : n);
+  const indicesAddr = 1300001;
+  for (const index of values)
+    for (let byte = 0; byte < stride; byte++) memory[verticesAddr + index * stride + byte] = index + byte;
+  const indices = new DataView(memory.buffer, memory.byteOffset + indicesAddr);
+  values.forEach((n, i) => wide ? indices.setUint32(i * 4, n, true) : indices.setUint16(i * 2, n, true));
+  const gather = new IndexedVertexGather();
+  const result = gather.gather(memory, verticesAddr, 100000, stride, indicesAddr, values.length, wide)!;
+  expect(result).not.toBeNull();
+  expect(result.indicesAddr % 4).toBe(0);
+  const outputIndices = new DataView(result.memory.buffer, result.indicesAddr);
+  const remapped = values.map((_, i) => wide ? outputIndices.getUint32(i * 4, true) : outputIndices.getUint16(i * 2, true));
+  expect(remapped).toEqual([0, 1, 2, 3, 4]);
+  const oldVertex = (i: number) => [...memory.slice(verticesAddr + values[i] * stride, verticesAddr + (values[i] + 1) * stride)];
+  const newVertex = (i: number) => [...result.memory.slice(remapped[i] * stride, (remapped[i] + 1) * stride)];
+  for (const topology of [[0, 1, 2, 1, 2, 3, 2, 3, 4], [0, 1, 2, 0, 2, 3, 0, 3, 4]])
+    expect(topology.map(newVertex)).toEqual(topology.map(oldVertex));
+  const storage = result.memory;
+  memory[verticesAddr + values[0] * stride] = 123;
+  expect(gather.gather(memory, verticesAddr, 100000, stride, indicesAddr, 3, wide)!.memory).toBe(storage);
+  expect(storage[0]).toBe(123); // Reuse storage but read current guest contents.
+});
+
+it.each([false, true])('leaves invalid or restart-indexed draws on the original path (wide=%s)', (wide) => {
+  const memory = new Uint8Array(128);
+  const indices = new DataView(memory.buffer);
+  const setIndex = (n: number) => wide ? indices.setUint32(0, n, true) : indices.setUint16(0, n, true);
+  const gather = new IndexedVertexGather();
+  setIndex(9);
+  expect(gather.gather(memory, 4, 8, 4, 0, 1, wide)).toBeNull();
+  expect(gather.gather(memory, 100, 10, 4, 0, 1, wide)).toBeNull();
+  expect(gather.gather(memory, 4, 10, 4, 127, 1, wide)).toBeNull();
+  expect(gather.gather(memory, 4, 10, 4, 0, 65536, wide)).toBeNull();
+  setIndex(wide ? 0xffffffff : 0xffff);
+  expect(gather.gather(memory, 0, 0x100000000, 1, 0, 1, wide)).toBeNull();
+});
 
 it.each([false, true])('preserves D3D7 vertex-buffer draw arguments (indexed=%s)', (indexed) => {
   const memory = new Uint8Array(128);
