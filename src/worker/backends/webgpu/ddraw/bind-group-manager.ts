@@ -6,6 +6,7 @@
 
 import { LruCache } from "../../../core/collections/lru-cache";
 import { Logger, LogCategory } from "../../../core/logger";
+import { profiler } from "../../../core/profiler";
 import { System } from "../../../core/system";
 import { DxSamplerCache } from "../shared/dx-sampler";
 import {
@@ -89,6 +90,20 @@ export class BindGroupManager {
     >();
 
     private readonly maxCacheSize: number;
+    private readonly megaBatchCache: LruCache<string, GPUBindGroup>;
+    private resourceIds = new WeakMap<object, number>();
+    private nextResourceId = 1;
+    private readonly resolvedSamplers: GPUSampler[] = [];
+
+    private resourceId(resource: object | null | undefined): number {
+        if (!resource) return 0;
+        let id = this.resourceIds.get(resource);
+        if (id === undefined) {
+            id = this.nextResourceId++;
+            this.resourceIds.set(resource, id);
+        }
+        return id;
+    }
 
     // Sampler factory/cache shared with the other DX backends (see shared/dx-sampler.ts).
     private samplers: DxSamplerCache;
@@ -96,6 +111,7 @@ export class BindGroupManager {
     constructor(device: GPUDevice, maxCacheSize = 64) {
         this.device = device;
         this.maxCacheSize = maxCacheSize;
+        this.megaBatchCache = new LruCache({ maxEntries: maxCacheSize * 8 });
         this.samplers = new DxSamplerCache(device);
     }
 
@@ -348,13 +364,7 @@ export class BindGroupManager {
         return this.device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
     }
 
-    /**
-     * Create a MegaBatch bind group.
-     * Unlike regular bind groups, MegaBatch bind groups are NOT cached because:
-     * 1. Storage buffer is bound without dynamic offset
-     * 2. Each MegaBatch may use different portions of the storage buffer
-     * 3. Storage buffer contents change frequently
-     */
+    /** Buffer writes change contents, not bindings. Cache by resource identity and range. */
     createMegaBatchBindGroup(
         storageBuffer: GPUBuffer,
         sampledMask: number,
@@ -365,6 +375,20 @@ export class BindGroupManager {
         storageSize?: number
     ): GPUBindGroup {
         const layout = this.getOrCreateMegaBatchBindGroupLayout(sampledMask);
+        let key = `${this.resourceId(layout)}:${this.resourceId(storageBuffer)}:${storageOffset}:${storageSize ?? "rest"}:${sampledMask}`;
+        for (let s = 0; s < MAX_FFP_SAMPLED_STAGES; s++) {
+            if ((sampledMask & (1 << s)) === 0) continue;
+            const view = s === 0 ? (views[0] || dummyTextureView) : views[s];
+            const sampler = this.getOrCreateStageSampler(samplers[s]);
+            this.resolvedSamplers[s] = sampler;
+            key += `:${this.resourceId(view)}:${this.resourceId(sampler)}`;
+        }
+        const cached = this.megaBatchCache.get(key);
+        if (cached) {
+            profiler.increment("MegaBatch.bindGroups", "hits");
+            return cached;
+        }
+        profiler.increment("MegaBatch.bindGroups", "misses");
 
         const entries: GPUBindGroupEntry[] = [
             {
@@ -381,15 +405,22 @@ export class BindGroupManager {
             if (!view) continue; // demoted upstream; layout mismatch is reported by validation
             const [samplerBinding, textureBinding] = STAGE_BINDINGS[s];
             entries.push(
-                { binding: samplerBinding, resource: this.getOrCreateStageSampler(samplers[s]) },
+                { binding: samplerBinding, resource: this.resolvedSamplers[s] },
                 { binding: textureBinding, resource: view }
             );
         }
 
-        return this.device.createBindGroup({ layout, entries });
+        const bindGroup = this.device.createBindGroup({ layout, entries });
+        this.megaBatchCache.set(key, bindGroup);
+        return bindGroup;
     }
 
     clearCache(): void {
+        this.megaBatchCache.clear();
+        this.bindGroupCache = new WeakMap();
+        this.resourceIds = new WeakMap();
+        this.nextResourceId = 1;
+        this.resolvedSamplers.length = 0;
         this.bindGroupLayoutCache.clear();
         this.megaBatchLayoutCache.clear();
         this.samplers.clear();
