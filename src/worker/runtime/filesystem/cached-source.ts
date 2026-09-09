@@ -33,24 +33,23 @@ const DEFAULT_BLOCK_SIZE = 256 * 1024;
 
 /** Minimum resident budget. Small bundles keep this floor; whole small entries
  *  are already cached one layer up (vfs romCache). */
-export const MIN_CACHE_BYTES = 64 * 1024 * 1024;
+export const MIN_CACHE_BYTES = 16 * 1024 * 1024;
 
 /** Upper cap so a multi-GB no-copy blob does not monopolize worker RAM. */
-export const MAX_CACHE_BYTES = 256 * 1024 * 1024;
-
-/** Fraction of the archive size used to size the block-cache budget. */
-export const CACHE_BUDGET_RATIO = 0.15;
+export const MAX_CACHE_BYTES = 64 * 1024 * 1024;
 
 const DEFAULT_MAX_BYTES = MIN_CACHE_BYTES;
 
-/**
- * Scale the LRU byte budget with archive size: large no-copy blobs need more
- * resident blocks to avoid eviction churn on random ROM reads.
- */
-export function computeAdaptiveMaxBytes(sourceSize: number): number {
-    if (sourceSize <= 0) return MIN_CACHE_BYTES;
-    const scaled = Math.floor(sourceSize * CACHE_BUDGET_RATIO);
-    return Math.max(MIN_CACHE_BYTES, Math.min(MAX_CACHE_BYTES, scaled));
+/** Fixed working-set budget, independent of archive size. Kept under the former
+ * name for callers using this API; source size no longer increases residency. */
+export function computeAdaptiveMaxBytes(_sourceSize: number): number {
+    return MIN_CACHE_BYTES;
+}
+
+function boundedOption(value: number | undefined, fallback: number, min: number, max: number): number {
+    if (value === undefined) return fallback;
+    if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error("Invalid cache budget");
+    return value;
 }
 
 export interface CachedSourceOptions {
@@ -106,6 +105,7 @@ export class CachedSource implements ZipSource {
     /** blockIndex order, oldest at [0], most-recently-used at the end. */
     private readonly lru: number[] = [];
     private residentBytes = 0;
+    private closed = false;
 
     /** In-flight fault-ins, coalesced so concurrent reads share one source call. */
     private readonly inflight = new Map<number, Promise<Uint8Array>>();
@@ -124,11 +124,12 @@ export class CachedSource implements ZipSource {
     constructor(inner: ZipSource, opts: CachedSourceOptions = {}) {
         this.inner = inner;
         this.size = inner.size;
-        this.blockSize = Math.max(1, Math.floor(opts.blockSize ?? DEFAULT_BLOCK_SIZE));
-        this.maxBytes = Math.max(this.blockSize, Math.floor(opts.maxBytes ?? DEFAULT_MAX_BYTES));
-        this.syncReadahead = Math.max(1, Math.floor(opts.syncReadaheadBlocks ?? 1));
-        this.prefetchAhead = Math.max(0, Math.floor(opts.prefetchAheadBlocks ?? 0));
-        this.prefetchDepthRuns = Math.max(1, Math.floor(opts.prefetchDepthRuns ?? 1));
+        if (!Number.isSafeInteger(inner.size) || inner.size < 0) throw new Error("Invalid source size");
+        this.blockSize = boundedOption(opts.blockSize, DEFAULT_BLOCK_SIZE, 1, 2 * 1024 * 1024);
+        this.maxBytes = boundedOption(opts.maxBytes, DEFAULT_MAX_BYTES, this.blockSize, MAX_CACHE_BYTES);
+        this.syncReadahead = boundedOption(opts.syncReadaheadBlocks, 1, 1, 32);
+        this.prefetchAhead = boundedOption(opts.prefetchAheadBlocks, 0, 0, 32);
+        this.prefetchDepthRuns = boundedOption(opts.prefetchDepthRuns, 1, 1, 4);
         this.name = opts.name ?? "cached";
     }
 
@@ -150,9 +151,9 @@ export class CachedSource implements ZipSource {
 
         const innerSync = this.inner.readRangeSync?.bind(this.inner);
 
-        // Resolve every covering block, holding direct references so assembly is
-        // immune to eviction that a later insert may trigger.
-        const datas: Uint8Array[] = [];
+        // Copy each block immediately. Retaining all covering blocks until the
+        // end would pin an additional whole-read copy outside the LRU budget.
+        const out = new Uint8Array(e - s);
         for (let b = first; b <= last; b++) {
             let data = this.blocks.get(b);
             if (data) {
@@ -163,12 +164,7 @@ export class CachedSource implements ZipSource {
                 if (!buf) { this._syncMisses++; return null; }
                 data = buf;
             }
-            datas.push(data);
-        }
-
-        const out = new Uint8Array(e - s);
-        for (let b = first; b <= last; b++) {
-            this.copyBlockInto(out, s, e, b, datas[b - first]);
+            this.copyBlockInto(out, s, e, b, data);
         }
         this._syncHits++;
         // Advance the read cursor and top the prefetch pipeline back up — done on
@@ -188,26 +184,24 @@ export class CachedSource implements ZipSource {
         const first = Math.floor(s / this.blockSize);
         const last = Math.floor((e - 1) / this.blockSize);
 
-        // Hold direct references to every covering block's bytes so assembly is
-        // immune to eviction that may happen as later blocks are inserted.
-        const datas: Uint8Array[] = [];
-        for (let b = first; b <= last; b++) {
-            datas.push(await this.ensureBlock(b));
-        }
-
         const out = new Uint8Array(e - s);
         for (let b = first; b <= last; b++) {
-            this.copyBlockInto(out, s, e, b, datas[b - first]);
+            const data = await this.ensureBlock(b);
+            if (this.closed) throw new Error("CachedSource is closed");
+            this.copyBlockInto(out, s, e, b, data);
         }
         return out;
     }
 
     /** Best-effort passthrough so wrapping a closable source (SAH) still cleans up. */
     close(): void {
+        if (this.closed) return;
+        this.closed = true;
         const inner = this.inner as ZipSource & { close?: () => void };
         if (typeof inner.close === "function") {
             try { inner.close(); } catch { /* best-effort */ }
         }
+        this.inflight.clear();
         this.blocks.clear();
         this.lru.length = 0;
         this.residentBytes = 0;
@@ -228,6 +222,8 @@ export class CachedSource implements ZipSource {
     // ---- internals ----
 
     private clamp(start: number, end: number): [number, number] {
+        if (this.closed) throw new Error("CachedSource is closed");
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) throw new Error("Invalid cache range");
         const s = Math.max(0, Math.min(Math.floor(start), this.size));
         const e = Math.max(s, Math.min(Math.floor(end), this.size));
         return [s, e];
@@ -319,7 +315,7 @@ export class CachedSource implements ZipSource {
      *  than speculatively pulling the rest of a multi-GB bundle. Errors are
      *  swallowed — the sync path re-faults on demand. */
     private pumpPrefetch(): void {
-        if (!this.prefetchAhead || this.size === 0) return;
+        if (this.closed || !this.prefetchAhead || this.size === 0) return;
         const lastBlock = Math.floor((this.size - 1) / this.blockSize);
         const windowEnd = this.readCursorBlock + this.prefetchAhead * this.prefetchDepthRuns;
 
@@ -383,6 +379,11 @@ export class CachedSource implements ZipSource {
     }
 
     private insert(b: number, data: Uint8Array): void {
+        if (this.closed) return;
+        const [start, end] = this.blockBounds(b);
+        if (data.byteLength !== end - start) throw new Error("Incomplete cache block");
+        // Views from an inner source must not pin a larger response after eviction.
+        if (data.buffer.byteLength !== data.byteLength) data = data.slice();
         if (this.blocks.has(b)) {
             // Raced with another fault-in; keep the existing entry, refresh LRU.
             this.touch(b);

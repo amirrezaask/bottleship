@@ -43,8 +43,8 @@ export interface VfsFindHandle {
 export class VirtualFileSystem {
     private romArchive: ZipArchive | null = null;
     private romPrefix = "assets";
-    private readonly ROM_CACHE_MAX_BYTES = 256 * 1024 * 1024; // 256MB LRU cache
-    private readonly MAX_CACHE_ENTRY_SIZE = 64 * 1024 * 1024; // 64MB per file
+    private readonly ROM_CACHE_MAX_BYTES = 64 * 1024 * 1024; // Whole small-file cache
+    private readonly MAX_CACHE_ENTRY_SIZE = 4 * 1024 * 1024; // Larger assets always use ranges
     private romIndex: Map<string, ZipEntry> = new Map();
     /**
      * All directory paths present in the ROM (lowercased, "/"-separated, no trailing
@@ -1349,7 +1349,7 @@ export class VirtualFileSystem {
         const entry = this.romIndex.get(rel);
         if (!entry) return new Uint8Array();
 
-        const cached = this.romCache.get(rel);
+        const cached = this.romPinned.get(rel) ?? this.romCache.get(rel);
         let data = cached;
         if (!data) {
             // For uncompressed (STORED) large entries we read only requested range.
@@ -1505,11 +1505,13 @@ export class VirtualFileSystem {
 
         Logger.log(LogCategory.SYSTEM, `VFS: starting progressive prefetch of ${entries.length} files`);
 
+        let fetchedBytes = 0;
         for (const [rel, entry] of entries) {
-            if (signal?.aborted) return;
+            if (signal?.aborted || fetchedBytes + entry.uncompressedSize > this.ROM_CACHE_MAX_BYTES) return;
             if (this.romCache.has(rel)) continue;
             try {
                 await this._prefetchEntry(rel, entry);
+                fetchedBytes += entry.uncompressedSize;
             } catch (_) { /* best-effort */ }
             // Yield event loop so game I/O gets priority
             await new Promise<void>(r => setTimeout(r, 0));
@@ -1593,11 +1595,11 @@ export class VirtualFileSystem {
     }
 
     private alignDown(value: number, align: number): number {
-        return value & ~(align - 1);
+        return Math.floor(value / align) * align;
     }
 
     private alignUp(value: number, align: number): number {
-        return (value + (align - 1)) & ~(align - 1);
+        return Math.ceil(value / align) * align;
     }
 }
 

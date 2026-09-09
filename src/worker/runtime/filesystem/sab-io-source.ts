@@ -32,6 +32,7 @@ export class SabIoSource implements ZipSource {
     private readonly data: Uint8Array;
 
     // Guest-side interplay counters (mirror CachedSource's for diagnostics).
+    private closed = false;
     private _requests = 0;
     private _waits = 0;
     private _timeouts = 0;
@@ -72,7 +73,7 @@ export class SabIoSource implements ZipSource {
             // Dev-only I/O tuning knob (prefetch window / concurrency / cache MB).
             const tune = (globalThis as unknown as { __wgbIoTune?: unknown }).__wgbIoTune;
             worker.postMessage({ type: "init", sab, url, tune });
-        });
+        }).catch(error => { worker.terminate(); throw error; });
 
         // Keep forwarding I/O-worker logs after init.
         worker.onmessage = (e: MessageEvent) => {
@@ -83,6 +84,8 @@ export class SabIoSource implements ZipSource {
     }
 
     readRangeSync(start: number, end: number): Uint8Array {
+        if (this.closed) throw new Error("SabIoSource is closed");
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) throw new Error("Invalid SAB range");
         const s = Math.max(0, Math.min(Math.floor(start), this.size));
         const e = Math.max(s, Math.min(Math.floor(end), this.size));
         if (e <= s) return new Uint8Array(0);
@@ -126,7 +129,7 @@ export class SabIoSource implements ZipSource {
             const r = Atomics.wait(this.ctl, CTL_STATE, ST_REQ, WAIT_TIMEOUT_MS);
             if (r === "timed-out" && Atomics.load(this.ctl, CTL_STATE) === ST_REQ) {
                 this._timeouts++;
-                Atomics.store(this.ctl, CTL_STATE, ST_IDLE);
+                this.close();
                 throw new Error(`SabIoSource: read timed out (off=${off} len=${len})`);
             }
         }
@@ -137,6 +140,10 @@ export class SabIoSource implements ZipSource {
             throw new Error(`SabIoSource: I/O worker read error (off=${off} len=${len})`);
         }
         const rlen = Atomics.load(this.ctl, CTL_RESP_LEN);
+        if (st !== ST_DONE || rlen !== len) {
+            this.close();
+            throw new Error("Invalid SAB range response");
+        }
         // Copy out of the shared arena before releasing the slot (the I/O worker
         // reuses it for the next request).
         const buf = this.data.slice(0, rlen);
@@ -161,6 +168,7 @@ export class SabIoSource implements ZipSource {
     }
 
     close(): void {
+        this.closed = true;
         try { this.worker.terminate(); } catch { /* best-effort */ }
     }
 }

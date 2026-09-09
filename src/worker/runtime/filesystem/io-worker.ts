@@ -30,7 +30,7 @@ import {
 let CHUNK = 2 << 20;
 /** Resident chunk-cache budget in the I/O worker (LRU). Sized to comfortably hold
  *  a boot working set plus the prefetch window without thrash. Tunable via init. */
-let MAX_CACHE_BYTES = 256 * 1024 * 1024;
+let MAX_CACHE_BYTES = 64 * 1024 * 1024;
 /** How far ahead of the last request offset to keep prefetched, in chunks. 0 =
  *  off (pure parallel cold fetch). Kept SMALL: a boot streams most of the bundle
  *  in SCATTERED order (measured — most requests jump to a new file), so a wide
@@ -52,6 +52,20 @@ const chunks = new Map<number, Uint8Array>();
 const inflight = new Map<number, Promise<Uint8Array>>();
 const lru: number[] = [];
 let residentBytes = 0;
+let activeFetches = 0;
+const admission: Array<() => void> = [];
+let serving = false;
+
+async function readChunk(src: ZipSource, start: number, end: number): Promise<Uint8Array> {
+    if (activeFetches >= MAX_INFLIGHT) await new Promise<void>(resolve => admission.push(resolve));
+    else activeFetches++;
+    try { return await src.readRange(start, end); }
+    finally {
+        const next = admission.shift();
+        if (next) next();
+        else activeFetches--;
+    }
+}
 
 let netFetches = 0;   // cold, on the guest's critical path
 let prefetches = 0;   // speculative, ahead of the cursor
@@ -83,7 +97,7 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
     const start = ci * CHUNK;
     const end = Math.min(src.size, start + CHUNK);
     if (prefetch) prefetches++; else netFetches++;
-    const p = src.readRange(start, end)
+    const p = readChunk(src, start, end)
         .then((buf) => {
             if (!chunks.has(ci)) {
                 chunks.set(ci, buf);
@@ -94,7 +108,7 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
                 touch(ci);
             }
             inflight.delete(ci);
-            return chunks.get(ci)!;
+            return buf;
         })
         .catch((err) => { inflight.delete(ci); throw err; });
     inflight.set(ci, p);
@@ -102,9 +116,12 @@ function getChunk(ci: number, prefetch: boolean): Promise<Uint8Array> {
 }
 
 /** Assemble [off, off+len) from covering chunks, fetching missing ones in PARALLEL. */
-async function serve(off: number, len: number): Promise<Uint8Array> {
+async function serve(off: number, len: number, out: Uint8Array): Promise<number> {
     const src = source!;
+    if (!Number.isSafeInteger(off) || off < 0 || off > src.size ||
+        !Number.isSafeInteger(len) || len < 0 || len > DATA_BYTES) throw new Error("Invalid WGB I/O request");
     const e = Math.min(src.size, off + len);
+    if (off === e) return 0;
     const first = Math.floor(off / CHUNK);
     const last = Math.floor((e - 1) / CHUNK);
     const allResident = (() => { for (let c = first; c <= last; c++) if (!chunks.has(c)) return false; return true; })();
@@ -114,7 +131,6 @@ async function serve(off: number, len: number): Promise<Uint8Array> {
     for (let c = first; c <= last; c++) need.push(getChunk(c, false));
     const parts = await Promise.all(need);
 
-    const out = new Uint8Array(e - off);
     for (let c = first; c <= last; c++) {
         const b = parts[c - first];
         const cs = c * CHUNK;
@@ -122,7 +138,7 @@ async function serve(off: number, len: number): Promise<Uint8Array> {
         const copyE = Math.min(e, cs + b.byteLength);
         if (copyE > copyS) out.set(b.subarray(copyS - cs, copyE - cs), copyS - off);
     }
-    return out;
+    return e - off;
 }
 
 /** Speculatively pull chunks ahead of the just-served range, in parallel, bounded
@@ -155,9 +171,7 @@ async function handleRequest(): Promise<void> {
     const len = m[META_REQ_LEN];
     requests++;
     try {
-        const buf = await serve(off, len);
-        const n = Math.min(buf.byteLength, DATA_BYTES);
-        d.set(buf.subarray(0, n), 0);
+        const n = await serve(off, len, d);
         Atomics.store(c, CTL_RESP_LEN, n);
         Atomics.store(c, CTL_ERRNO, 0);
         publishStats();
@@ -182,10 +196,10 @@ self.onmessage = (e: MessageEvent) => {
         data = new Uint8Array(msg.sab, DATA_OFFSET_BYTES, DATA_BYTES);
         const tune = msg.tune as { prefetchChunks?: number; maxInflight?: number; cacheMB?: number; chunkKB?: number } | undefined;
         if (tune) {
-            if (typeof tune.chunkKB === "number") CHUNK = Math.max(64, tune.chunkKB | 0) * 1024;
-            if (typeof tune.prefetchChunks === "number") PREFETCH_AHEAD_CHUNKS = Math.max(0, tune.prefetchChunks | 0);
-            if (typeof tune.maxInflight === "number") MAX_INFLIGHT = Math.max(1, tune.maxInflight | 0);
-            if (typeof tune.cacheMB === "number") MAX_CACHE_BYTES = Math.max(16, tune.cacheMB | 0) * 1024 * 1024;
+            if (typeof tune.chunkKB === "number") CHUNK = Math.min(2048, Math.max(64, tune.chunkKB | 0)) * 1024;
+            if (typeof tune.prefetchChunks === "number") PREFETCH_AHEAD_CHUNKS = Math.min(8, Math.max(0, tune.prefetchChunks | 0));
+            if (typeof tune.maxInflight === "number") MAX_INFLIGHT = Math.min(6, Math.max(1, tune.maxInflight | 0));
+            if (typeof tune.cacheMB === "number") MAX_CACHE_BYTES = Math.min(64, Math.max(16, tune.cacheMB | 0)) * 1024 * 1024;
         }
         HttpRangeSource.create(msg.url)
             .then((s) => {
@@ -201,7 +215,9 @@ self.onmessage = (e: MessageEvent) => {
         // Fire-and-forget: the guest is parked on Atomics.wait; handleRequest
         // always publishes a terminal STATE + notifies, even on error, so the
         // guest can never hang on a missed wakeup.
-        void handleRequest();
+        if (serving) return;
+        serving = true;
+        void handleRequest().finally(() => { serving = false; });
         return;
     }
 };

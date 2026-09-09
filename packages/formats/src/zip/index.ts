@@ -96,9 +96,47 @@ export class BlobSource implements ZipSource {
     }
 }
 
+/** Read exactly the requested response body without buffering an unchecked server reply. */
+async function boundedRange(url: string, start: number, end: number, size?: number, signal?: AbortSignal): Promise<{ bytes: Uint8Array; size: number }> {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || (size !== undefined && end > size))
+        throw new Error("Invalid WGB range");
+    const timeout = AbortSignal.timeout(30_000);
+    const response = await fetch(url, { headers: { Range: `bytes=${start}-${end - 1}` }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");
+    const total = match ? Number(match[3]) : NaN;
+    const expected = end - start;
+    const contentLength = response.headers.get("content-length");
+    if (response.status !== 206 || !match || Number(match[1]) !== start || Number(match[2]) !== end - 1 ||
+        !Number.isSafeInteger(total) || total < end || (size !== undefined && total !== size) ||
+        (contentLength !== null && Number(contentLength) !== expected) ||
+        ![null, "identity"].includes(response.headers.get("content-encoding"))) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error("WGB server must return the exact requested byte range");
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Missing WGB range body");
+    const bytes = new Uint8Array(expected);
+    let offset = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value.byteLength > expected - offset) throw new Error("Oversized WGB range body");
+            bytes.set(value, offset);
+            offset += value.byteLength;
+        }
+        if (offset !== expected) throw new Error("Truncated WGB range body");
+        return { bytes, size: total };
+    } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+    }
+}
+
 export class HttpRangeSource implements ZipSource {
-    size: number;
-    private url: string;
+    readonly size: number;
+    private readonly url: string;
+    private readonly lifetime = new AbortController();
 
     private constructor(url: string, size: number) {
         this.url = url;
@@ -106,50 +144,17 @@ export class HttpRangeSource implements ZipSource {
     }
 
     static async create(url: string): Promise<HttpRangeSource> {
-        // Preferred path: HEAD + content-length.
-        try {
-            const head = await fetch(url, { method: "HEAD" });
-            if (head.ok) {
-                const length = head.headers.get("content-length");
-                if (length) {
-                    return new HttpRangeSource(url, Number(length));
-                }
-            }
-        } catch {
-            // Fall through to range probe.
-        }
-
-        // Fallback path: probe byte-range support and infer total size from Content-Range.
-        const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
-        if (probe.status !== 206) {
-            // Avoid buffering potentially huge response body when range is unsupported.
-            try { await probe.body?.cancel(); } catch {}
-            throw new Error(`Range requests are required for WGB loading (expected 206, got ${probe.status})`);
-        }
-        const contentRange = probe.headers.get("content-range");
-        if (!contentRange) {
-            try { await probe.body?.cancel(); } catch {}
-            throw new Error(`Missing Content-Range for ${url}`);
-        }
-        const match = contentRange.match(/\/(\d+)\s*$/);
-        if (!match) {
-            try { await probe.body?.cancel(); } catch {}
-            throw new Error(`Invalid Content-Range "${contentRange}" for ${url}`);
-        }
-        try { await probe.body?.cancel(); } catch {}
-        return new HttpRangeSource(url, Number(match[1]));
+        const probe = await boundedRange(url, 0, 1);
+        return new HttpRangeSource(url, probe.size);
     }
 
     async readRange(start: number, end: number): Promise<Uint8Array> {
-        const range = `bytes=${start}-${end - 1}`;
-        const resp = await fetch(this.url, { headers: { Range: range } });
-        if (resp.status !== 206) {
-            try { await resp.body?.cancel(); } catch {}
-            throw new Error(`Range request failed (${resp.status}) for ${this.url}`);
-        }
-        const buf = await resp.arrayBuffer();
-        return new Uint8Array(buf);
+        this.lifetime.signal.throwIfAborted();
+        if (start === end && Number.isSafeInteger(start) && start >= 0 && start <= this.size) return new Uint8Array(0);
+        return (await boundedRange(this.url, start, end, this.size, this.lifetime.signal)).bytes;
     }
+
+    close(): void { this.lifetime.abort(); }
 }
 
 /**

@@ -349,9 +349,59 @@ describe("computeAdaptiveMaxBytes", () => {
         expect(computeAdaptiveMaxBytes(100 * 1024 * 1024)).toBe(MIN_CACHE_BYTES);
     });
 
-    it("scales with archive size up to the cap", () => {
+    it("keeps the same working set for 1 GiB and 8 GiB archives", () => {
         const gb = 1024 * 1024 * 1024;
-        expect(computeAdaptiveMaxBytes(gb)).toBe(Math.floor(gb * 0.15));
-        expect(computeAdaptiveMaxBytes(2 * gb)).toBe(MAX_CACHE_BYTES);
+        expect(computeAdaptiveMaxBytes(gb)).toBe(MIN_CACHE_BYTES);
+        expect(computeAdaptiveMaxBytes(8 * gb)).toBe(MIN_CACHE_BYTES);
+    });
+});
+
+
+describe("bounded cache ownership", () => {
+    it("does not refill after close while a fault is pending", async () => {
+        const fake = new FakeSource(ramp(256));
+        let release!: () => void;
+        fake.gate = new Promise<void>(resolve => { release = resolve; });
+        const cache = new CachedSource(fake, { blockSize: 16, maxBytes: 32 });
+        const read = cache.readRange(0, 8);
+        cache.close();
+        release();
+        await expect(read).rejects.toThrow("closed");
+        expect(cache.stats().residentBytes).toBe(0);
+        expect(() => cache.readRangeSync(0, 1)).toThrow("closed");
+    });
+
+    it("copies a block view that would pin its entire source", async () => {
+        const backing = ramp(1024);
+        const cache = new CachedSource({ size: 1024, async readRange(s, e) { return backing.subarray(s, e); } }, { blockSize: 16, maxBytes: 32 });
+        await cache.readRange(0, 8);
+        backing[0] = 255;
+        expect(cache.readRangeSync(0, 1)![0]).toBe(0);
+        expect(cache.stats().residentBytes).toBe(16);
+    });
+
+    it("rejects partial blocks rather than silently filling native reads with zeroes", async () => {
+        const cache = new CachedSource({ size: 1024, async readRange() { return new Uint8Array(1); } }, { blockSize: 16 });
+        await expect(cache.readRange(0, 8)).rejects.toThrow("Incomplete");
+        expect(cache.stats().residentBytes).toBe(0);
+    });
+
+    it("serves matching seek traces on 1 GiB and 8 GiB media with the same cache peak", async () => {
+        for (const size of [2 ** 30, 8 * 2 ** 30]) {
+            const source: ZipSource = { size, async readRange(s, e) { return Uint8Array.from({length: e-s}, (_, i) => (s+i) % 251); } };
+            const cache = new CachedSource(source, { blockSize: 1024, maxBytes: 4096 });
+            for (const offset of [0, size-33, 64000, size-2000, 128000, 0]) {
+                const bytes = await cache.readRange(offset, offset+32);
+                expect([...bytes]).toEqual(Array.from({length:32}, (_, i) => (offset+i)%251));
+                expect(cache.stats().residentBytes).toBeLessThanOrEqual(4096);
+            }
+            cache.close();
+            expect(cache.stats().residentBytes).toBe(0);
+        }
+    });
+
+    it("rejects nonfinite budgets", () => {
+        const source = new FakeSource(ramp(16));
+        for (const value of [Infinity, NaN, 0, -1]) expect(() => new CachedSource(source, {maxBytes:value})).toThrow();
     });
 });
