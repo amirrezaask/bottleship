@@ -316,8 +316,8 @@ export class WgbCache {
      * ArrayBuffer size (~2GB) — e.g. the 2.5GB XIII bundle.
      *
      * Returns null when OPFS / SAH / a streaming body is unavailable; the caller must
-     * then fall back to the in-RAM download (only viable for bundles under the cap).
-     * Throws on a network error (caller treats a throw the same as a null → RAM fallback).
+     * report unavailable disk storage. URL game launches must not fall back to RAM.
+     * Throws on a network error or incomplete stream.
      */
     static async downloadToSyncSource(
         url: string,
@@ -338,7 +338,7 @@ export class WgbCache {
         }
 
         Logger.log(LogCategory.SYSTEM, `WgbCache: streaming "${key}" to OPFS (no RAM copy)`);
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal: AbortSignal.timeout(10 * 60_000) });
         if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
         const contentLength = Number(resp.headers.get("content-length") ?? "0");
         const body = resp.body;
@@ -348,17 +348,19 @@ export class WgbCache {
         }
         if (contentLength > 0 && !(await this.ensureSpaceFor(contentLength, key))) {
             Logger.warn(LogCategory.SYSTEM, `WgbCache: quota too tight to stream "${key}" to OPFS`);
+            await body.cancel().catch(() => {});
             return null;
         }
 
         const sah = await createSah.call(fileHandle);
+        const reader = body.getReader();
         try {
             sah.truncate(0);
             let pos = 0;
-            const reader = body.getReader();
             for (;;) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                if (contentLength > 0 && pos + value.byteLength > contentLength) throw new Error("WGB download exceeds declared length");
                 let w = 0;
                 while (w < value.byteLength) {
                     const n = sah.write(value.subarray(w), { at: pos + w });
@@ -368,10 +370,15 @@ export class WgbCache {
                 pos += value.byteLength;
                 onProgress(pos, contentLength);
             }
+            if (contentLength > 0 && pos !== contentLength) throw new Error("WGB download was truncated");
             sah.flush();
         } catch (e) {
             try { sah.close(); } catch { /* best-effort */ }
+            await dir.removeEntry(key).catch(() => {});
             throw e;
+        } finally {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
         }
 
         const size = sah.getSize();

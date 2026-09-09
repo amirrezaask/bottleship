@@ -288,6 +288,12 @@ export class ZipArchive {
         this.source = source;
     }
 
+    close(): void {
+        (this.source as ZipSource & { close?: () => void }).close?.();
+        this.entries.clear();
+        this.localDataOffsets.clear();
+    }
+
     getEntry(name: string): ZipEntry | undefined {
         return this.entries.get(name);
     }

@@ -249,8 +249,10 @@ export class WgbLoader {
     static async fromSource(source: ZipSource, onStage?: (label: string) => void): Promise<WgbBundle> {
         onStage?.("Reading index");
         const archive = new ZipArchive(withBlockCache(source));
-        await archive.init();
-        return this.loadFromArchive(archive, onStage);
+        try {
+            await archive.init();
+            return await this.loadFromArchive(archive, onStage);
+        } catch (error) { archive.close(); throw error; }
     }
 
     static async fromUrl(url: string): Promise<WgbBundle> {

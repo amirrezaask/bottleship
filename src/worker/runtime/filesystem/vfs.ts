@@ -42,6 +42,7 @@ export interface VfsFindHandle {
 
 export class VirtualFileSystem {
     private romArchive: ZipArchive | null = null;
+    private romGeneration = 0;
     private romPrefix = "assets";
     private readonly ROM_CACHE_MAX_BYTES = 64 * 1024 * 1024; // Whole small-file cache
     private readonly MAX_CACHE_ENTRY_SIZE = 4 * 1024 * 1024; // Larger assets always use ranges
@@ -103,6 +104,8 @@ export class VirtualFileSystem {
     }
 
     reset(): void {
+        this.romGeneration++;
+        this.romArchive?.close?.();
         this.romArchive = null;
         this.romIndex.clear();
         this.romDirs.clear();
@@ -117,6 +120,7 @@ export class VirtualFileSystem {
     }
 
     mountRom(archive: ZipArchive, romPrefix: string, index: Map<string, ZipEntry>): void {
+        this.reset();
         this.romArchive = archive;
         this.romPrefix = romPrefix.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
         
@@ -617,8 +621,8 @@ export class VirtualFileSystem {
                 if (offset >= cached.byteLength) return new Uint8Array();
                 const data = cached.subarray(offset, end);
                 handle.position += data.length;
-                handle.buffer = cached;
-                handle.bufferOffset = 0;
+                // The shared LRU owns this file. An open handle must not keep
+                // the complete buffer alive after cache eviction.
                 return data;
             }
 
@@ -693,8 +697,10 @@ export class VirtualFileSystem {
                 ? remaining
                 : Math.max(length, VirtualFileSystem.PREFETCH_CHUNK_SIZE);
             const dataWindow = await this.fetchRange(handle, offset, readSize);
-            handle.buffer = dataWindow;
-            handle.bufferOffset = offset;
+            // Whole-asset reads are copied into guest memory by the caller.
+            // Retain only a small read window, not another complete asset.
+            handle.buffer = dataWindow.byteLength <= VirtualFileSystem.PREFETCH_CHUNK_SIZE ? dataWindow : undefined;
+            handle.bufferOffset = handle.buffer ? offset : undefined;
 
             const data = dataWindow.subarray(0, Math.min(length, dataWindow.byteLength));
             handle.position += data.length;
@@ -733,8 +739,8 @@ export class VirtualFileSystem {
                 const toCopy = end - offset;
                 target.set(cached.subarray(offset, end), targetOffset);
                 handle.position += toCopy;
-                handle.buffer = cached;
-                handle.bufferOffset = 0;
+                // The shared LRU owns this file. An open handle must not keep
+                // the complete buffer alive after cache eviction.
                 return toCopy;
             }
 
@@ -1349,6 +1355,7 @@ export class VirtualFileSystem {
         const entry = this.romIndex.get(rel);
         if (!entry) return new Uint8Array();
 
+        const generation = this.romGeneration;
         const cached = this.romPinned.get(rel) ?? this.romCache.get(rel);
         let data = cached;
         if (!data) {
@@ -1368,6 +1375,7 @@ export class VirtualFileSystem {
                 data = await loadPromise;
             }
 
+            if (generation !== this.romGeneration) throw new Error("ROM read cancelled during game switch");
             this.addRomCache(rel, data);
         }
 
@@ -1407,8 +1415,9 @@ export class VirtualFileSystem {
             return;
         }
 
+        const generation = this.romGeneration;
         const loadPromise = this.romArchive.readEntry(entry)
-            .then(data => { this.addRomCache(key, data); return data; })
+            .then(data => { if (generation === this.romGeneration) this.addRomCache(key, data); return data; })
             .finally(() => this.romLoadPromises.delete(key));
 
         this.romLoadPromises.set(key, loadPromise);
@@ -1428,12 +1437,13 @@ export class VirtualFileSystem {
         concurrency = 8,
         onProgress?: (processed: number, total: number) => void,
     ): Promise<number> {
+        const generation = this.romGeneration;
         let prefetched = 0;
         let processed = 0;
         const total = rels.length;
         const queue = [...rels];
         const workers = Array.from({ length: Math.min(concurrency, queue.length || 1) }, async () => {
-            while (queue.length > 0) {
+            while (queue.length > 0 && generation === this.romGeneration) {
                 const rel = queue.shift()!;
                 const key = rel.toLowerCase();
                 const entry = this.romIndex.get(key);
@@ -1457,10 +1467,11 @@ export class VirtualFileSystem {
      */
     async pinRomFiles(rels: string[], concurrency = 8): Promise<number> {
         if (!this.romArchive) return 0;
+        const generation = this.romGeneration;
         let pinned = 0;
         const queue = [...rels];
         const tryPin = (key: string, data: Uint8Array): boolean => {
-            if (this.romPinned.has(key)) return false;
+            if (generation !== this.romGeneration || this.romPinned.has(key)) return false;
             if (data.byteLength === 0 || data.byteLength > this.PIN_FILE_MAX) return false;
             if (this.romPinnedBytes + data.byteLength > this.PIN_TOTAL_MAX) return false;
             this.romPinned.set(key, data);
@@ -1498,6 +1509,7 @@ export class VirtualFileSystem {
     }
 
     private async _runProgressivePrefetch(signal?: AbortSignal): Promise<void> {
+        const generation = this.romGeneration;
         // Sort by size ascending so small files fill cache quickly
         const entries = Array.from(this.romIndex.entries())
             .filter(([, e]) => !e.isDirectory && e.uncompressedSize <= this.MAX_CACHE_ENTRY_SIZE)
@@ -1507,7 +1519,7 @@ export class VirtualFileSystem {
 
         let fetchedBytes = 0;
         for (const [rel, entry] of entries) {
-            if (signal?.aborted || fetchedBytes + entry.uncompressedSize > this.ROM_CACHE_MAX_BYTES) return;
+            if (signal?.aborted || generation !== this.romGeneration || fetchedBytes + entry.uncompressedSize > this.ROM_CACHE_MAX_BYTES) return;
             if (this.romCache.has(rel)) continue;
             try {
                 await this._prefetchEntry(rel, entry);
@@ -1591,7 +1603,8 @@ export class VirtualFileSystem {
             return new Uint8Array();
         }
         const end = Math.min(raw.byteLength, begin + (requestedEnd - offset));
-        return raw.subarray(begin, end);
+        const view = raw.subarray(begin, end);
+        return view.byteLength <= VirtualFileSystem.PREFETCH_CHUNK_SIZE && view.buffer.byteLength > view.byteLength ? view.slice() : view;
     }
 
     private alignDown(value: number, align: number): number {

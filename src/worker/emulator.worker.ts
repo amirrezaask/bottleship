@@ -1236,8 +1236,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = src;
             Logger.log(LogCategory.SYSTEM, `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`);
           } catch (sabErr) {
-            src = await SyncHttpRangeSource.create(url);
-            Logger.log(LogCategory.SYSTEM, `WGB: SAB I/O unavailable (${(sabErr as Error).message}) — streaming via sync-XHR range`);
+            throw sabErr;
           }
           // Reflect the actual streaming stages (index read → entrypoint fetch) in the
           // loading UI instead of a static "Streaming" — the prefetch phase below then
@@ -1260,69 +1259,30 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       }
 
       if (!bundle) {
-      const downloadToRam = async (): Promise<Uint8Array> => {
-        self.postMessage({ type: "loading_progress", phase: "downloading", percent: 0, label: "0 MB" });
-        const buf = await WgbCache.downloadWithProgress(url, (loaded, total) => {
+        const stage = () => WgbCache.downloadToSyncSource(url, (loaded, total) => {
           const percent = total > 0 ? Math.round(loaded / total * 100) : 0;
           const loadedMb = (loaded / 1024 / 1024).toFixed(0);
           const totalMb = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(0)} MB` : " MB";
           self.postMessage({ type: "loading_progress", phase: "downloading", percent, label: `${loadedMb}${totalMb}` });
         });
-        self.postMessage({ type: "loading_progress", phase: "starting", percent: 100, label: "" });
-        return buf;
-      };
-
-      let syncSource = await WgbCache.openSyncSourceForUrl(url);
-      let downloadedBuffer: Uint8Array | null = null;
-      if (syncSource) {
-        Logger.log(LogCategory.SYSTEM, `WGB: OPFS cache hit (sync), launching immediately`);
-        self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Cached" });
-      } else {
-        // Cache miss — stream the download STRAIGHT into the OPFS sync handle (no
-        // monolithic RAM buffer). This is the only path that works for bundles past
-        // V8's max ArrayBuffer size (~2GB) — e.g. the 2.5GB XIII bundle, where the
-        // in-RAM concat throws "Array buffer allocation failed". Fall back to the
-        // in-RAM download only when OPFS/SAH streaming is unavailable (smaller bundles).
-        syncSource = await WgbCache.downloadToSyncSource(url, (loaded, total) => {
-          const percent = total > 0 ? Math.round(loaded / total * 100) : 0;
-          const loadedMb = (loaded / 1024 / 1024).toFixed(0);
-          const totalMb = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(0)} MB` : " MB";
-          self.postMessage({ type: "loading_progress", phase: "downloading", percent, label: `${loadedMb}${totalMb}` });
-        }).catch((e) => {
-          Logger.warn(LogCategory.SYSTEM, `WGB: streaming download failed (${e}) — falling back to in-RAM`);
-          return null;
-        });
+        let syncSource = await WgbCache.openSyncSourceForUrl(url);
         if (syncSource) {
-          self.postMessage({ type: "loading_progress", phase: "starting", percent: 100, label: "" });
-        } else {
-          downloadedBuffer = await downloadToRam();
-          syncSource = await WgbCache.openSyncSourceForUrl(url);
+          try {
+            bundle = await WgbLoader.fromSource(syncSource);
+            self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Cached" });
+          } catch (error) {
+            syncSource.close();
+            await WgbCache.evict(url);
+            Logger.warn(LogCategory.SYSTEM, `WGB: invalid cached package, retrying through disk storage: ${error}`);
+          }
+        }
+        if (!bundle) {
+          syncSource = await stage();
+          if (!syncSource) throw new Error("Game loading requires byte ranges or available browser disk storage.");
+          try { bundle = await WgbLoader.fromSource(syncSource); }
+          catch (error) { syncSource.close(); await WgbCache.evict(url); throw error; }
         }
       }
-
-      // Prefer the off-disk sync source (no RAM copy). But the OPFS persist of a
-      // large bundle can silently truncate (a partial write passes the size guard,
-      // then ZipArchive.init fails "EOCD not found"). On ANY corrupt-cache failure
-      // fall back to the in-RAM download — NOT fromUrl(), whose HTTP-range path
-      // breaks under dev servers that ignore Range and return the whole file
-      // (Content-Range 0-EOF → the EOCD tail read lands on the file START).
-      const loadFromRam = async () => {
-        if (!downloadedBuffer) downloadedBuffer = await downloadToRam();
-        Logger.warn(LogCategory.SYSTEM, `WGB: loading from the in-RAM download (${(downloadedBuffer.byteLength / 1048576).toFixed(1)} MB) — OPFS cache unusable`);
-        return WgbLoader.fromBuffer(downloadedBuffer);
-      };
-      if (syncSource) {
-        try {
-          bundle = await WgbLoader.fromSource(syncSource);
-        } catch (e) {
-          Logger.warn(LogCategory.SYSTEM, `WGB: cached sync source unusable (${e}) — discarding and reloading`);
-          await WgbCache.evict(url);
-          bundle = await loadFromRam();
-        }
-      } else {
-        bundle = await loadFromRam();
-      }
-      } // end if (!bundle) — dev sync-stream did not already produce a bundle
     } else if (payload.blobs && payload.blobs.length) {
       // Multi-part installer: setup.exe (header + file list) + external setup-*.bin data slices.
       const all = payload.blobs;
@@ -2578,7 +2538,9 @@ async function gameboxStop(id: string) {
       catch (error) { await writer.abort().catch(() => {}); throw error; }
     }
     if (gameboxStorageError) throw new Error(gameboxStorageError);
+    system.fileSystem.reset();
     WgbCache.releaseMountedSource();
+    (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = undefined;
     self.postMessage({ type: 'gamebox_stopped', id });
   } catch (error) {
     self.postMessage({ type: 'gamebox_stopped', id, error: `BottleShip could not confirm its saves: ${String(error)}` });
