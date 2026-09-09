@@ -15,6 +15,7 @@ import { getCPU, getMemory } from "../core/thunking/thunk-utils";
 import { Marshaler } from "../core/memory/marshaler";
 import { VaListReader, ArrayVaListReader, encodeAnsi, formatCLazy } from "./crt-format";
 import { scanfCore } from "./crt-scanf";
+import { parseCrtArguments, writeCrtArgv } from "./crt-argv";
 import { getCodePageDecoder } from "./codepage-utils";
 import { EmulatorConfig } from "../core/emulator-config-manager";
 import { hypercallDataManager } from "../core/cpu/hypercall-data";
@@ -60,6 +61,9 @@ export class Msvcrt implements IModule {
     private acmdlnAddr = 0;
     private arg0Addr = 0;
     private argvVectorAddr = 0;
+    private mainArgsKey: string | null = null;
+    private mainArgc = 1;
+    private acmdlnCapacity = 2048;
     private argcAddr = 0;
     private argvPtrVarAddr = 0;
     private dosErrnoAddr = 0;
@@ -685,6 +689,9 @@ export class Msvcrt implements IModule {
         this.acmdlnAddr = 0;
         this.arg0Addr = 0;
         this.argvVectorAddr = 0;
+        this.mainArgsKey = null;
+        this.mainArgc = 1;
+        this.acmdlnCapacity = 2048;
         this.argcAddr = 0;
         this.argvPtrVarAddr = 0;
         this.dosErrnoAddr = 0;
@@ -1025,23 +1032,33 @@ export class Msvcrt implements IModule {
         const args = system.executableArgs || "";
         const cmdLine = args ? `${exeName} ${args}` : exeName;
 
+        if (this.mainArgsKey !== cmdLine) {
+            const values = [exeName, ...parseCrtArguments(args)].map(value => encodeAnsi(value));
+            this.argvVectorAddr = writeCrtArgv(values,
+                size => this.process.memory.alloc(size, "THUNK_DATA", "rw"),
+                (address, bytes) => Mem.writeBytes(address, bytes),
+                (address, value) => Mem.writeUint32(address, value));
+            this.mainArgc = values.length;
+            const commandBytes = encodeAnsi(cmdLine).length + 1;
+            if (commandBytes > this.acmdlnCapacity) {
+                this.acmdlnAddr = this.process.memory.alloc(commandBytes, "THUNK_DATA", "rw");
+                this.acmdlnCapacity = commandBytes;
+            }
+            this.mainArgsKey = cmdLine;
+        }
         this.writeCString(this.acmdlnAddr, cmdLine);
         // Update the pointer variable so data import reads see the correct address
         if (this.acmdlnVarAddr) {
             Mem.writeUint32(this.acmdlnVarAddr, this.acmdlnAddr);
         }
-        this.writeCString(this.arg0Addr, exeName);
-
-        Mem.writeUint32(this.argvVectorAddr, this.arg0Addr >>> 0);
-        Mem.writeUint32(this.argvVectorAddr + 4, 0);
         Mem.writeUint32(this.envpVectorAddr, 0);
-        if (this.argcAddr) Mem.writeUint32(this.argcAddr, 1);
+        if (this.argcAddr) Mem.writeUint32(this.argcAddr, this.mainArgc);
         if (this.argvPtrVarAddr) Mem.writeUint32(this.argvPtrVarAddr, this.argvVectorAddr >>> 0);
         if (this.environVarAddr) {
             Mem.writeUint32(this.environVarAddr, this.envpVectorAddr >>> 0);
         }
 
-        if (argcPtr) Mem.writeUint32(argcPtr, 1);
+        if (argcPtr) Mem.writeUint32(argcPtr, this.mainArgc);
         if (argvPtr) Mem.writeUint32(argvPtr, this.argvVectorAddr >>> 0);
         if (envPtr) Mem.writeUint32(envPtr, this.envpVectorAddr >>> 0);
         if (_startupInfo) Mem.writeUint32(_startupInfo, 0); // newmode = 0
