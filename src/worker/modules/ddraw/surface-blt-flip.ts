@@ -31,7 +31,6 @@ import {
     DDGFS_CANFLIP,
 } from "./constants";
 import { readRect, type Rect } from "./helpers";
-import { absToRel } from "./helpers";
 import { copySurfaceRegion, copySurfaceRegionWithColorKey, copySurfaceRegionWithRop, buildFullRect } from "./surface-helpers";
 import { RectPool } from "./rect-pool";
 import { DirectDrawSurfaceObject, isBitmapTexture, isRenderSurface } from "./com-objects";
@@ -46,6 +45,7 @@ import { propagateSurfaceStateToRegistry } from "./d3d/texture-manager";
 import { isValidAddress } from "../../core/memory/address-guard";
 import { markGpuSyncedFromCpu } from "./surface-sync";
 import { onFrameEnd as frameCaptureOnFrameEnd } from "./frame-capture";
+import { fillSurfaceColor } from "./surface-color-fill";
 
 // Module-level rect pool to reduce allocations in hot paths
 const rectPool = new RectPool(8);
@@ -752,27 +752,17 @@ export function createSurfaceBltFlipExports(context: DDrawContext): Record<strin
             }
 
             if (rectWidth > 0 && rectHeight > 0) {
-                for (let y = 0; y < rectHeight; y++) {
-                    const rowAddr = dstState.surfacePtr + (dstRect.top + y) * dstState.pitch + dstRect.left * bytesPerPixel;
-                    const relRowAddr = absToRel(mem, rowAddr);
-                    if (relRowAddr >= 0 && relRowAddr + rectWidth * bytesPerPixel <= mem.length) {
-                        if (bytesPerPixel === 2) {
-                            for (let x = 0; x < rectWidth; x++) {
-                                mem[relRowAddr + x * 2] = fillColor & 0xff;
-                                mem[relRowAddr + x * 2 + 1] = (fillColor >> 8) & 0xff;
-                            }
-                        } else if (bytesPerPixel === 4) {
-                            for (let x = 0; x < rectWidth; x++) {
-                                mem[relRowAddr + x * 4] = fillColor & 0xff;
-                                mem[relRowAddr + x * 4 + 1] = (fillColor >> 8) & 0xff;
-                                mem[relRowAddr + x * 4 + 2] = (fillColor >> 16) & 0xff;
-                                mem[relRowAddr + x * 4 + 3] = (fillColor >> 24) & 0xff;
-                            }
-                        } else {
-                            mem.fill(fillColor & 0xff, relRowAddr, relRowAddr + rectWidth * bytesPerPixel);
-                        }
-                    }
-                }
+                fillSurfaceColor(
+                    mem,
+                    dstState.surfacePtr,
+                    dstState.pitch,
+                    dstRect.left,
+                    dstRect.top,
+                    rectWidth,
+                    rectHeight,
+                    bytesPerPixel,
+                    fillColor,
+                );
                 setAuthorityCpu(dstState);
             }
 
