@@ -53,7 +53,7 @@ export function installGameBoxBridge(worker, closeAudio) {
     get status() {
       return status;
     },
-    async start({ gameUrl, saveNamespace }) {
+    async start({ gameUrl, saveNamespace, aotUrl }) {
       if (!ready || launched || stopped)
         throw new Error('BottleShip cannot start another game in this player');
       const url = new URL(gameUrl, location.href);
@@ -74,6 +74,19 @@ export function installGameBoxBridge(worker, closeAudio) {
       const gameId = `app:gamebox-${await hash(saveNamespace)}`;
       const cacheKey = `gamebox-${await hash(url.pathname)}.wgb`;
       worker.postMessage({ type: 'gamebox_configure', gameId, cacheKey });
+      if (aotUrl) {
+        await new Promise((resolve, reject) => {
+          const id = crypto.randomUUID();
+          const timer = setTimeout(() => { worker.removeEventListener('message', receive); reject(new Error('AOT preparation timed out')); }, 60000);
+          const receive = ({data}) => {
+            if (data.type !== 'gamebox_aot_result' || data.id !== id) return;
+            clearTimeout(timer); worker.removeEventListener('message', receive);
+            if (data.error) reject(new Error(data.error)); else resolve(data.result);
+          };
+          worker.addEventListener('message', receive);
+          worker.postMessage({type: 'gamebox_aot', id, mode: 'load', url: aotUrl});
+        });
+      }
       launched = true;
       await window.loadApp(url.href);
     },

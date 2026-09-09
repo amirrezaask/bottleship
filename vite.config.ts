@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import { transform } from "esbuild";
 import fs from "fs";
+import { createHash } from "node:crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "node:child_process";
@@ -151,6 +152,7 @@ function copyPublicDirExceptApps(): Plugin {
 export default defineConfig({
   base: process.env.GAMEBOX_RUNTIME_BASE ?? "/",
   define: {
+    __GAMEBOX_AOT_ABI__: JSON.stringify(createHash("sha256").update(fs.readFileSync(path.join(__dirname, "public/v86.wasm"))).digest("hex")),
     __BUILD_SHA__: JSON.stringify(BUILD_SHA),
   },
   plugins: [

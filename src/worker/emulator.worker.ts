@@ -1,4 +1,5 @@
 import { V86 } from "v86";
+import { gameboxAot } from "./core/gamebox-aot";
 import { ThunkGenerator } from "./core/thunking/thunk-generator";
 import { Process } from "./core/process";
 import { System } from "./core/system";
@@ -2549,6 +2550,11 @@ async function gameboxStop(id: string) {
 
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
+  if (message?.type === 'gamebox_aot') {
+    void gameboxAot(message).then(result => self.postMessage({type: 'gamebox_aot_result', id: message.id, result}),
+      error => self.postMessage({type: 'gamebox_aot_result', id: message.id, error: String(error)}));
+    return;
+  }
   if (message?.type === 'gamebox_configure') {
     if (!gameboxGameId && /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) && /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)) {
       gameboxGameId = message.gameId;
