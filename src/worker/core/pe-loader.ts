@@ -936,8 +936,8 @@ export class PELoader {
                 : `${normalizedInput}.dll`;
             const candidatePath = this.vfs.resolvePath(candidateInput);
 
-            const existsInRom = this.vfs.hasRomFile(candidatePath);
-            if (existsInRom) {
+            const stored = this.vfs.resolveStoredFile(candidatePath);
+            if (stored) {
                 Logger.log(LogCategory.SYSTEM,
                     `[PE] findDllPath("${dllName}"): found at absolute path ${candidatePath}`);
                 return candidatePath;
@@ -1002,7 +1002,7 @@ export class PELoader {
         Logger.verbose(LogCategory.SYSTEM, `[PE] findDllPath("${dllName}"): searching in ${searchPaths.join(', ')}`);
 
         for (const path of searchPaths) {
-            if (this.vfs.hasRomFile(path)) {
+            if (this.vfs.resolveStoredFile(path)) {
                 Logger.log(LogCategory.SYSTEM, `[PE] findDllPath("${dllName}"): found at ${path}`);
                 return path;
             }

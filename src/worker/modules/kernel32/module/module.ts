@@ -1272,7 +1272,7 @@ function initModuleFunctions(): void {
         // First, try to find in module registry (real DLLs).
         if (moduleRegistry && hModule !== 0) {
             const peBase = moduleRegistry.resolvePeModuleBase(hModule);
-            const mod = moduleRegistry.getByBase(peBase);
+            const mod = moduleRegistry.getByBase(peBase) ?? moduleRegistry.getModuleContainingAddress(peBase);
             if (mod) {
                 if (isOrdinal) {
                     const addr = mod.ordinalExports.get(ordinal);

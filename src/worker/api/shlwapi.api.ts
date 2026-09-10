@@ -19,6 +19,7 @@ export const shlwapiModule: ModuleDescriptor = {
     name: "shlwapi",
     functions: [
         makeFunc("PathFindFileNameA", 1),
+        makeFunc("SHDeleteKeyA", 2),
         makeFunc("PathFindFileNameW", 1),
         makeFunc("PathFindExtensionA", 1),
         makeFunc("PathFindExtensionW", 1),

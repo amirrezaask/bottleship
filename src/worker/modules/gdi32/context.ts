@@ -69,6 +69,7 @@ export class GDIContext {
         font: string;
         fontSize: number; // Cached font size to avoid regex parsing
         textEscapement: number; // Rotation angle in tenths of degrees (Windows format)
+        textAlign: number; // TA_* flags used by TextOut/Text rendering
         appliedFont: string; // The font currently set on the canvas context
         appliedFillStyle: string; // The fillStyle currently set on the canvas context
         hBrush: number; // Current selected brush handle
@@ -395,6 +396,7 @@ export class GDIContext {
             font: '16px sans-serif',
             fontSize: 16,
             textEscapement: 0,
+            textAlign: 0, // TA_LEFT | TA_TOP
             appliedFont: '',
             appliedFillStyle: '',
             hBrush: defaultBrush,
@@ -451,6 +453,7 @@ export class GDIContext {
             font: '16px sans-serif',
             fontSize: 16,
             textEscapement: 0,
+            textAlign: 0, // TA_LEFT | TA_TOP
             appliedFont: '',
             appliedFillStyle: '',
             hBrush: defaultBrush,
@@ -500,6 +503,7 @@ export class GDIContext {
             font: '16px sans-serif',
             fontSize: 16,
             textEscapement: 0,
+            textAlign: 0, // TA_LEFT | TA_TOP
             appliedFont: '',
             appliedFillStyle: '',
             hBrush: defaultBrush,
@@ -550,6 +554,7 @@ export class GDIContext {
             font: '16px sans-serif',
             fontSize: 16,
             textEscapement: 0,
+            textAlign: 0, // TA_LEFT | TA_TOP
             appliedFont: '',
             appliedFillStyle: '',
             hBrush: defaultBrush,
@@ -898,6 +903,7 @@ export class GDIContext {
             font: '16px sans-serif',
             fontSize: 16,
             textEscapement: 0,
+            textAlign: 0, // TA_LEFT | TA_TOP
             appliedFont: '',
             appliedFillStyle: '',
             hBrush: defaultBrush,
@@ -1364,6 +1370,17 @@ export class GDIContext {
         return previous;
     }
 
+    setTextAlign(hdc: number, alignment: number): number {
+        const state = this.ensureState(hdc);
+        const previous = state.textAlign;
+        state.textAlign = alignment >>> 0;
+        return previous;
+    }
+
+    getTextAlign(hdc: number): number {
+        return this.hdcStates.get(hdc)?.textAlign ?? 0xFFFFFFFF;
+    }
+
     setBkColor(hdc: number, color: number): number {
         const ctx = this.contexts.get(hdc);
         const state = this.hdcStates.get(hdc);
@@ -1409,6 +1426,7 @@ export class GDIContext {
         font: string;
         fontSize: number;
         textEscapement: number;
+        textAlign: number;
         appliedFont: string;
         appliedFillStyle: string;
         hBrush: number;
@@ -1439,6 +1457,7 @@ export class GDIContext {
                 font: '16px sans-serif',
                 fontSize: 16,
                 textEscapement: 0,
+                textAlign: 0,
                 appliedFont: '',
                 appliedFillStyle: '',
                 hBrush: defaultBrush,

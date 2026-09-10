@@ -222,6 +222,7 @@ export const gdi32Module: ModuleDescriptor = {
         makeFunc("RectInRegion", 2),
         makeFunc("GetCharABCWidthsA", 4),
         makeFunc("GetCharABCWidthsW", 4),
+        makeFunc("GetGlyphOutlineA", 7),
 
         // Auto-generated from reference signatures
         makeFunc("CreateBrushIndirect", 1),

@@ -767,6 +767,16 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
         return System.getInstance().gdiContext.setTextColor(hdc, color);
     };
 
+    exports['SetTextAlign'] = (ctx, mem, args): number => {
+        const hdc = args[0];
+        const alignment = args[1];
+        return System.getInstance().gdiContext.setTextAlign(hdc, alignment);
+    };
+
+    exports['GetTextAlign'] = (ctx, mem, args): number => {
+        return System.getInstance().gdiContext.getTextAlign(args[0]);
+    };
+
     exports['CreateFontW'] = (ctx, mem, args): number => {
         const height = args[0];
         const width = args[1];

@@ -48,8 +48,11 @@ export function textOut(gdi: GDIContext, hdc: number, x: number, y: number, text
         state.appliedFillStyle = state.textColor;
     }
 
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
+    const textAlign = state.textAlign;
+    ctx.textAlign = (textAlign & 0x06) === 0x06 ? 'center' :
+        (textAlign & 0x02) !== 0 ? 'right' : 'left';
+    ctx.textBaseline = (textAlign & 0x18) === 0x18 ? 'alphabetic' :
+        (textAlign & 0x08) !== 0 ? 'bottom' : 'top';
 
     // Apply rotation if escapement is set
     // lfEscapement is in tenths of degrees (0.1 degree units)

@@ -63,6 +63,8 @@ export const oleaut32Module: ModuleDescriptor = {
         makeFunc("SafeArrayPutElement", 3),
         makeFunc("ord_148", 3, { ordinal: 148 }), // SafeArrayPtrOfIndex
         makeFunc("SafeArrayPtrOfIndex", 3),
+        makeFunc("ord_149", 2, { ordinal: 149 }), // SafeArrayRedim
+        makeFunc("ord_150", 2, { ordinal: 150 }), // SafeArraySetIID
 
         // Type library (ordinal + named alias)
         makeFunc("ord_161", 2, { ordinal: 161 }), // LoadTypeLib

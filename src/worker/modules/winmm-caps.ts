@@ -118,6 +118,25 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
         return MMSYSERR_NOERROR;
     };
 
+    exports["waveInGetErrorTextA"] = (_ctx, mem, args) => {
+        const mmrError = args[0] >>> 0;
+        const pszText = args[1] >>> 0;
+        const cchText = args[2] >>> 0;
+        if (!pszText || cchText === 0) return MMSYSERR_INVALPARAM;
+        const text = mmrError === MMSYSERR_NOERROR
+            ? "No error"
+            : mmrError === MMSYSERR_BADDEVICEID
+                ? "The specified device identifier is out of range."
+                : mmrError === MMSYSERR_INVALPARAM
+                    ? "The specified parameter is invalid."
+                    : `Wave input error ${mmrError}`;
+        const bytes = new TextEncoder().encode(text);
+        const copyLen = Math.min(bytes.length, cchText - 1);
+        if (copyLen > 0) mem.set(bytes.subarray(0, copyLen), pszText);
+        mem[pszText + copyLen] = 0;
+        return MMSYSERR_NOERROR;
+    };
+
     exports["waveInOpen"] = (ctx, mem, args) => {
         const phwi = args[0];
         if (phwi) {

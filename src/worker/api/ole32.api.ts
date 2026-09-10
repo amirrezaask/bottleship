@@ -27,6 +27,13 @@ export const ole32Module: ModuleDescriptor = {
         makeFunc("CLSIDFromString", 2),
         makeFunc("CoTaskMemAlloc", 1),
         makeFunc("CoTaskMemFree", 1),
+        makeFunc("WriteClassStm", 2),
+        makeFunc("CoReleaseMarshalData", 1),
+        makeFunc("CreateStreamOnHGlobal", 3),
+        makeFunc("ProgIDFromCLSID", 2),
+        makeFunc("RegisterDragDrop", 2),
+        makeFunc("RevokeDragDrop", 1),
+        makeFunc("ReleaseStgMedium", 1),
         // PropVariant
         makeFunc("PropVariantClear", 1),
         // OLE initialization

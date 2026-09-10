@@ -514,6 +514,8 @@ export const kernel32Module: ModuleDescriptor = {
         makeFunc("ConvertDefaultLocale", 1),
         // Pipe functions
         makeFunc("PeekNamedPipe", 6),
+        makeFunc("WaitNamedPipeA", 2),
+        makeFunc("DisconnectNamedPipe", 1),
         // File information
         makeFunc("GetFileInformationByHandle", 2),
         makeFunc("GetFileInformationByHandleEx", 4),

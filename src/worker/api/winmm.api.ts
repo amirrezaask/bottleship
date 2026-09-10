@@ -54,6 +54,7 @@ export const winmmModule: ModuleDescriptor = {
         makeFunc("waveInGetNumDevs", 0),
         makeFunc("waveInGetDevCapsA", 3),
         makeFunc("waveInGetDevCapsW", 3),
+        makeFunc("waveInGetErrorTextA", 3),
         // Auxiliary audio device functions
         makeFunc("auxGetNumDevs", 0),
         makeFunc("auxGetDevCapsA", 3),
