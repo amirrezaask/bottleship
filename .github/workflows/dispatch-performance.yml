@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
@@ -45,7 +46,7 @@ jobs:
         run: |
           mkdir -p performance-results
           bun test 2>&1 | tee performance-results/project-tests.log
-          node --test tools/runtime-test/bulk-memory.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+          node --test tools/runtime-test/*.test.mjs 2>&1 | tee performance-results/cpu-tests.log
       - run: bun run build
       - name: Guest-call benchmarks in Node and Chromium
         env:

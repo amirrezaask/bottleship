@@ -7,7 +7,7 @@ export async function benchmarkBulk(variants) {
     const machines = [];
     try {
         for (const [name, binary] of Object.entries(variants)) {
-            const m = await createMachine(binary, { jit: true }); machines.push([name, m]);
+            const m = await createMachine(binary, { jit: true, halt: true }); machines.push([name, m]);
             m.paging(); m.guest().fill(47, LEFT, LEFT + 0x200000); m.guest().fill(47, RIGHT, RIGHT + 0x200000);
             m.warm(LEFT, 0x200000, true); m.warm(RIGHT, 0x200000, true);
             m.call('memcpy', RIGHT, LEFT, 64, 250000);
@@ -20,7 +20,7 @@ export async function benchmarkBulk(variants) {
             for (const offset of [0,3]) for (const mode of op === 'memcmp' ? ['equal', 'first', 'last'] : ['full']) {
                 const a = RIGHT + offset, b = op === 'memset' ? 47 : LEFT + offset;
                 const expected = op === 'memcmp' ? (mode === 'equal' ? 0 : 1) : a;
-                const iterations = Math.max(4, Math.min(20000, Math.floor(1048576 / len)));
+                const iterations = mode === 'first' ? 20000 : Math.max(8, Math.min(20000, Math.floor(1048576 / len)));
                 const samples = Object.fromEntries(machines.map(([name])=>[name,[]]));
                 for (const [,m] of machines) {
                     m.guest().fill(47, LEFT, LEFT + len + 32); m.guest().fill(47, RIGHT, RIGHT + len + 32);

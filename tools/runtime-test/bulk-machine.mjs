@@ -4,7 +4,7 @@ export const BASE = 0x100000, ENTRY = BASE + 0x40, LEAF = BASE + 0x1000;
 export const DONE = BASE + 0x80, STACK = 0x300000, LEFT = 0x400000, RIGHT = 0x800000;
 export const RAM = 32 * 1024 * 1024, PD = 0x80000, PT = 0x81000;
 export const IDS = { memcpy: 56, memset: 57, memcmp: 62, memmove: 82, memchr: 83 };
-function image() {
+function image(halt) {
     const bytes = new Uint8Array(0x2000), v = new DataView(bytes.buffer);
     const fields = [0x1badb002, 0x10000, -(0x1badb002 + 0x10000), BASE, BASE, BASE + bytes.length, BASE + bytes.length, ENTRY];
     fields.forEach((x, i) => v.setUint32(i * 4, x >>> 0, true));
@@ -14,16 +14,16 @@ function image() {
     emit(0xe8); v.setInt32(at, LEAF - (BASE + at + 4), true); at += 4;
     emit(0x4f, 0x75, 0xf8); // dec edi; jnz ENTRY (8-byte loop)
     emit(0xe9); v.setInt32(at, DONE - (BASE + at + 4), true);
-    bytes.set([0xeb, 0xfe], 0x80);
+    bytes.set(halt ? [0xf4] : [0xeb, 0xfe], 0x80); // HLT avoids burning a JIT quantum; ring-3 guard tests use the nonprivileged stop.
     bytes.set([0xb8, 1, 0, 0, 0, 0xba, 0x77, 0xb0, 0, 0, 0xef, 0xc3], 0x1000);
     return bytes;
 }
-export async function createMachine(binary, { jit = false } = {}) {
+export async function createMachine(binary, { jit = false, halt = false } = {}) {
     const emulator = new V86({ memory_size: RAM, autostart: false, disable_jit: jit ? 0 : 1,
         wasm_fn: async imports => (await WebAssembly.instantiate(binary, imports)).instance.exports });
     await new Promise(resolve => emulator.add_listener('emulator-loaded', resolve));
     const cpu = emulator.v86.cpu, api = cpu.wm.exports;
-    cpu.reboot_internal(); cpu.reset_memory(); cpu.load_multiboot(image().buffer);
+    cpu.reboot_internal(); cpu.reset_memory(); cpu.load_multiboot(image(halt).buffer);
     let hostCalls = 0, fallback = null, finalized = 0;
     cpu.test_hook_did_finalize_wasm = () => { finalized++; };
     cpu.io.register_write(0xb077, null, undefined, undefined, value => {
@@ -61,7 +61,7 @@ export async function createMachine(binary, { jit = false } = {}) {
     }
     function execute(maxBlocks = 10000000) {
         const status = api.run_guest_until(DONE, LEAF, maxBlocks, 0, 0);
-        if (status !== 0) throw new Error(`Guest status ${status}, EIP=${state().getUint32(556, true).toString(16)}, EDI=${reg()[7]}`);
+        if (status !== 0 && !(status === 2 && state().getUint32(556, true) === DONE + 1)) throw new Error(`Guest status ${status}, EIP=${state().getUint32(556, true).toString(16)}, EDI=${reg()[7]}`);
         return reg()[0];
     }
     return { cpu, api, guest, reg, state, map, paging, warm, prepare, execute,

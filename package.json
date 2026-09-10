@@ -37,7 +37,7 @@
     "build:unpack-buffered": "bash tools/build-unpack-buffered/build-wasm.sh",
     "test:unpack-buffered-7z": "bun tools/tests/unpack-buffered-7z.smoke.ts",
     "gen:inno-fixtures": "cargo run --bin gen-fixtures --manifest-path tools/build-unpack-streaming/Cargo.toml",
-    "test:cpu-runtime": "node --test tools/runtime-test/bulk-memory.test.mjs"
+    "test:cpu-runtime": "node --test tools/runtime-test/*.test.mjs"
   },
   "dependencies": {
     "@bottleship/formats": "workspace:*",
