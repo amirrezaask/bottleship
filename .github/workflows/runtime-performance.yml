@@ -42,3 +42,17 @@ jobs:
       - run: bun tools/validate-struct-offsets.ts
       - run: bun run typecheck
       - run: bun test
+
+  wasm-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust target
+        run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - run: node tools/build-dxt-kernel/build.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxt-kernel-wasm
+          path: src/worker/backends/webgpu/shared/dxt-kernel.wasm
+          retention-days: 7
