@@ -2,6 +2,8 @@
 
 use core::{arch::wasm32, panic::PanicInfo, ptr};
 
+mod pixels;
+
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! { wasm32::unreachable() }
 
@@ -91,6 +93,13 @@ pub unsafe extern "C" fn decode_dxt(
     if (pitch as u64) < row { return 1; }
     let input = ((height as u64).div_ceil(4)-1) * pitch as u64 + row;
     let Some(output) = (width as u64).checked_mul(height as u64).and_then(|n| n.checked_mul(4)) else { return 2; };
+    let status = validate_spans(src, src_len, input, dst, dst_len, output);
+    if status != 0 { return status; }
+    decode(kind, src as *const u8, pitch as usize, width as usize, height as usize, dst as *mut u8);
+    0
+}
+
+fn validate_spans(src: u32, src_len: u32, input: u64, dst: u32, dst_len: u32, output: u64) -> u32 {
     let mem_len = wasm32::memory_size::<0>() as u64 * 65536;
     extern "C" { static __heap_base: u8; }
     let heap = ptr::addr_of!(__heap_base) as u64;
@@ -99,6 +108,5 @@ pub unsafe extern "C" fn decode_dxt(
     if s < heap || d < heap || input > src_len as u64 || output > dst_len as u64
         || s + input > mem_len || d + output > mem_len { return 2; }
     if s < d + output && d < s + input { return 3; }
-    decode(kind, src as *const u8, pitch as usize, width as usize, height as usize, dst as *mut u8);
     0
 }

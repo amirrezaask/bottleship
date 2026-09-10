@@ -21,27 +21,15 @@ defaults:
     shell: bash
 
 jobs:
-  baseline:
+  kernel:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - name: Record parent PR baseline and reproducible source
-        run: |
-          mkdir -p performance-results
-          git bundle create performance-results/source.bundle HEAD
-          git submodule status > performance-results/submodules.txt
-          bun tools/perf/runtime-fastpaths.ts d99c61599bbe5adcb2031cdc88cef7a35c964d2f performance-results/parent-baseline.json
+      - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - run: node tools/build-dxt-kernel/build.mjs
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: pixel-performance-baseline
-          path: performance-results/
+          name: pixel-kernels
+          path: src/worker/backends/webgpu/shared/dxt-kernel*.wasm
           retention-days: 14
