@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, chmodSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,4 +13,6 @@ execFileSync('rustc', [
   '-C', 'link-arg=--max-memory=67108864',
   `${root}tools/build-dxt-kernel/lib.rs`, '-o', output,
 ], { stdio: 'inherit' });
+// WASM is a browser asset, not a host executable. Normalize rustc's output mode.
+chmodSync(output, 0o644);
 console.log(output);
