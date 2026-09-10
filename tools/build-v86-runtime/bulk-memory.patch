@@ -1,0 +1,89 @@
+diff --git a/src/rust/cpu/hypercall.rs b/src/rust/cpu/hypercall.rs
+index 721d173b..a0606e8b 100644
+--- a/src/rust/cpu/hypercall.rs
++++ b/src/rust/cpu/hypercall.rs
+@@ -342,6 +342,8 @@ pub unsafe fn try_dispatch(function_id: i32) -> bool {
+         // Uncontended mutex fast paths (see mutex mirror table @ OFF_HC_MUTEX_MIRROR_PTR).
+         80 => handle_release_mutex(),
+         81 => handle_wait_for_single_object(),
++        82 => handle_memmove_bulk(),
++        83 => handle_memchr_bulk(),
+ 
+         // ── Handler-id band 128..=255: Guarded Inner-Loop HLE engine kernels,
+         //    kept in a distinct range from the
+@@ -1397,6 +1399,10 @@ unsafe fn handle_memcpy() -> bool {
+         write_reg32(EAX, dst);
+         return true;
+     }
++    if len >= 64 && super::bulk_memory::try_copy(dst as u32, src as u32, len, false) {
++        write_reg32(EAX, dst);
++        return true;
++    }
+     // Copy 4 bytes at a time, then remaining bytes
+     let mut i: u32 = 0;
+     while i + 4 <= len {
+@@ -1438,6 +1444,10 @@ unsafe fn handle_memset() -> bool {
+         write_reg32(EAX, dst);
+         return true;
+     }
++    if len >= 64 && super::bulk_memory::try_fill(dst as u32, c as u8, len) {
++        write_reg32(EAX, dst);
++        return true;
++    }
+     // Fill 4 bytes at a time
+     let fill32 = c | (c << 8) | (c << 16) | (c << 24);
+     let mut i: u32 = 0;
+@@ -1585,6 +1595,12 @@ unsafe fn handle_memcmp() -> bool {
+         Ok(v) => v as u32,
+         Err(_) => return false,
+     };
++    if len >= 64 {
++        if let Some(result) = super::bulk_memory::try_compare(s1 as u32, s2 as u32, len) {
++            write_reg32(EAX, result);
++            return true;
++        }
++    }
+     let mut i: u32 = 0;
+     while i < len {
+         let c1 = match hc_safe_read8(s1 + i as i32) {
+@@ -2301,3 +2317,28 @@ unsafe fn handle_rt_dynamic_cast() -> bool {
+     }
+ }
+ 
++
++// New handlers are capability-gated by the host. Guard misses have no partial writes.
++unsafe fn handle_memmove_bulk() -> bool {
++    let esp = read_reg32(ESP);
++    let Ok(dst) = safe_read32s(esp.wrapping_add(4)) else { return false; };
++    let Ok(src) = safe_read32s(esp.wrapping_add(8)) else { return false; };
++    let Ok(len) = safe_read32s(esp.wrapping_add(12)) else { return false; };
++    if len == 0 || super::bulk_memory::try_copy(dst as u32, src as u32, len as u32, true) {
++        write_reg32(EAX, dst);
++        return true;
++    }
++    false
++}
++
++unsafe fn handle_memchr_bulk() -> bool {
++    let esp = read_reg32(ESP);
++    let Ok(src) = safe_read32s(esp.wrapping_add(4)) else { return false; };
++    let Ok(value) = safe_read32s(esp.wrapping_add(8)) else { return false; };
++    let Ok(len) = safe_read32s(esp.wrapping_add(12)) else { return false; };
++    if let Some(result) = super::bulk_memory::try_find(src as u32, value as u8, len as u32) {
++        write_reg32(EAX, result as i32);
++        return true;
++    }
++    false
++}
+diff --git a/src/rust/cpu/mod.rs b/src/rust/cpu/mod.rs
+index 8944e25b..f3a11b29 100644
+--- a/src/rust/cpu/mod.rs
++++ b/src/rust/cpu/mod.rs
+@@ -5,6 +5,7 @@ pub mod cpu;
+ pub mod fpu;
+ pub mod global_pointers;
+ pub mod hypercall;
++pub mod bulk_memory;
+ pub mod hypercall_eagl;
+ pub mod hypercall_rtti;
+ pub mod instructions;
