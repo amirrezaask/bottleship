@@ -4,9 +4,11 @@ import {readFileSync,writeFileSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {createRepMachine,LEFT,RIGHT} from '../runtime-test/rep-machine.mjs';
 const oracle=process.argv[2];if(!oracle)throw new Error('Usage: node verify-rep-native.mjs <native-oracle> [report.json]');
+const offsets=(process.env.V86_ORACLE_OFFSETS||'0,3').split(',').map(Number);
+if(offsets.some(x=>!Number.isInteger(x)||x<0||x>16))throw new RangeError('Invalid oracle offsets');
 const cases=[];
 for(const op of [0,1,2])for(const size of [1,2,4])for(const eq of [0,1])for(const backwards of [0,1])for(const count of [0,1,7,16,17,63,65,129]){
-    for(const value of [0,1,0x7f,0x80,0x8000,0x80000000,0xffffffff,0x89abf17e])for(const stop of new Set([-1,0,count-1]))for(const offset of [0,3]){
+    for(const value of [0,1,0x7f,0x80,0x8000,0x80000000,0xffffffff,0x89abf17e])for(const stop of new Set([-1,0,count-1]))for(const offset of offsets){
         cases.push([op,size,eq,backwards,count,value,0x8d7,stop,offset]);
     }
 }
@@ -27,6 +29,6 @@ try{
         let hash=2166136261;for(let i=0;i<count*size;i++)hash=Math.imul(hash^mem[RIGHT+offset+i],16777619)>>>0;
         assert.deepEqual([r.ecx,r.esi-LEFT,r.edi-RIGHT,r.flags&0xcd5,hash],native[index].split(' ').map(Number),`native REP case ${index}: ${cases[index]}`);
     }
-    const report={cases:cases.length,passed:cases.length,hostArch:process.arch,hostCalls:m.hostCalls,repStats:m.repStats(),note:'Native x86-64 REP operand/count/direction/arithmetic-flag oracle. It does not test guest address translation, exceptions, 16-bit wrap or native performance.'};
+    const report={offsets,unalignedStats:m.api.get_unaligned_rep_stats_ptr?Array.from(new Uint32Array(m.cpu.wasm_memory.buffer,m.api.get_unaligned_rep_stats_ptr()>>>0,8)):null,cases:cases.length,passed:cases.length,hostArch:process.arch,hostCalls:m.hostCalls,repStats:m.repStats(),note:'Native x86-64 REP operand/count/direction/arithmetic-flag oracle. It does not test guest address translation, exceptions, 16-bit wrap or native performance.'};
     console.log(JSON.stringify(report,null,2));if(process.argv[3])writeFileSync(process.argv[3],JSON.stringify(report,null,2)+'\n');
 }finally{m.close();}

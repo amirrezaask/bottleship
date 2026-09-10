@@ -7,9 +7,10 @@ import {resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 const root=fileURLToPath(new URL('../../',import.meta.url));
+const unaligned=process.env.V86_BENCHMARK_SUITE==='unaligned';
 const strings=process.env.V86_BENCHMARK_SUITE==='strings';
 const reps=process.env.V86_BENCHMARK_SUITE==='rep';
-const base=process.argv[2]||(reps?'fb04401f30b1267548b05cb2574ace7b9d47f4dc':strings?'dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8':'9501efd8bc208be8e67f72f226bb795255451bc7');
+const base=process.argv[2]||(unaligned?'822b0f214bb36e9757784be0f524557d59a4fe94':reps?'fb04401f30b1267548b05cb2574ace7b9d47f4dc':strings?'dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8':'9501efd8bc208be8e67f72f226bb795255451bc7');
 const git=(...args)=>execFileSync('git',args,{cwd:root,maxBuffer:16*1024*1024});
 const binaries=new Map([
     ['/parent.wasm',git('show',`${base}:public/v86.wasm`)],
@@ -22,7 +23,7 @@ window.report=x=>fetch('/result',{method:'POST',body:JSON.stringify(x)});
 window.addEventListener('error',e=>window.report({error:e.message}));
 window.addEventListener('unhandledrejection',e=>window.report({error:String(e.reason)}));
 </script><script type="module">
-import {${reps?'benchmarkRep':strings?'benchmarkStrings':'benchmarkBulk'} as benchmark} from '/tools/perf/${reps?'rep':strings?'string':'bulk'}-workloads.mjs';
+import {${unaligned?'benchmarkUnaligned':reps?'benchmarkRep':strings?'benchmarkStrings':'benchmarkBulk'} as benchmark} from '/tools/perf/${unaligned?'unaligned':reps?'rep':strings?'string':'bulk'}-workloads.mjs';
 try {
  const variants={};
  for(const name of ${JSON.stringify([...binaries.keys()].map(p=>p.slice(1,-5)))}){
@@ -62,7 +63,7 @@ try{
     child=spawn(chrome,args,{stdio:['ignore','ignore','pipe']});let stderr='';
     child.stderr.on('data',x=>{stderr=(stderr+x).slice(-16000);});
     const result=await Promise.race([completed,
-        new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`Benchmark timeout: ${stderr}`)),reps?180000:strings?120000:60000);}),
+        new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`Benchmark timeout: ${stderr}`)),(unaligned||reps)?180000:strings?120000:60000);}),
         new Promise((_,reject)=>{child.once('error',reject);child.once('exit',code=>reject(new Error(`Chrome exit ${code}: ${stderr}`)));}),
     ]);
     if(result.error)throw new Error(JSON.stringify(result));

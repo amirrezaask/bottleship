@@ -26,6 +26,9 @@ const stringBaseline = process.env.V86_STRING_BASELINE_OUTPUT && resolve(root, p
 const repPatch = join(root, 'tools/build-v86-runtime/rep-memory.patch');
 const repKernel = join(root, 'tools/build-v86-runtime/rep-memory.rs');
 const repBaseline = process.env.V86_REP_BASELINE_OUTPUT && resolve(root, process.env.V86_REP_BASELINE_OUTPUT);
+const unalignedPatch = join(root, 'tools/build-v86-runtime/unaligned-memory.patch');
+const unalignedKernel = join(root, 'tools/build-v86-runtime/unaligned-memory.rs');
+const unalignedBaseline = process.env.V86_UNALIGNED_BASELINE_OUTPUT && resolve(root, process.env.V86_UNALIGNED_BASELINE_OUTPUT);
 try {
     execFileSync('git', ['clone', '--shared', '--no-checkout', source, work], { stdio: 'inherit' });
     run('git', ['checkout', '--detach', pinned]);
@@ -61,9 +64,14 @@ try {
     run('git', ['apply', '--check', repPatch]);
     run('git', ['apply', repPatch]);
     copyFileSync(repKernel, join(work, 'src/rust/cpu/rep_memory.rs'));
+    if (unalignedBaseline) compile(unalignedBaseline);
+    run('git', ['apply', '--check', unalignedPatch]);
+    run('git', ['apply', unalignedPatch]);
+    copyFileSync(unalignedKernel, join(work, 'src/rust/cpu/unaligned_memory.rs'));
     compile(output);
     const module = new WebAssembly.Module(readFileSync(output));
     for (const name of ['get_bulk_memory_abi', 'get_bulk_memory_stats_ptr', 'set_bulk_memory_enabled',
+        'get_unaligned_rep_abi', 'get_unaligned_rep_stats_ptr', 'set_unaligned_rep_enabled',
         'get_rep_memory_abi', 'get_rep_memory_stats_ptr', 'set_rep_memory_enabled',
         'get_string_memory_abi', 'get_string_memory_stats_ptr', 'set_string_memory_enabled']) {
         if (!WebAssembly.Module.exports(module).some(e => e.name === name)) throw new Error(`Missing export ${name}`);
@@ -72,7 +80,8 @@ try {
         features: ['bulk-memory', 'multivalue', 'simd128'], patchSha256: sha256(patch),
         kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),
         stringKernelSha256: sha256(stringKernel), repPatchSha256: sha256(repPatch),
-        repKernelSha256: sha256(repKernel), buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
+        repKernelSha256: sha256(repKernel), unalignedPatchSha256: sha256(unalignedPatch),
+        unalignedKernelSha256: sha256(unalignedKernel), buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
     writeFileSync(join(root, 'tools/build-v86-runtime/manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     console.log(JSON.stringify(manifest, null, 2));
 } finally { rmSync(work, { recursive: true, force: true }); }

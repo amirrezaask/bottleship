@@ -1,0 +1,53 @@
+--- a/src/rust/cpu/mod.rs
++++ b/src/rust/cpu/mod.rs
+@@ -20,3 +20,5 @@
+ pub mod string;
+ pub mod rep_memory;
+ pub mod vga;
++
++pub mod unaligned_memory;
+--- a/src/rust/cpu/rep_memory.rs
++++ b/src/rust/cpu/rep_memory.rs
+@@ -4,6 +4,8 @@
+ use crate::cpu::{cpu, memory, global_pointers};
+ 
+ static mut ENABLED: bool = true;
++#[inline]
++pub(super) unsafe fn is_enabled() -> bool { ENABLED }
+ // CMPS chunks, SCAS chunks, STOSW chunks, STOSD chunks, rejected eligible chunks.
+ static mut STATS: [u32; 5] = [0; 5];
+ #[no_mangle]
+--- a/src/rust/cpu/string.rs
++++ b/src/rust/cpu/string.rs
+@@ -141,6 +141,31 @@
+     };
+ 
+     let is_aligned = (ds + src) & (size_bytes - 1) == 0 && (es + dst) & (size_bytes - 1) == 0;
++
++    if !is_aligned && is_asize_32 && matches!(rep, Rep::Z | Rep::NZ) {
++        let progress = return_on_pagefault!(match (instruction, size_bytes) {
++            (Instruction::Cmps, 2) => super::unaligned_memory::run::<2, 0>(ds.wrapping_add(src), es.wrapping_add(dst), count, direction == -1, matches!(rep, Rep::Z), data),
++            (Instruction::Cmps, 4) => super::unaligned_memory::run::<4, 0>(ds.wrapping_add(src), es.wrapping_add(dst), count, direction == -1, matches!(rep, Rep::Z), data),
++            (Instruction::Scas, 2) => super::unaligned_memory::run::<2, 1>(0, es.wrapping_add(dst), count, direction == -1, matches!(rep, Rep::Z), data),
++            (Instruction::Scas, 4) => super::unaligned_memory::run::<4, 1>(0, es.wrapping_add(dst), count, direction == -1, matches!(rep, Rep::Z), data),
++            (Instruction::Stos, 2) => super::unaligned_memory::run::<2, 2>(0, es.wrapping_add(dst), count, direction == -1, true, data),
++            (Instruction::Stos, 4) => super::unaligned_memory::run::<4, 2>(0, es.wrapping_add(dst), count, direction == -1, true, data),
++            _ => Ok(None),
++        });
++        if let Some((completed, left, right)) = progress {
++            count -= completed;
++            let finished = count == 0 || (instruction != Instruction::Stos && (left == right) != matches!(rep, Rep::Z));
++            if finished && instruction != Instruction::Stos {
++                match size { Size::W => cmp16(left, right), Size::D => cmp32(left, right), _ => unreachable!() };
++            }
++            let delta = (completed as i32).wrapping_mul(increment);
++            if instruction == Instruction::Cmps { write_reg32(ESI, src.wrapping_add(delta)); }
++            write_reg32(EDI, dst.wrapping_add(delta));
++            write_reg32(ECX, count as i32);
++            if !finished { *instruction_pointer = *previous_ip; }
++            return;
++        }
++    }
+ 
+     // unaligned movs is properly handled in the fast path
+     let mut rep_fast = (instruction == Instruction::Movs || is_aligned)
