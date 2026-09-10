@@ -3,7 +3,6 @@ name: String performance
 on:
   push:
     branches: ['perf/wasm-string-fastpaths-stacked']
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,33 +15,26 @@ jobs:
   bootstrap:
     if: github.ref == 'refs/heads/perf/wasm-string-fastpaths-stacked'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
           fetch-depth: 0
-      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-      - name: Build parent control and integrated string core
-        env:
-          V86_STRING_BASELINE_OUTPUT: performance-results/v86-pr3-rebuilt.wasm
+      - name: Harden raw dispatch IDs on this branch only
         run: |
           git apply --check tools/build-v86-runtime/host-string.patch
           git apply tools/build-v86-runtime/host-string.patch
-          node tools/build-v86-runtime/build.mjs
-      - name: Publish generated assets on this branch only
-        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add public/v86.wasm tools/build-v86-runtime/manifest.json src/worker/core/cpu/hypercall-data.ts
-          git commit -m 'build: publish integrated string runtime and versioned host bindings'
+          git add src/worker/core/cpu/hypercall-data.ts
+          git commit -m 'fix: reject invalid raw dispatch IDs before mutating bindings'
           git push origin HEAD:refs/heads/perf/wasm-string-fastpaths-stacked
+          mkdir -p performance-results
           git bundle create performance-results/source.bundle --all
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: string-core-build
+          name: string-host-build
           path: performance-results/
           retention-days: 14
