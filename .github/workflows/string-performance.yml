@@ -2,7 +2,9 @@ name: String performance
 
 on:
   push:
-    branches: ['perf/wasm-string-fastpaths-stacked']
+    branches: [main, master, 'perf/wasm-string-*']
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,30 +13,58 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: string-performance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  bootstrap:
-    if: github.ref == 'refs/heads/perf/wasm-string-fastpaths-stacked'
+  strings:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
           fetch-depth: 0
-      - name: Harden raw dispatch IDs on this branch only
+      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Rebuild integrated core and same-compiler PR3 control
+        env:
+          V86_STRING_BASELINE_OUTPUT: performance-results/v86-pr3-rebuilt.wasm
+        run: node tools/build-v86-runtime/build.mjs
+      - name: Verify committed assets and exact parent control
         run: |
-          git apply --check tools/build-v86-runtime/host-string.patch
-          git apply tools/build-v86-runtime/host-string.patch
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/worker/core/cpu/hypercall-data.ts
-          git commit -m 'fix: reject invalid raw dispatch IDs before mutating bindings'
-          git push origin HEAD:refs/heads/perf/wasm-string-fastpaths-stacked
-          mkdir -p performance-results
-          git bundle create performance-results/source.bundle --all
-      - uses: actions/upload-artifact@v4
+          git diff --exit-code -- public/v86.wasm tools/build-v86-runtime/manifest.json vendor/v86
+          git show dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8:public/v86.wasm > performance-results/v86-pr3-shipped.wasm
+          cmp performance-results/v86-pr3-shipped.wasm performance-results/v86-pr3-rebuilt.wasm
+      - uses: oven-sh/setup-bun@v2
         with:
-          name: string-host-build
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Project suite and compiled CPU regressions
+        run: |
+          bun test 2>&1 | tee performance-results/project-tests.log
+          node --test tools/runtime-test/*.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+      - run: bun run build
+      - name: Incremental guest-call benchmarks against PR3
+        env:
+          V86_REBUILT_BASELINE: performance-results/v86-pr3-rebuilt.wasm
+        run: |
+          node tools/perf/string-memory.mjs dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8 performance-results/node-strings.json
+          node tools/perf/browser-string-memory.mjs dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8 performance-results/chromium-strings.json
+      - name: Record provenance and generator changes
+        if: always()
+        run: |
+          mkdir -p performance-results
+          git status --short > performance-results/working-tree.txt
+          cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: string-performance-results
           path: performance-results/
           retention-days: 14
