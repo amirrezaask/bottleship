@@ -12,7 +12,7 @@ export function repCases(){
     for(const c of configs.filter(x=>x.op!=='stos'&&x.op!=='movs'&&x.size===1))for(const length of [8,4096])for(const backwards of [false,true])for(const mode of ['first','last'])cases.push({...c,length,backwards,offset:0,mode});
     return cases;
 }
-export async function benchmarkRep(variants){
+export async function benchmarkRep(variants,cases=repCases()){
     const machines=[];
     try{
         for(const [name,binary] of Object.entries(variants)){
@@ -26,9 +26,9 @@ export async function benchmarkRep(variants){
             if(!m.finalized)throw new Error(`${name}: guest REP loop did not compile`);
         }
         const results=[];
-        for(const c of repCases()){
+        for(const c of cases){
             const {op,size,equal,value,length,backwards,offset,mode}=c,bytes=length*size;
-            const start=backwards&&length?(length-1)*size:0,a=LEFT+offset,b=RIGHT+offset,src=a+start,dst=b+start;
+            const start=backwards&&length?(length-1)*size:0,a=LEFT+offset,b=RIGHT+(c.dstOffset??offset),src=a+start,dst=b+start;
             const stop=mode==='first'?0:mode==='last'?length-1:-1,done=stop<0?length:Math.min(length,stop+1);
             const expectedCount=length-done,expectedSrc=src+((op==='cmps'||op==='movs')?done*size*(backwards?-1:1):0),expectedDst=dst+done*size*(backwards?-1:1);
             const options={equal,backwards,value};
@@ -46,8 +46,11 @@ export async function benchmarkRep(variants){
             // Permit asynchronous browser/WASM compilation to settle between phases.
             await pause();
             const statIndex=op==='cmps'?0:op==='scas'?1:op==='stos'&&size>1?size===2?2:3:-1;
-            const shouldHit=statIndex>=0&&offset%size===0&&length>=(op==='stos'?64/size:16/size);
-            const before=machines.find(([n])=>n==='candidate')?.[1].repStats()?.[statIndex];
+            const shouldHit=statIndex>=0&&offset%size===0&&(c.dstOffset??offset)%size===0&&length>=(op==='stos'?64/size:16/size);
+            const candidate=machines.find(([n])=>n==='candidate')?.[1];
+            const before=candidate?.repStats()?.[statIndex];
+            const extraStats=m=>m?.api.get_unaligned_rep_stats_ptr?Array.from(new Uint32Array(m.cpu.wasm_memory.buffer,m.api.get_unaligned_rep_stats_ptr()>>>0,8)):null;
+            const extraBefore=extraStats(candidate);
             const counts={},samples=Object.fromEntries(machines.map(([n])=>[n,[]])),batches=Object.fromEntries(machines.map(([n])=>[n,[]]));
             for(const [name,m] of machines){
                 let iterations=length===0||mode==='first'?20000:Math.max(8,Math.min(20000,Math.floor(262144/Math.max(1,bytes))));
@@ -69,16 +72,20 @@ export async function benchmarkRep(variants){
             for(const [name,m] of machines){
                 if(m.hostCalls)throw new Error(`${name}: unexpected API host dispatch`);
                 if(name==='candidate'&&shouldHit&&m.repStats()?.[statIndex]===before)throw new Error(`REP intrinsic not exercised ${JSON.stringify(c)}`);
+                if(name==='candidate'&&c.requireUnaligned){
+                    const index=(op==='cmps'?0:op==='scas'?2:4)+Number(size===4);
+                    if(!extraBefore||extraStats(m)[index]===extraBefore[index])throw new Error('Unaligned intrinsic not exercised');
+                }
                 if(op==='stos'||op==='movs'){
                     const mem=m.guest();for(let i=0;i<bytes;i++)if(mem[b+i]!==((value>>>((i%size)*8))&255))throw new Error('REP write mismatch');
                     if(mem[b-1]!==173||mem[b+bytes]!==173)throw new Error('REP write canary changed');
                 }
             }
             const medians=Object.fromEntries(Object.entries(samples).map(([name,xs])=>[name,median(xs)]));
-            results.push({case:`${equal?'REPE':'REPNE'} ${op}${size*8} ${mode} ${length} units ${backwards?'backward':'forward'} +${offset} value=${value>>>0}`,...c,
+            results.push({case:`${equal?'REPE':'REPNE'} ${op}${size*8} ${mode} ${length} units ${backwards?'backward':'forward'} +${offset}/+${c.dstOffset??offset} value=${value>>>0}`,...c,
                 mediansMs:medians,iterationsByVariant:counts,samplesMs:samples,batchSamplesMs:batches,speedupVsParent:medians.parent/medians.candidate,speedupVsRebuilt:medians.rebuilt?medians.rebuilt/medians.candidate:null});
         }
-        return {note:'Real JIT-warmed guest REP instructions, resident pages, same caller; event-loop yields between warm-up/calibration/sample batches allow async tiering to settle. Timings include register setup/CALL/RET/loop and page translation; no API thunks, staging copies, GPU or native-performance comparison. All 212 cases retained, including existing bulk controls and unaligned fallback cases.',
-            engines:Object.fromEntries(machines.map(([n,m])=>[n,{jitFinalizations:m.finalized,hostCalls:m.hostCalls,repStats:m.repStats()}])),results};
+        return {note:'Real JIT-warmed guest REP instructions, resident pages, same caller; event-loop yields between warm-up/calibration/sample batches allow async tiering to settle. Timings include register setup/CALL/RET/loop and page translation; no API thunks, staging copies, GPU or native-performance comparison. All supplied cases retained, including controls and fallbacks.', caseCount:cases.length,
+            engines:Object.fromEntries(machines.map(([n,m])=>[n,{jitFinalizations:m.finalized,hostCalls:m.hostCalls,repStats:m.repStats(),unalignedStats:m.api.get_unaligned_rep_stats_ptr?Array.from(new Uint32Array(m.cpu.wasm_memory.buffer,m.api.get_unaligned_rep_stats_ptr()>>>0,8)):null}])),results};
     }finally{for(const [,m] of machines)m.close();}
 }

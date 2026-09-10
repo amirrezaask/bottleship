@@ -1,38 +1,76 @@
 name: Unaligned performance
+
 on:
   push:
-    branches: ['perf/wasm-unaligned-rep-stacked']
+    branches: [main, master, 'perf/wasm-unaligned-*']
+  pull_request:
   workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: unaligned-performance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  bootstrap:
-    if: github.ref == 'refs/heads/perf/wasm-unaligned-rep-stacked'
+  instructions:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-      - name: Build identical-toolchain PR5 control and candidate
+      - name: Rebuild integrated core and identical-toolchain PR5 control
         env:
           V86_UNALIGNED_BASELINE_OUTPUT: performance-results/v86-pr5-rebuilt.wasm
         run: node tools/build-v86-runtime/build.mjs
-      - name: Publish generated CPU on this branch only
+      - name: Verify committed runtime and exact parent control
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add public/v86.wasm tools/build-v86-runtime/manifest.json
-          git diff --cached --quiet || git commit -m 'build: regenerate integrated unaligned REP core'
-          git push origin HEAD:perf/wasm-unaligned-rep-stacked
-          git archive HEAD | gzip > performance-results/source.tar.gz
-          git rev-parse HEAD > performance-results/head.txt
-          git rev-parse HEAD^{tree} > performance-results/tree.txt
+          git diff --exit-code -- public/v86.wasm tools/build-v86-runtime/manifest.json vendor/v86
+          git show 822b0f214bb36e9757784be0f524557d59a4fe94:public/v86.wasm > performance-results/v86-pr5-shipped.wasm
+          cmp performance-results/v86-pr5-shipped.wasm performance-results/v86-pr5-rebuilt.wasm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Full suite and compiled CPU tests
+        run: |
+          bun test 2>&1 | tee performance-results/project-tests.log
+          node --test tools/runtime-test/*.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+      - run: bun run build
+      - name: Native x86 oracle across all low-two-bit alignments
+        env:
+          V86_ORACLE_OFFSETS: 0,1,2,3
+        run: |
+          gcc -O2 -Wall -Wextra -Werror tools/runtime-test/rep-native-oracle.c -o performance-results/rep-native-oracle
+          node tools/perf/verify-rep-native.mjs ./performance-results/rep-native-oracle performance-results/native-oracle.json
+      - name: Incremental guest-instruction benchmarks against PR5
+        env:
+          V86_REBUILT_BASELINE: performance-results/v86-pr5-rebuilt.wasm
+        run: |
+          node tools/perf/unaligned-memory.mjs 822b0f214bb36e9757784be0f524557d59a4fe94 performance-results/node-unaligned.json
+          node tools/perf/browser-unaligned-memory.mjs 822b0f214bb36e9757784be0f524557d59a4fe94 performance-results/chromium-unaligned.json
+      - name: Record provenance and generator changes
+        if: always()
+        run: |
+          mkdir -p performance-results
+          git status --short > performance-results/working-tree.txt
+          cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: unaligned-core-build
+          name: unaligned-performance-results
           path: performance-results/
           retention-days: 14
