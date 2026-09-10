@@ -3,7 +3,11 @@ import { V86 } from '../../vendor/v86/build/libv86.mjs';
 export const BASE = 0x100000, ENTRY = BASE + 0x40, LEAF = BASE + 0x1000;
 export const DONE = BASE + 0x80, STACK = 0x300000, LEFT = 0x400000, RIGHT = 0x800000;
 export const RAM = 32 * 1024 * 1024, PD = 0x80000, PT = 0x81000;
-export const IDS = { memcpy: 56, memset: 57, memcmp: 62, memmove: 82, memchr: 83 };
+export const IDS = {
+    memcpy: 56, memset: 57, memcmp: 62, memmove: 82, memchr: 83,
+    strlen: 58, wcslen: 51, strcmp: 59, stricmp: 61, wcsicmp: 54,
+    wcschr: 55, strcpy: 60, wcscpy: 52, strchr: 84, strrchr: 85,
+};
 function image(halt) {
     const bytes = new Uint8Array(0x2000), v = new DataView(bytes.buffer);
     const fields = [0x1badb002, 0x10000, -(0x1badb002 + 0x10000), BASE, BASE, BASE + bytes.length, BASE + bytes.length, ENTRY];
@@ -69,6 +73,7 @@ export async function createMachine(binary, { jit = false, halt = false } = {}) 
         setFallback(fn) { fallback = fn; },
         get hostCalls() { return hostCalls; }, get finalized() { return finalized; },
         stats() { return api.get_bulk_memory_stats_ptr ? Array.from(new Uint32Array(cpu.wasm_memory.buffer, api.get_bulk_memory_stats_ptr() >>> 0, 6)) : null; },
+        stringStats() { return api.get_string_memory_stats_ptr ? Array.from(new Uint32Array(cpu.wasm_memory.buffer, api.get_string_memory_stats_ptr() >>> 0, 11)) : null; },
         close() { emulator.destroy(); },
     };
 }

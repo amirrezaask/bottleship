@@ -20,6 +20,9 @@ const output = resolve(root, process.env.V86_OUTPUT || 'public/v86.wasm');
 const baseline = process.env.V86_BASELINE_OUTPUT && resolve(root, process.env.V86_BASELINE_OUTPUT);
 const patch = join(root, 'tools/build-v86-runtime/bulk-memory.patch');
 const kernel = join(root, 'tools/build-v86-runtime/bulk-memory.rs');
+const stringPatch = join(root, 'tools/build-v86-runtime/string-memory.patch');
+const stringKernel = join(root, 'tools/build-v86-runtime/string-memory.rs');
+const stringBaseline = process.env.V86_STRING_BASELINE_OUTPUT && resolve(root, process.env.V86_STRING_BASELINE_OUTPUT);
 try {
     execFileSync('git', ['clone', '--shared', '--no-checkout', source, work], { stdio: 'inherit' });
     run('git', ['checkout', '--detach', pinned]);
@@ -47,14 +50,20 @@ try {
     run('git', ['apply', '--check', patch]);
     run('git', ['apply', patch]);
     copyFileSync(kernel, join(work, 'src/rust/cpu/bulk_memory.rs'));
+    if (stringBaseline) compile(stringBaseline);
+    run('git', ['apply', '--check', stringPatch]);
+    run('git', ['apply', stringPatch]);
+    copyFileSync(stringKernel, join(work, 'src/rust/cpu/string_memory.rs'));
     compile(output);
     const module = new WebAssembly.Module(readFileSync(output));
-    for (const name of ['get_bulk_memory_abi', 'get_bulk_memory_stats_ptr', 'set_bulk_memory_enabled']) {
+    for (const name of ['get_bulk_memory_abi', 'get_bulk_memory_stats_ptr', 'set_bulk_memory_enabled',
+        'get_string_memory_abi', 'get_string_memory_stats_ptr', 'set_string_memory_enabled']) {
         if (!WebAssembly.Module.exports(module).some(e => e.name === name)) throw new Error(`Missing export ${name}`);
     }
     const manifest = { v86Commit: pinned, rust, target: 'wasm32-unknown-unknown',
         features: ['bulk-memory', 'multivalue', 'simd128'], patchSha256: sha256(patch),
-        kernelSha256: sha256(kernel), buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
+        kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),
+        stringKernelSha256: sha256(stringKernel), buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
     writeFileSync(join(root, 'tools/build-v86-runtime/manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     console.log(JSON.stringify(manifest, null, 2));
 } finally { rmSync(work, { recursive: true, force: true }); }
