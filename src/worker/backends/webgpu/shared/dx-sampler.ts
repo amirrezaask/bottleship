@@ -40,7 +40,7 @@ export interface SamplerSpec {
     maxMipLevel?: number;
 }
 
-const clampAniso = (n: number): number => Math.max(1, Math.min(16, Math.floor(n)));
+const clampAniso = (n: number): number => Math.max(1, Math.min(16, Math.floor(Number.isNaN(n) ? 1 : n)));
 
 /**
  * Cache + factory for DirectX GPU samplers. One instance per backend executor (bound to its GPUDevice).
@@ -49,7 +49,8 @@ const clampAniso = (n: number): number => Math.max(1, Math.min(16, Math.floor(n)
  */
 export class DxSamplerCache {
     private device: GPUDevice;
-    private cache = new Map<string, GPUSampler>();
+    private cache = new Map<number, Map<number, GPUSampler>>();
+    private readonly scratch: GPUSamplerDescriptor = {};
 
     constructor(device: GPUDevice) {
         this.device = device;
@@ -62,6 +63,16 @@ export class DxSamplerCache {
         spec: SamplerSpec,
         quality?: { anisotropy: number; forceTrilinear: boolean },
     ): GPUSamplerDescriptor {
+        const desc: GPUSamplerDescriptor = {};
+        DxSamplerCache.fillDescriptor(spec, quality ?? EmulatorConfig.getInstance().quality, desc);
+        return desc;
+    }
+
+    private static fillDescriptor(
+        spec: SamplerSpec,
+        quality: { anisotropy: number; forceTrilinear: boolean },
+        desc: GPUSamplerDescriptor,
+    ): void {
         let min = spec.min;
         let mag = spec.mag;
         let mip = spec.mip;
@@ -72,7 +83,7 @@ export class DxSamplerCache {
 
         // Quality overrides. NEVER smooth intentionally point-sampled
         // textures (pixel-art / crisp UI) — only upgrade ones the game already filters bilinearly.
-        const q = quality ?? EmulatorConfig.getInstance().quality;
+        const q = quality;
         const gameUsesPoint = min === "nearest" || mag === "nearest";
         if (q.anisotropy > 1 && !gameUsesPoint) {
             aniso = Math.max(aniso, clampAniso(q.anisotropy));
@@ -91,53 +102,55 @@ export class DxSamplerCache {
             baseLevelOnly = false;
         }
 
-        const desc: GPUSamplerDescriptor = {
-            minFilter: min,
-            magFilter: mag,
-            mipmapFilter: mip,
-            addressModeU: spec.addressU,
-            addressModeV: spec.addressV,
-            addressModeW: spec.addressW ?? "clamp-to-edge",
-            maxAnisotropy: aniso,
-        };
+        desc.minFilter = min;
+        desc.magFilter = mag;
+        desc.mipmapFilter = mip;
+        desc.addressModeU = spec.addressU;
+        desc.addressModeV = spec.addressV;
+        desc.addressModeW = spec.addressW ?? "clamp-to-edge";
+        desc.maxAnisotropy = aniso;
 
         // LOD clamping. lodMinClamp from MAXMIPLEVEL (most-detailed usable level);
         // lodMaxClamp=0 pins the base level when no mip filtering was requested.
         const lodMin = spec.maxMipLevel && spec.maxMipLevel > 0 ? spec.maxMipLevel : 0;
-        if (lodMin > 0) desc.lodMinClamp = lodMin;
-        if (baseLevelOnly) desc.lodMaxClamp = Math.max(lodMin, 0);
-
-        return desc;
+        // Reset both fields: the descriptor is reused when sampler intent changes.
+        desc.lodMinClamp = lodMin > 0 ? lodMin : undefined;
+        desc.lodMaxClamp = baseLevelOnly ? lodMin : undefined;
     }
 
-    /** Stable cache key for an effective descriptor. */
-    private static keyOf(d: GPUSamplerDescriptor): string {
-        const fb = (f: GPUFilterMode | GPUMipmapFilterMode | undefined): number => (f === "linear" ? 1 : 0);
-        const ab = (a: GPUAddressMode | undefined): number =>
-            a === "repeat" ? 1 : a === "mirror-repeat" ? 2 : a === "clamp-to-edge" ? 0 : 3;
-        return [
-            fb(d.minFilter), fb(d.magFilter), fb(d.mipmapFilter),
-            ab(d.addressModeU), ab(d.addressModeV), ab(d.addressModeW),
-            d.maxAnisotropy ?? 1,
-            d.lodMinClamp ?? 0,
-            d.lodMaxClamp === undefined ? -1 : d.lodMaxClamp,
-        ].join(":");
+    /** The 14-bit key is an encoding, not a hash. LOD is kept separate and never truncated. */
+    private static keyOf(d: GPUSamplerDescriptor): number {
+        return Number(d.minFilter === "linear") |
+            (Number(d.magFilter === "linear") << 1) |
+            (Number(d.mipmapFilter === "linear") << 2) |
+            (addressBits(d.addressModeU) << 3) |
+            (addressBits(d.addressModeV) << 5) |
+            (addressBits(d.addressModeW) << 7) |
+            (((d.maxAnisotropy ?? 1) - 1) << 9) |
+            (Number(d.lodMaxClamp !== undefined) << 13);
     }
 
-    /** Acquire (create-or-reuse) the GPU sampler for the given spec. */
+    /** Cache hits construct neither descriptor objects nor string keys. */
     acquire(spec: SamplerSpec): GPUSampler {
-        const desc = DxSamplerCache.resolveDescriptor(spec);
+        const desc = this.scratch;
+        DxSamplerCache.fillDescriptor(spec, EmulatorConfig.getInstance().quality, desc);
         const key = DxSamplerCache.keyOf(desc);
-        let s = this.cache.get(key);
-        if (!s) {
-            s = this.device.createSampler(desc);
-            this.cache.set(key, s);
-        }
-        return s;
+        const lod = desc.lodMinClamp ?? 0;
+        let levels = this.cache.get(key);
+        const cached = levels?.get(lod);
+        if (cached) return cached;
+        const sampler = this.device.createSampler({ ...desc });
+        if (!levels) this.cache.set(key, levels = new Map());
+        levels.set(lod, sampler);
+        return sampler;
     }
 
     /** Drop cached samplers (e.g. on device loss / executor reset). */
     clear(): void {
         this.cache.clear();
     }
+}
+
+function addressBits(mode: GPUAddressMode | undefined): number {
+    return mode === "repeat" ? 1 : mode === "mirror-repeat" ? 2 : mode === "clamp-to-edge" ? 0 : 3;
 }
