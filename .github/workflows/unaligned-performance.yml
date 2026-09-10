@@ -4,9 +4,10 @@ on:
     branches: ['perf/wasm-unaligned-rep-stacked']
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
-  baseline:
+  bootstrap:
+    if: github.ref == 'refs/heads/perf/wasm-unaligned-rep-stacked'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -14,14 +15,24 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
-      - run: |
-          mkdir -p performance-results
+      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Build identical-toolchain PR5 control and candidate
+        env:
+          V86_UNALIGNED_BASELINE_OUTPUT: performance-results/v86-pr5-rebuilt.wasm
+        run: node tools/build-v86-runtime/build.mjs
+      - name: Publish generated CPU on this branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/v86.wasm tools/build-v86-runtime/manifest.json
+          git diff --cached --quiet || git commit -m 'build: regenerate integrated unaligned REP core'
+          git push origin HEAD:perf/wasm-unaligned-rep-stacked
           git archive HEAD | gzip > performance-results/source.tar.gz
-          git -C vendor/v86 archive HEAD | gzip > performance-results/v86-source.tar.gz
           git rev-parse HEAD > performance-results/head.txt
           git rev-parse HEAD^{tree} > performance-results/tree.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: unaligned-baseline-source
+          name: unaligned-core-build
           path: performance-results/
           retention-days: 14
