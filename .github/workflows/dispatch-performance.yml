@@ -1,0 +1,46 @@
+name: Dispatch performance
+
+on:
+  push:
+    branches: ['perf/wasm-dispatch-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: dispatch-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Preserve reproducible source and CPU baseline
+        run: |
+          mkdir -p performance-results
+          git bundle create performance-results/source.bundle --all
+          git -C vendor/v86 bundle create ../../performance-results/v86.bundle HEAD
+          git rev-parse HEAD > performance-results/candidate.txt
+          git submodule status > performance-results/submodules.txt
+          bun tools/perf/runtime-fastpaths.ts 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/bun-baseline.json
+          node tools/perf/browser-fastpaths.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/chromium-baseline.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dispatch-baseline-source
+          path: performance-results/
+          retention-days: 14
