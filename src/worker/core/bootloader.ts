@@ -1,6 +1,6 @@
 // bootloader.ts
 
-import { DllInitEntry } from './pe-loader';
+import type { DllInitEntry } from './pe-loader';
 
 // Creates a 16-bit real mode bootloader that switches to 32-bit protected mode
 // and jumps to the PE entry point.
@@ -16,7 +16,12 @@ export function createBootloader(
     const idtAddress = gdtAddress + 32; // 0x7E20
     const idtSize = 256 * 8; // 2048 bytes
     // Handlers after IDT
-    const handlersAddress = idtAddress + idtSize; // 0x8618
+    const handlersAddress = idtAddress + idtSize; // 0x8620
+    // Keep the variable-length DLL trampoline beyond the fixed descriptor tables
+    // and seven interrupt handlers. Other runtime code relies on their addresses.
+    const trampolineAddress = handlersAddress + 256;
+    const bootRegionEnd = 0x9000;
+    const trampoline: number[] = [];
 
     const code: number[] = [];
 
@@ -97,6 +102,10 @@ export function createBootloader(
     // FNINIT - Initialize FPU
     code.push(0xdb, 0xe3);
 
+    // Jump out of the boot sector before running the variable-length DLL list.
+    code.push(0xb8, trampolineAddress & 0xff, (trampolineAddress >> 8) & 0xff, 0, 0);
+    code.push(0xff, 0xe0); // JMP EAX
+
     // (F) DllMain Init Trampoline
     // Call DllMain(hModule, DLL_PROCESS_ATTACH=1, lpReserved=0) for each real DLL.
     // DllMain is stdcall — callee cleans 12 bytes (3 params × 4).
@@ -105,42 +114,42 @@ export function createBootloader(
         // PUSH 1 (lpReserved = non-NULL → static/implicit load)
         // Windows passes non-NULL for DLLs loaded via import table (before process start).
         // NULL is only for runtime LoadLibrary() calls.
-        code.push(0x68, 0x01, 0x00, 0x00, 0x00);
+        trampoline.push(0x68, 0x01, 0x00, 0x00, 0x00);
         // PUSH 1 (fdwReason = DLL_PROCESS_ATTACH)
-        code.push(0x68, 0x01, 0x00, 0x00, 0x00);
+        trampoline.push(0x68, 0x01, 0x00, 0x00, 0x00);
         // PUSH hModule (baseAddress)
-        code.push(0x68,
+        trampoline.push(0x68,
             dll.baseAddress & 0xff,
             (dll.baseAddress >> 8) & 0xff,
             (dll.baseAddress >> 16) & 0xff,
             (dll.baseAddress >> 24) & 0xff
         );
         // MOV EAX, entryPoint
-        code.push(0xb8,
+        trampoline.push(0xb8,
             dll.entryPoint & 0xff,
             (dll.entryPoint >> 8) & 0xff,
             (dll.entryPoint >> 16) & 0xff,
             (dll.entryPoint >> 24) & 0xff
         );
         // CALL EAX
-        code.push(0xff, 0xd0);
+        trampoline.push(0xff, 0xd0);
 
         // (F1) DEBUG: OUT 0xB077, 0xDEAD000A "DllMain result"
-        code.push(0x89, 0xc1);                   // MOV ECX, EAX (Save result in ECX)
-        code.push(0xb8, 0x0a, 0x00, 0xad, 0xde); // MOV EAX, 0xDEAD000A
-        code.push(0xba, 0x77, 0xb0, 0x00, 0x00); // MOV EDX, 0xB077
-        code.push(0xef);                         // OUT DX, EAX
+        trampoline.push(0x89, 0xc1);                   // MOV ECX, EAX (Save result in ECX)
+        trampoline.push(0xb8, 0x0a, 0x00, 0xad, 0xde); // MOV EAX, 0xDEAD000A
+        trampoline.push(0xba, 0x77, 0xb0, 0x00, 0x00); // MOV EDX, 0xB077
+        trampoline.push(0xef);                         // OUT DX, EAX
     }
 
     // (G) Jump to EXE Entry Point
-    code.push(0xb8);
-    code.push(
+    trampoline.push(0xb8);
+    trampoline.push(
         peEntryPoint & 0xff,
         (peEntryPoint >> 8) & 0xff,
         (peEntryPoint >> 16) & 0xff,
         (peEntryPoint >> 24) & 0xff
     );
-    code.push(0xff, 0xe0); // JMP EAX
+    trampoline.push(0xff, 0xe0); // JMP EAX
 
     // --- Data Structures ---
     const dataOffset = code.length;
@@ -199,11 +208,17 @@ export function createBootloader(
     const hInt80Off = hInt2eOff + handlerSize;
     const hDeOff = hInt80Off + handlerSize; // #DE (Division Error) - recoverable
 
-    const totalSize = 512 + 32 + idtSize + 1024;
+    if (code.length > 510) throw new Error("Boot code overlaps the boot signature");
+    const trampolineEnd = trampolineAddress + trampoline.length;
+    if (trampolineEnd > bootRegionEnd) {
+        throw new Error(`DLL initialization exceeds the boot region (${dllInits.length} DLLs)`);
+    }
+    const totalSize = Math.max(512 + 32 + idtSize + 1024, trampolineEnd - loadAddress);
     const finalBuffer = new Uint8Array(totalSize);
 
     // Copy bootloader code
     finalBuffer.set(code, 0);
+    finalBuffer.set(trampoline, trampolineAddress - loadAddress);
 
     // Boot Signature
     finalBuffer[510] = 0x55;
