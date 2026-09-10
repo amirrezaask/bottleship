@@ -479,6 +479,7 @@ export const dbg = {
             dispatchSlabs: w.dispatch_slab_high_water ? {
                 highWater: w.dispatch_slab_high_water() >>> 0,
                 overflows: w.dispatch_slab_overflows() >>> 0,
+                rejectedOwners: w.dispatch_rejected_owners?.() >>> 0,
             } : null,
         };
         console.log(`[dbg][fastmem][JSON] ${JSON.stringify(s)}`);
