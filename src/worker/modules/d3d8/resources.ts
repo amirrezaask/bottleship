@@ -7,6 +7,7 @@ import { Logger, LogCategory } from '../../core/logger';
 import { Mem } from '../../core/memory/mem-accessor';
 import { System } from '../../core/system';
 import {
+    cubeTextures,
     addComRef,
     clearRenderTargetOverrideForSurface,
     clearTextureLevelSurfaces,
@@ -43,6 +44,8 @@ import {
     initReturnPtr,
     normalizePalettizedTexturePool,
 } from '../../backends/webgpu/shared/dx-com-helpers';
+
+import { D3D8CubeTexture } from '../../backends/webgpu/d3d8/cube-texture';
 
 const D3D_OK = 0;
 const D3DERR_INVALIDCALL = 0x8876086c;
@@ -373,6 +376,80 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         textureD3DFormat.delete(pTex);
         textureMeta.delete(pTex);
     };
+
+    exports['IDirect3DDevice8_CreateCubeTexture'] = (_ctx, _mem, args) => {
+        const [pDevice, edge, requestedLevels, usage, format, pool, output] = args;
+        if (!output) return D3DERR_INVALIDCALL;
+        initReturnPtr(output);
+        const device = devices.get(pDevice);
+        const process = System.getInstance().process;
+        const maxLevels = edge > 0 ? computeMipLevelCount(edge, edge) : 0;
+        const levels = requestedLevels || maxLevels;
+        // Static, lockable cubes only. Render-target cubes need attachment views.
+        if (!device || !process || edge <= 0 || edge > 4096 || (edge & (edge - 1)) ||
+            levels < 1 || levels > maxLevels || usage !== 0 || pool < 0 || pool > 3 ||
+            format === D3DFMT_UNKNOWN || isD3D8ExclusiveFormat(format) || isD3D8DepthStencilFormat(format))
+            return D3DERR_INVALIDCALL;
+        const vtables = getVTables();
+        const cubeVtable = vtables['IDirect3DCubeTexture8']?.address;
+        const surfaceVtable = vtables['IDirect3DSurface8']?.address;
+        if (!cubeVtable || !surfaceVtable) return D3DERR_INVALIDCALL;
+        let cube: D3D8CubeTexture;
+        try { cube = new D3D8CubeTexture(edge, levels, format, process.memory); }
+        catch { return D3DERR_OUTOFVIDEOMEMORY; }
+        let ptr = 0;
+        try {
+            ptr = createComObject(cubeVtable);
+            cubeTextures.set(ptr, cube);
+            resourceToDevice.set(ptr, device);
+            textureD3DFormat.set(ptr, format);
+            textureMeta.set(ptr, { width: edge, height: edge, levels, usage, pool, format });
+            device.texSurfaces.set(ptr, cube.faces[0]);
+            const surfaces = new Map<number, number>();
+            textureLevelSurfaces.set(ptr, surfaces);
+            for (let face = 0; face < 6; face++) {
+                for (let level = 0; level < levels; level++) {
+                    const surfacePtr = createComObject(surfaceVtable);
+                    surfaces.set(face * levels + level, surfacePtr);
+                    resourceToDevice.set(surfacePtr, device);
+                    surfaceInfo.set(surfacePtr, { texturePtr: ptr, level,
+                        surface: cube.getFace(face, level)!, d3dFormat: format });
+                }
+            }
+        } catch {
+            if (ptr) { releaseTextureStorage(ptr); forgetComObject(ptr); }
+            else cube.destroy();
+            return D3DERR_OUTOFVIDEOMEMORY;
+        }
+        Mem.writeUint32(output, ptr);
+        return D3D_OK;
+    };
+
+    const cubeSurface = (ptr: number, face: number, level: number): number | undefined => {
+        const cube = cubeTextures.get(ptr);
+        if (!cube || face < 0 || face > 5 || level < 0 || level >= cube.levels) return undefined;
+        return textureLevelSurfaces.get(ptr)?.get(face * cube.levels + level);
+    };
+    exports['IDirect3DCubeTexture8_GetCubeMapSurface'] = (_ctx, _mem, args) => {
+        const [ptr, face, level, output] = args;
+        if (!output) return D3DERR_INVALIDCALL;
+        initReturnPtr(output);
+        const surface = cubeSurface(ptr, face, level);
+        if (!surface) return D3DERR_INVALIDCALL;
+        addComRef(ptr);
+        Mem.writeUint32(output, surface);
+        return D3D_OK;
+    };
+    exports['IDirect3DCubeTexture8_LockRect'] = (ctx, mem, args) => {
+        const [ptr, face, level, lockedRect, rect, flags] = args;
+        const surface = cubeSurface(ptr, face, level);
+        return surface ? exports['IDirect3DSurface8_LockRect'](ctx, mem, [surface, lockedRect, rect, flags]) : D3DERR_INVALIDCALL;
+    };
+    exports['IDirect3DCubeTexture8_UnlockRect'] = (ctx, mem, args) => {
+        const surface = cubeSurface(args[0], args[1], args[2]);
+        return surface ? exports['IDirect3DSurface8_UnlockRect'](ctx, mem, [surface]) : D3DERR_INVALIDCALL;
+    };
+    exports['IDirect3DCubeTexture8_GetType'] = (_ctx, _mem, args) => cubeTextures.has(args[0]) ? 5 : 0;
 
     // ---------------------------------------------------------------
     // CreateTexture (D3D8: 8 args - no pSharedHandle)
@@ -797,6 +874,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             meta?.usage ?? 0,
             info.role === 'backbuffer' ? D3DPOOL_DEFAULT : (meta?.pool ?? D3DPOOL_DEFAULT)
         );
+        if (info.texturePtr && cubeTextures.has(info.texturePtr))
+            new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(
+                pDesc + 16, getD3DTextureLayout(info.d3dFormat, surface.width, surface.height).bytes, true);
         return D3D_OK;
     };
 
@@ -1227,6 +1307,26 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         const pSrcTexture = args[1];
         const pDstTexture = args[2];
 
+        const srcCube = cubeTextures.get(pSrcTexture);
+        const dstCube = cubeTextures.get(pDstTexture);
+        if (srcCube || dstCube) {
+            const process = System.getInstance().process;
+            if (!srcCube || !dstCube || !process || srcCube.edge !== dstCube.edge ||
+                srcCube.format !== dstCube.format || srcCube.levels < dstCube.levels)
+                return D3DERR_INVALIDCALL;
+            const mem = process.getCurrentMemory();
+            for (let face = 0; face < 6; face++) {
+                for (let level = 0; level < dstCube.levels; level++) {
+                    const src = srcCube.getFace(face, level)!;
+                    const dst = dstCube.getFace(face, level)!;
+                    const bytes = getD3DTextureLayout(srcCube.format, src.width, src.height).bytes;
+                    mem.copyWithin(dst.surfacePtr, src.surfacePtr, src.surfacePtr + bytes);
+                    syncBitmapSurfaceFromGuest(dst);
+                }
+            }
+            return D3D_OK;
+        }
+
         const srcDevice = resourceToDevice.get(pSrcTexture);
         const dstDevice = resourceToDevice.get(pDstTexture);
         const srcSurface = srcDevice?.texSurfaces.get(pSrcTexture);
@@ -1297,6 +1397,19 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
 
         syncBitmapSurfaceFromGuest(dstSurface);
         return D3D_OK;
+    };
+
+    for (const method of ['AddRef', 'Release', 'GetLevelCount', 'GetLevelDesc', 'PreLoad', 'AddDirtyRect'])
+        exports[`IDirect3DCubeTexture8_${method}`] = exports[`IDirect3DTexture8_${method}`];
+    exports['IDirect3DCubeTexture8_GetDevice'] = exports['IDirect3DSurface8_GetDevice'];
+    exports['IDirect3DCubeTexture8_GetLevelDesc'] = (ctx, mem, args) => {
+        const result = exports['IDirect3DTexture8_GetLevelDesc'](ctx, mem, args);
+        const cube = cubeTextures.get(args[0]);
+        if (result === D3D_OK && cube && args[2]) {
+            const dim = Math.max(1, cube.edge >>> args[1]);
+            Mem.writeUint32(args[2] + 16, getD3DTextureLayout(cube.format, dim, dim).bytes);
+        }
+        return result;
     };
 
     return exports;

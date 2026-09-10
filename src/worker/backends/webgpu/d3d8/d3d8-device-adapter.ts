@@ -6,6 +6,8 @@
  * 2. On draw calls, resolves state into FFPRenderer parameters and calls through
  */
 
+import { uploadD3D8Buffer } from './buffer-upload';
+import { D3DRS_COLORWRITEENABLE, D3DRS_BLENDOP } from '../d3d9/d3d9-blend';
 import { DDrawWebGPUExecutor } from '../ddraw/ddraw-backend-executor';
 import type { DirectDrawSurfaceState, RenderSurface, BitmapTextureSurface } from '../../../modules/ddraw/com-objects';
 import { surfaceSyncManager } from '../../../modules/ddraw/surface-sync';
@@ -372,7 +374,7 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         if (!buf || size > ((buf as GPUBuffer & { __size?: number }).__size ?? 0)) {
             buf?.destroy();
             buf = device.createBuffer({
-                size: Math.max(16, size),
+                size: Math.max(16, Math.ceil(size / 4) * 4),
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             });
             (buf as GPUBuffer & { __size?: number }).__size = size;
@@ -388,7 +390,7 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         if (!buf || size > ((buf as GPUBuffer & { __size?: number }).__size ?? 0)) {
             buf?.destroy();
             buf = device.createBuffer({
-                size: Math.max(16, size),
+                size: Math.max(16, Math.ceil(size / 4) * 4),
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
             });
             (buf as GPUBuffer & { __size?: number }).__size = size;
@@ -401,7 +403,7 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         const buf = this.ensureVbGpuBuffer(vbPtr, size);
         if (!buf) return null;
         const device = this.getGpuDevice();
-        device?.queue.writeBuffer(buf, 0, mem.buffer, mem.byteOffset + guestPtr, size);
+        if (device) uploadD3D8Buffer(device.queue, buf, mem, guestPtr, size);
         return buf;
     }
 
@@ -409,7 +411,7 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         const buf = this.ensureIbGpuBuffer(ibPtr, size);
         if (!buf) return null;
         const device = this.getGpuDevice();
-        device?.queue.writeBuffer(buf, 0, mem.buffer, mem.byteOffset + guestPtr, size);
+        if (device) uploadD3D8Buffer(device.queue, buf, mem, guestPtr, size);
         return buf;
     }
 
@@ -466,6 +468,8 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         // Keep D3D8 defaults aligned with DX7 executor defaults.
         // The renderer consumes a single shared render-state namespace, so mismatched
         // indices here can silently turn on invalid states (e.g. ZFUNC=NEVER).
+        this.renderStates[D3DRS_COLORWRITEENABLE] = 0xf;
+        this.renderStates[D3DRS_BLENDOP] = 1; // D3DBLENDOP_ADD
         this.renderStates[D3DRENDERSTATE_ZENABLE] = D3DZB_TRUE;
         this.renderStates[D3DRENDERSTATE_ZWRITEENABLE] = 1;
         this.renderStates[D3DRENDERSTATE_ZFUNC] = D3DCMP_LESSEQUAL;
@@ -1625,10 +1629,10 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
             if (!device) return 0x8876086c;
             const byteSize = vertexCount * effectiveStride;
             const gpuBuffer = device.createBuffer({
-                size: Math.max(16, byteSize),
+                size: Math.max(16, Math.ceil(byteSize / 4) * 4),
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             });
-            device.queue.writeBuffer(gpuBuffer, 0, mem.buffer, mem.byteOffset + dataPtr, byteSize);
+            uploadD3D8Buffer(device.queue, gpuBuffer, mem, dataPtr, byteSize);
             const extraStreams = this.collectExtraStreamBindings(
                 this.shaders.getActiveVs()!, 0, vertexCount, mem,
             );
@@ -1838,15 +1842,15 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
             const vertexBytes = vertexRangeCount * effectiveStride;
             const indexBytes = indexCount * (indexIsUint32 ? 4 : 2);
             const vbGpu = device.createBuffer({
-                size: Math.max(16, vertexBytes),
+                size: Math.max(16, Math.ceil(vertexBytes / 4) * 4),
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             });
-            device.queue.writeBuffer(vbGpu, 0, mem.buffer, mem.byteOffset + dataPtr, vertexBytes);
+            uploadD3D8Buffer(device.queue, vbGpu, mem, dataPtr, vertexBytes);
             const ibGpu = device.createBuffer({
                 size: Math.max(16, (indexBytes + 3) & ~3),
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
             });
-            device.queue.writeBuffer(ibGpu, 0, mem.buffer, mem.byteOffset + indexPtr, indexBytes);
+            uploadD3D8Buffer(device.queue, ibGpu, mem, indexPtr, indexBytes);
             const extraStreams = this.collectExtraStreamBindings(
                 this.shaders.getActiveVs()!, 0, vertexRangeCount, mem,
             );

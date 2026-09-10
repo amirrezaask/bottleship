@@ -46,3 +46,13 @@ describe("d3d8-pipeline-key", () => {
         expect(k1).toBe(k2);
     });
 });
+
+test("depth comparison changes cannot reuse the previous programmable pipeline", () => {
+    const rs = new Int32Array(256);
+    const keys = new Set<string>();
+    for (let compare = 1; compare <= 8; compare++) {
+        rs[23] = compare;
+        keys.add(buildD3D8PipelineKey(rs, 1, 1, 32, 32, "triangle-list", false, "b0", "a0", 0));
+    }
+    expect(keys.size).toBe(8);
+});

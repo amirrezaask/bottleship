@@ -42,6 +42,8 @@ export interface ProgrammableDrawState {
     sampler: GPUSampler | null;
     /** Bitmask of cube-sampler stages for this draw (matches the pipeline's bind-group layout). */
     cubeMask: number;
+    /** D3D8 captures the viewport with each draw; omitted by older callers. */
+    viewport?: { x: number; y: number; width: number; height: number; minZ: number; maxZ: number };
 }
 
 export class RenderFrame {

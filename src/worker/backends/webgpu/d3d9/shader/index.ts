@@ -12,7 +12,7 @@
  */
 
 import { parseShader, SmProgram } from "./sm-parser";
-import { analyzeVs, emitVsMain, VsAnalysis } from "./vs-codegen";
+import { LEGACY_VS_RCP_WGSL, analyzeVs, emitVsMain, VsAnalysis } from "./vs-codegen";
 import { analyzePs, emitPsMain, PsAnalysis } from "./ps-codegen";
 import { colField, texField, AlphaTest, alphaTestSnippet } from "./sm-wgsl";
 import { TexType } from "./sm-enums";
@@ -163,6 +163,7 @@ export function linkProgram(opts: LinkOptions): LinkResult {
 
     // ── Assemble module ────────────────────────────────────────────────────
     const lines: string[] = [];
+    if (vs.prog.major === 1) lines.push(LEGACY_VS_RCP_WGSL);
 
     lines.push(`struct VsUniforms { c: array<vec4<f32>, ${Math.max(1, vsConstantCount)}>, }`);
     lines.push(`@group(0) @binding(${PROG_BIND.VS_UNIFORM}) var<uniform> vsc: VsUniforms;`);

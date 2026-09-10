@@ -287,6 +287,20 @@ export const IDirect3DTexture8: InterfaceDescriptor = {
     ]
 };
 
+export const IDirect3DCubeTexture8: InterfaceDescriptor = {
+    name: "IDirect3DCubeTexture8",
+    inherits: "IUnknown",
+    methods: [
+        ...IUnknown.methods.map(m => ({ ...m })),
+        ...textureMethods.slice(0, 11),
+        makeMethod("GetLevelDesc", 3),
+        makeMethod("GetCubeMapSurface", 4),
+        makeMethod("LockRect", 6, { category: "lock" }),
+        makeMethod("UnlockRect", 3, { category: "lock" }),
+        makeMethod("AddDirtyRect", 3),
+    ],
+};
+
 // =========================================================================
 // IDirect3DSurface8
 // =========================================================================
@@ -430,6 +444,7 @@ export const d3d8Module: ModuleDescriptor = {
         IDirect3D8,
         IDirect3DDevice8,
         IDirect3DTexture8,
+        IDirect3DCubeTexture8,
         IDirect3DSurface8,
         IDirect3DVertexBuffer8,
         IDirect3DIndexBuffer8,

@@ -429,9 +429,8 @@ export function createStateExports(): Record<string, ThunkImplementation> {
         return D3D_OK;
     };
 
-    // Resource creation stubs (volume/cube textures not needed for Montezuma)
+    // Volume textures are not implemented.
     exports['IDirect3DDevice8_CreateVolumeTexture'] = () => D3DERR_INVALIDCALL;
-    exports['IDirect3DDevice8_CreateCubeTexture'] = () => D3DERR_INVALIDCALL;
 
     // Front buffer
     exports['IDirect3DDevice8_GetFrontBuffer'] = async (_ctx, _mem, args) => {

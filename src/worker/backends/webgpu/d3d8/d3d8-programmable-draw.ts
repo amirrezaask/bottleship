@@ -2,6 +2,7 @@
  * D3D8 programmable draw layer — rewritten for flat renderStates/TSS (not D3D9 StateTracker).
  */
 
+import { cubeTextures } from '../../../modules/d3d8/shared-state';
 import type { DirectDrawSurfaceState } from "../../../modules/ddraw/com-objects";
 import {
     D3DCULL_CCW,
@@ -12,6 +13,7 @@ import {
     D3DRENDERSTATE_ALPHATESTENABLE,
     D3DRENDERSTATE_CULLMODE,
     D3DRENDERSTATE_ZENABLE,
+    D3DRENDERSTATE_ZFUNC,
     D3DRENDERSTATE_ZWRITEENABLE,
 } from "../../../modules/ddraw/constants";
 import { Logger, LogCategory } from "../../../core/logger";
@@ -66,8 +68,10 @@ export class D3D8ProgrammableRenderer {
         return computeBlendKey((s) => this.getRS(adapter, s));
     }
 
-    private boundCubeMask(_adapter: D3D8DeviceAdapter): number {
-        return 0; // D3D8 cube maps not wired for programmable bind yet
+    private boundCubeMask(adapter: D3D8DeviceAdapter): number {
+        let mask = 0;
+        for (let i = 0; i < PROG_BIND.MAX_TEX; i++) if (cubeTextures.has(adapter.textureHandles[i])) mask |= 1 << i;
+        return mask;
     }
 
     private ensureTextureSurface(
@@ -175,7 +179,7 @@ export class D3D8ProgrammableRenderer {
                 depthStencil: {
                     format: depthFormat,
                     depthWriteEnabled: zWrite !== 0,
-                    depthCompare: zEnable !== 0 ? "less-equal" : "always",
+                    depthCompare: zEnable !== 0 ? (["never", "never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always"] as GPUCompareFunction[])[this.getRS(adapter, D3DRENDERSTATE_ZFUNC)] ?? "less-equal" : "always",
                 },
             });
             pipelineId = this.backendExecutor.registerPipeline(pipeline, link.hasTexture, true);
@@ -204,6 +208,10 @@ export class D3D8ProgrammableRenderer {
         const frame = this.commandRecorder.getCurrentFrame();
         const index = frame.drawStateCount;
         const state = frame.nextDrawState(vsLen, psLen);
+        const viewport = state.viewport ??= { x: 0, y: 0, width: 1, height: 1, minZ: 0, maxZ: 1 };
+        Object.assign(viewport, adapter.viewport);
+        viewport.minZ = adapter.viewport.minZ ?? 0;
+        viewport.maxZ = adapter.viewport.maxZ ?? 1;
 
         state.vsConst.set(shaders.vsConstants.subarray(0, vsLen));
         state.psConst.set(shaders.psConstants.subarray(0, psLen));
@@ -219,7 +227,9 @@ export class D3D8ProgrammableRenderer {
         for (let stage = 0; stage < PROG_BIND.MAX_TEX; stage++) {
             // stageTexForDraw drops a texture that IS the active render target
             // (WebGPU forbids sampling the pass's own color attachment).
-            state.textures[stage] = this.ensureTextureSurface(renderer, adapter.stageTexForDraw(stage));
+            const cube = cubeTextures.get(adapter.textureHandles[stage]);
+            state.textures[stage] = cube && device ? cube.ensureView(device)
+                : this.ensureTextureSurface(renderer, adapter.stageTexForDraw(stage));
         }
         // Programmable layout has one shared sampler binding — same parity debt as D3D9 (stage 0 TSS).
         state.sampler = this.samplerCache?.acquire(

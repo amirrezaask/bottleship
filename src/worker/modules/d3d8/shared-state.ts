@@ -11,6 +11,10 @@ import { Logger, LogCategory } from '../../core/logger';
 import { allocateComObject as allocateGuardedComObject } from '../../core/com/com-memory';
 import type { BitmapTextureSurface, DirectDrawSurfaceState } from '../../modules/ddraw/com-objects';
 
+import type { D3D8CubeTexture } from '../../backends/webgpu/d3d8/cube-texture';
+
+export const cubeTextures = new Map<number, D3D8CubeTexture>();
+
 let vtables: Record<string, VTableInfo> | null = null;
 
 export const devices: Map<number, D3D8DeviceAdapter> = new Map();
@@ -93,6 +97,9 @@ export function clearRenderTargetOverrideForSurface(surfPtr: number): void {
 
 /** Tear down cached GetSurfaceLevel wrappers when the parent texture is destroyed. */
 export function clearTextureLevelSurfaces(pTex: number): void {
+    if (cubeTextures.has(pTex)) resourceToDevice.get(pTex)?.flushProgrammablePending();
+    cubeTextures.get(pTex)?.destroy();
+    cubeTextures.delete(pTex);
     const levels = textureLevelSurfaces.get(pTex >>> 0);
     if (!levels) return;
     for (const surfPtr of levels.values()) {
@@ -203,6 +210,8 @@ export function resolveD3D8TextureSurface(addr: number): BitmapTextureSurface | 
 }
 
 export function resetD3D8SharedState(): void {
+    for (const cube of cubeTextures.values()) cube.destroy();
+    cubeTextures.clear();
     vtables = null;
     devices.clear();
     resourceToDevice.clear();

@@ -455,7 +455,13 @@ export class D3D9BackendExecutor {
 
                     case RenderCommandType.BindProgrammable: {
                         const ds = frame.drawStates[frame.commandA[i]];
-                        if (ds) this.bindProgrammable(renderPass, queue, ds);
+                        if (ds) {
+                            if (ds.viewport) {
+                                const v = ds.viewport;
+                                renderPass.setViewport(v.x, v.y, v.width, v.height, v.minZ, v.maxZ);
+                            }
+                            this.bindProgrammable(renderPass, queue, ds);
+                        }
                         break;
                     }
 

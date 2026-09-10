@@ -25,6 +25,7 @@ const D3DERR_INVALIDCALL = 0x8876086c;
 const RS_CULLMODE = 22;
 const RS_ZENABLE = 7;
 const RS_ZWRITEENABLE = 14;
+const RS_ZFUNC = 23;
 
 export interface D3D8VsObject {
     guestHandle: number;
@@ -330,5 +331,5 @@ export function buildD3D8PipelineKey(
         ((zEnable !== 0 ? 1 : 0) << 25) |
         ((zWrite !== 0 ? 1 : 0) << 26)
     ) >>> 0;
-    return `${vsHandle}:${psHandle}:${declStride}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaTestKey}:cm${cubeMask}`;
+    return `${vsHandle}:${psHandle}:${declStride}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaTestKey}:z${renderStates[RS_ZFUNC]}:cm${cubeMask}`;
 }

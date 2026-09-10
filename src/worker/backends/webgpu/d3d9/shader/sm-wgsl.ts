@@ -187,7 +187,9 @@ export function emitAlu(instr: SmInstruction, ctx: ShaderCtx, lines: string[], u
         case Op.DP3:  r = `vec4<f32>(dot((${a()}).xyz, (${b()}).xyz))`; break;
         case Op.DP4:  r = `vec4<f32>(dot(${a()}, ${b()}))`; break;
         case Op.DP2ADD: r = `vec4<f32>(dot((${a()}).xy, (${b()}).xy) + (${c()}).x)`; break;
-        case Op.RCP:  r = `vec4<f32>(1.0 / (${a()}).x)`; break;
+        case Op.RCP:  r = !ctx.isPs && ctx.major === 1
+            ? `vec4<f32>(legacy_vs_rcp((${a()}).x))`
+            : `vec4<f32>(1.0 / (${a()}).x)`; break;
         case Op.RSQ:  r = `vec4<f32>(inverseSqrt(abs((${a()}).x)))`; break;
         case Op.EXP:  r = `vec4<f32>(exp2((${a()}).x))`; break;
         case Op.LOG:  r = `vec4<f32>(log2(abs((${a()}).x)))`; break;

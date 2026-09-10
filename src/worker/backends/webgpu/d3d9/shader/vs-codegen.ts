@@ -75,6 +75,14 @@ export interface VsEmitOptions {
     constantCount: number;
 }
 
+/** DX8-era RCP uses the finite FLT_MAX zero result from the instruction's
+ * reference algorithm. An IEEE infinity poisons disabled lights (Inf * 0).
+ * https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/rcp---vs */
+export const LEGACY_VS_RCP_WGSL = `fn legacy_vs_rcp(x: f32) -> f32 {
+    if (x == 0.0) { return 3.402823466e38f; }
+    return 1.0 / x;
+}`;
+
 export function emitVsMain(prog: SmProgram, a: VsAnalysis, opts: VsEmitOptions): string {
     const maxConstIdx = Math.max(0, opts.constantCount - 1);
 

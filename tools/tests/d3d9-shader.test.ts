@@ -311,3 +311,17 @@ describe("alpha test", () => {
         expect(res.wgsl).toContain("discard");
     });
 });
+
+test("vs_1_1 reciprocal keeps disabled point-light attenuation finite", () => {
+    const vs = compileVertexShader(new Uint32Array([
+        version(false, 1, 1),
+        instr(Op.RCP), dst(RegType.TEMP, 0), src(RegType.CONST, 0, 0),
+        instr(Op.MUL), dst(RegType.ATTROUT, 0), src(RegType.TEMP, 0), src(RegType.CONST, 1),
+        instr(Op.MOV), dst(RegType.RASTOUT, 0), src(RegType.INPUT, 0), END,
+    ]));
+    const link = linkProgram({ vs, ps: null, declElements: [
+        { stream: 0, offset: 0, type: 3, usage: 0, usageIndex: 0 },
+    ], streamStride: 16 });
+    expect(link.wgsl).toContain("legacy_vs_rcp(((vsc.c[0]).xxxx).x)");
+    expect(link.wgsl).toContain("if (x == 0.0) { return 3.402823466e38f; }");
+});
