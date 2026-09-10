@@ -2,7 +2,7 @@ name: Dispatch performance
 
 on:
   push:
-    branches: ['perf/wasm-dispatch-*']
+    branches: [main, master, 'perf/wasm-dispatch-*']
   pull_request:
   workflow_dispatch:
 
@@ -18,36 +18,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bootstrap-core:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/perf/wasm-dispatch-fastpaths-stacked'
+  cpu-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-      - name: Build identical-toolchain baseline and patched core
+      - name: Rebuild core and identical-toolchain unpatched control
         env:
           V86_BASELINE_OUTPUT: performance-results/v86-baseline-rebuilt.wasm
         run: node tools/build-v86-runtime/build.mjs
-      - name: Publish generated core on this stacked branch only
+      - name: Verify committed runtime and provenance
+        run: git diff --exit-code -- public/v86.wasm tools/build-v86-runtime/manifest.json vendor/v86
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Project tests and compiled CPU regression tests
         run: |
-          git apply --check tools/build-v86-runtime/host-bootstrap.patch
-          git apply tools/build-v86-runtime/host-bootstrap.patch
-          git rm tools/build-v86-runtime/host-bootstrap.patch
-          git add public/v86.wasm tools/build-v86-runtime/manifest.json src/worker/core/cpu/hypercall-data.ts
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: publish guarded bulk-memory core and versioned host bindings'
-          git push origin HEAD:perf/wasm-dispatch-fastpaths-stacked
-          git bundle create performance-results/source.bundle --all
-          cp public/v86.wasm performance-results/v86-candidate.wasm
+          mkdir -p performance-results
+          bun test 2>&1 | tee performance-results/project-tests.log
+          node --test tools/runtime-test/bulk-memory.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+      - run: bun run build
+      - name: Guest-call benchmarks in Node and Chromium
+        env:
+          V86_REBUILT_BASELINE: performance-results/v86-baseline-rebuilt.wasm
+        run: |
+          node tools/perf/bulk-memory.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/node-bulk.json
+          node tools/perf/browser-bulk-memory.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/chromium-bulk.json
+          git status --short > performance-results/working-tree.txt
           cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dispatch-core-build
+          name: dispatch-performance-results
           path: performance-results/
           retention-days: 14
