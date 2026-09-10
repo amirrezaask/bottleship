@@ -1,0 +1,75 @@
+name: Runtime performance
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, 'perf/wasm-*']
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - run: |
+          mkdir -p performance-results
+          bun test 2>&1 | tee performance-results/tests.log
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-quality-results
+          path: performance-results/
+          retention-days: 14
+
+  wasm-and-benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Install pinned Rust target
+        run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - run: node tools/build-dxt-kernel/build.mjs
+      - name: Verify committed WASM matches Rust source
+        run: git diff --exit-code -- src/worker/backends/webgpu/shared/dxt-kernel.wasm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Compare public CPU paths against original main
+        run: |
+          mkdir -p performance-results
+          bun tools/perf/runtime-fastpaths.ts a7c8543d75569d48890d48744897a0ffe3fb02f7 performance-results/bun.json
+      - name: Compare in Chromium (CPU only, real clock)
+        run: node tools/perf/browser-fastpaths.mjs a7c8543d75569d48890d48744897a0ffe3fb02f7 performance-results/chromium.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-performance-results
+          path: performance-results/
+          retention-days: 14
