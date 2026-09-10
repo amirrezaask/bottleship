@@ -44,6 +44,7 @@ fn equal_mask<const SIZE: u32>(a: v128, b: v128) -> u32 {
 
 /// Return completed elements and the final subtraction operands, never EFLAGS.
 /// ZF termination and page-restart semantics stay in the original CPU instruction.
+#[inline(never)]
 pub unsafe fn compare<const SIZE: u32, const SCAN: bool>(
     src: u32, dst: u32, count: u32, backwards: bool, while_equal: bool, value: i32,
 ) -> Option<(u32, i32, i32)> {
@@ -90,6 +91,7 @@ pub unsafe fn compare<const SIZE: u32, const SCAN: bool>(
 
 /// The caller already invalidated translated code before this write. Watches
 /// retain the scalar stores, including their per-element callbacks and ordering.
+#[inline(never)]
 pub unsafe fn fill<const SIZE: u32>(dst: u32, count: u32, backwards: bool, value: i32) -> bool {
     if !ENABLED || count < 64 / SIZE { return false; }
     if cpu::DBG_WRITE_WATCH != 0 { record(4); return false; }
