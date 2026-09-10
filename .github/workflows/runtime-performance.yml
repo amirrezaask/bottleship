@@ -1,0 +1,44 @@
+name: Runtime performance
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, 'perf/wasm-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Record source and execution environment
+        run: |
+          mkdir -p performance-results
+          git archive --format=tar.gz HEAD -o performance-results/source.tar.gz
+          git rev-parse HEAD > performance-results/commit.txt
+          git submodule status > performance-results/submodules.txt
+          uname -a > performance-results/environment.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-baseline-source
+          path: performance-results/
+          retention-days: 7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - run: bun test
