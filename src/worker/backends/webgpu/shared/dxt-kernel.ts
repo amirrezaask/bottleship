@@ -18,7 +18,7 @@ export class DxtKernel {
     private readonly api: KernelExports;
     private readonly base: number;
     private bytes: Uint8Array;
-    private output = new Uint8Array(0);
+    private output: Uint8Array = new Uint8Array(0);
     private outputOffset = -1;
 
     constructor(instance: WebAssembly.Instance) {
