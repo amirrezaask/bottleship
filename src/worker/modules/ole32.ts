@@ -21,6 +21,13 @@ const E_POINTER = 0x80004003;
 const E_INVALIDARG = 0x80070057;
 const CO_E_NOTLOADED = 0x800401f0;
 
+// GoldSrc's optional HTML UI asks for the shell WebBrowser control.  The
+// browser is intentionally inert in BottleShip: the game only needs a COM
+// identity during startup, and network-backed HTML is outside the runtime's
+// compatibility boundary.
+const CLSID_WEB_BROWSER = "8856f961-340a-11d0-a96b-00c04fd705a2";
+const IID_IUNKNOWN = "00000000-0000-0000-c000-000000000046";
+
 // BLOWFISH.DLL IBlockCipher::Submit_Key — stdcall, max 56-byte key (Ghidra @ 0x11002011)
 const BF_MAX_KEY_LEN = 0x38;
 
@@ -37,6 +44,9 @@ export class Ole32 implements IModule {
     private guidCounter = 1;
     private blowfishInstances: Map<number, BlowfishState> = new Map(); // objAddr -> state
     private blowfishVtableAddr = 0;
+    private webBrowserInstances: Map<number, WebBrowserState> = new Map();
+    private webBrowserVtableAddr = 0;
+    private webBrowserVtables = new Map<string, number>();
     private classRegistrations = new Map<number, { clsid: string; punk: number; flags: number }>();
     private nextClassRegistration = 0x1000;
     private messageFilter = 0;
@@ -711,6 +721,15 @@ export class Ole32 implements IModule {
         const interfaceRegistry = InterfaceRegistry.getInstance();
         const process = this.process;
 
+        if (clsidNormalized === CLSID_WEB_BROWSER && iidNormalized === IID_IUNKNOWN) {
+            const objAddr = this.createWebBrowserUnknown(mem, view, ppv);
+            if (objAddr) {
+                Logger.log(LogCategory.COM, `CoCreateInstance: using inert WebBrowser HLE at 0x${objAddr.toString(16)}`);
+                return S_OK;
+            }
+            return REGDB_E_CLASSNOTREG;
+        }
+
         if (clsidNormalized === "636b9f10-0c7d-11d1-95b2-0020afdc7421")
             return createDirectMusic(process, iidNormalized, ppv);
         let targetIID = iidNormalized;
@@ -896,6 +915,138 @@ export class Ole32 implements IModule {
         }
 
         return S_OK;
+    }
+
+    /**
+     * Provide the minimal COM identity GoldSrc needs for its optional HTML
+     * control.  This deliberately does not expose a browser implementation or
+     * perform network/file navigation; unsupported interfaces stay inert.
+     */
+    private createWebBrowserUnknown(mem: Uint8Array, view: DataView, ppv: number): number {
+        const process = this.process;
+
+        if (!this.webBrowserVtableAddr) {
+            this.exports["WB_QueryInterface"] = (_ctx, m, args) => {
+                const thisPtr = args[0] >>> 0;
+                const riid = args[1] >>> 0;
+                const ppvOut = args[2] >>> 0;
+                const browser = this.webBrowserInstances.get(thisPtr);
+                if (!browser) return 0x80004002; // E_NOINTERFACE
+                if (!ppvOut) return E_POINTER;
+                const iid = riid + 16 <= m.length
+                    ? this.bytesToGuid(m.slice(riid, riid + 16))
+                    : "<out-of-bounds>";
+                Logger.log(LogCategory.COM, `WebBrowser HLE: QueryInterface IID=${iid}`);
+                const interfaceVtable = this.ensureWebBrowserVtable(iid);
+                if (!interfaceVtable) return 0x80004002; // E_NOINTERFACE
+                const interfaceAddr = allocateComObject(process.memory, m, interfaceVtable, "THUNK_DATA");
+                this.webBrowserInstances.set(interfaceAddr, { refCount: 1, interfaceId: iid });
+                Mem.writeUint32(ppvOut, interfaceAddr);
+                return S_OK;
+            };
+            this.exports["WB_AddRef"] = (_ctx, _m, args) => {
+                const browser = this.webBrowserInstances.get(args[0] >>> 0);
+                return browser ? ++browser.refCount : 0;
+            };
+            this.exports["WB_Release"] = (_ctx, _m, args) => {
+                const thisPtr = args[0] >>> 0;
+                const browser = this.webBrowserInstances.get(thisPtr);
+                if (!browser) return 0;
+                browser.refCount--;
+                if (browser.refCount <= 0) {
+                    this.webBrowserInstances.delete(thisPtr);
+                    return 0;
+                }
+                return browser.refCount;
+            };
+
+            const installed = this.ensureWebBrowserVtable(IID_IUNKNOWN);
+            if (!installed) return 0;
+            this.webBrowserVtableAddr = installed;
+        }
+
+        const objAddr = allocateComObject(process.memory, mem, this.webBrowserVtableAddr, "THUNK_DATA");
+        this.webBrowserInstances.set(objAddr, { refCount: 1, interfaceId: IID_IUNKNOWN });
+        if (ppv) view.setUint32(ppv, objAddr, true);
+        return objAddr;
+    }
+
+    private ensureWebBrowserVtable(iid: string): number {
+        const process = this.process;
+        const key = this.normalizeGuid(iid);
+        const cached = this.webBrowserVtables.get(key);
+        if (cached) return cached;
+
+        const interfaceArity: Record<string, number[]> = {
+            [IID_IUNKNOWN]: [],
+            "0000010d-0000-0000-c000-000000000046": [10, 7, 4, 2, 4, 4], // IViewObject
+            "00000112-0000-0000-c000-000000000046": [2, 2, 3, 2, 3, 4, 4, 3, 7, 2, 1, 1, 2, 3, 3, 3, 2, 2, 2, 3, 2], // IOleObject
+            "00000113-0000-0000-c000-000000000046": [2, 2, 1, 1, 3, 1], // IOleInPlaceObject
+            "7fd52380-4e07-101b-ae2d-08002b2ec713": [2, 1, 2, 3, 2, 1], // IPersistStreamInit
+            "b196b284-bab4-101a-b69c-00aa00341d07": [2, 3], // IConnectionPointContainer
+            "connection-point": [2, 2, 3, 2, 2], // IConnectionPoint
+            "d30c1661-cdaf-11d0-8a3e-00c04fc9e26e": [2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 6, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+        };
+        const arities = interfaceArity[key];
+        if (!arities) return 0;
+
+        const safeKey = key.replace(/[^a-z0-9]/g, "_");
+        const moduleName = `ole32_webbrowser_${safeKey}`;
+        const handlers: Record<string, ThunkImplementation> = {};
+        const methods: ComVtableMethod[] = [];
+        const qiName = `WB_${safeKey}_QueryInterface`;
+        const addRefName = `WB_${safeKey}_AddRef`;
+        const releaseName = `WB_${safeKey}_Release`;
+        handlers[qiName] = this.exports["WB_QueryInterface"];
+        handlers[addRefName] = this.exports["WB_AddRef"];
+        handlers[releaseName] = this.exports["WB_Release"];
+        methods.push(
+            { name: qiName, argCount: 3, stackCleanupBytes: 12 },
+            { name: addRefName, argCount: 1, stackCleanupBytes: 4 },
+            { name: releaseName, argCount: 1, stackCleanupBytes: 4 },
+        );
+
+        for (let i = 0; i < arities.length; i++) {
+            const slot = i + 3;
+            const name = `WB_${safeKey}_Slot_${slot}`;
+            const handler: ThunkImplementation = (_ctx, mem, args) => {
+                if (key === "00000112-0000-0000-c000-000000000046" && slot === 22) {
+                    const statusOut = args[2] >>> 0;
+                    if (statusOut) Mem.writeUint32(statusOut, 0);
+                }
+                if (key === "b196b284-bab4-101a-b69c-00aa00341d07" && slot === 4) {
+                    const connectionPointOut = args[2] >>> 0;
+                    const connectionPoint = this.createWebBrowserConnectionPoint(mem);
+                    if (!connectionPoint) return 0x80004005; // E_FAIL
+                    if (connectionPointOut) Mem.writeUint32(connectionPointOut, connectionPoint);
+                }
+                if (key === "connection-point" && slot === 5) {
+                    const cookieOut = args[2] >>> 0;
+                    if (cookieOut) Mem.writeUint32(cookieOut, 1);
+                }
+                return S_OK;
+            };
+            handlers[name] = handler;
+            methods.push({ name, argCount: arities[i], stackCleanupBytes: arities[i] * 4 });
+        }
+
+        const installed = installComVtable(process, {
+            moduleName,
+            methods,
+            handlers,
+            logLabel: `WebBrowser HLE ${key}`,
+        });
+        if (!installed) return 0;
+        this.webBrowserVtables.set(key, installed.vtableAddr);
+        return installed.vtableAddr;
+    }
+
+    private createWebBrowserConnectionPoint(mem: Uint8Array): number {
+        const vtableAddr = this.ensureWebBrowserVtable("connection-point");
+        if (!vtableAddr) return 0;
+        const objAddr = allocateComObject(this.process.memory, mem, vtableAddr, "THUNK_DATA");
+        this.webBrowserInstances.set(objAddr, { refCount: 1, interfaceId: "connection-point" });
+        return objAddr;
     }
 
     /** Find a CoRegisterClassObject factory for the given CLSID. */
@@ -1123,6 +1274,11 @@ export class Ole32 implements IModule {
 interface BlowfishState {
     refCount: number;
     cipher: BlowfishCipher;
+}
+
+interface WebBrowserState {
+    refCount: number;
+    interfaceId: string;
 }
 
 // ---- Blowfish Cipher Implementation ----

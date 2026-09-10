@@ -127,6 +127,25 @@ function ensureSpecialFolderPath(path: string): void {
     }
 }
 
+function createDirectoryTree(path: string): number {
+    const vfs = System.getInstance().fileSystem;
+    const resolved = vfs.resolvePath(path);
+    if (!resolved) return 3; // ERROR_PATH_NOT_FOUND
+    if (vfs.directoryExists(resolved)) return 183; // ERROR_ALREADY_EXISTS
+
+    const drivePath = resolved.match(/^([A-Za-z]:)\\(.+)$/);
+    if (!drivePath) return 3;
+
+    let current = drivePath[1];
+    for (const part of drivePath[2].split("\\").filter(Boolean)) {
+        current += "\\" + part;
+        if (vfs.directoryExists(current)) continue;
+        const result = vfs.createDirectorySync(current);
+        if (!result.ok && result.error !== 183) return result.error || 3;
+    }
+    return 0;
+}
+
 export class Shell32 implements IModule {
     name = "shell32";
     exports: Record<string, ThunkImplementation> = {};
@@ -478,6 +497,23 @@ export class Shell32 implements IModule {
         // SHAppBarMessage - taskbar/appbar notifications (not modeled in HLE).
         this.exports["SHAppBarMessage"] = () => 0;
 
+        // SHCreateDirectoryEx* creates a directory and all missing parents. The
+        // launcher uses this instead of CreateDirectoryW for its install folders.
+        // Keep the operation in the VFS overlay so it remains bounded and survives
+        // through the normal save namespace, without extracting the WGB bundle.
+        this.exports["SHCreateDirectoryExA"] = (ctx, mem, args) => {
+            const path = args[1] ? readStrA(mem, args[1] >>> 0) : "";
+            const result = createDirectoryTree(path);
+            Logger.log(LogCategory.SYSTEM, `SHCreateDirectoryExA(\"${path}\") -> ${result}`);
+            return { value: result, stackCleanup: 12 };
+        };
+        this.exports["SHCreateDirectoryExW"] = (ctx, mem, args) => {
+            const path = args[1] ? readStrW(mem, args[1] >>> 0) : "";
+            const result = createDirectoryTree(path);
+            Logger.log(LogCategory.SYSTEM, `SHCreateDirectoryExW(\"${path}\") -> ${result}`);
+            return { value: result, stackCleanup: 12 };
+        };
+
         // LPWSTR* CommandLineToArgvW(LPCWSTR lpCmdLine, int *pNumArgs)
         // Parses command line into argv array. Return a single-element array with the exe name.
         this.exports["CommandLineToArgvW"] = (ctx, mem, args) => {
@@ -534,4 +570,3 @@ export class Shell32 implements IModule {
 
     reset(): void {}
 }
-
