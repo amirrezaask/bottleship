@@ -38,11 +38,27 @@ export async function benchmarkStrings(variants){
                     if(m.call(op,...args,64)!==expected)throw new Error(`Wrong ${op} ${mode} result before timing`);
                 }
                 const hits=machines.find(([name])=>name==='candidate')?.[1].stringStats()?.[statIndex[op]];
-                const iterations=length===0||mode==='first'?20000:Math.max(8,Math.min(20000,Math.floor(524288/bytes)));
+                const seedIterations=length===0||mode==='first'?20000:Math.max(8,Math.min(20000,Math.floor(524288/bytes)));
+                const iterationsByVariant={};
+                // Calibrate each engine to real millisecond batches, not clock-sized fast-path samples.
+                for(const [name,m] of machines){
+                    let count=seedIterations;
+                    for(let attempt=0;attempt<10;attempt++){
+                        m.prepare(op,...args,count);const start=performance.now();const result=m.execute();
+                        const elapsed=performance.now()-start;
+                        if(result!==expected)throw new Error(`Wrong calibration ${op} result`);
+                        if(elapsed>=3||count===500000)break;
+                        count=Math.min(500000,Math.max(count+1,Math.ceil(count*3.3/Math.max(elapsed,0.001))));
+                    }
+                    iterationsByVariant[name]=count;
+                }
                 const samples=Object.fromEntries(machines.map(([name])=>[name,[]]));
+                const batchSamples=Object.fromEntries(machines.map(([name])=>[name,[]]));
                 for(let round=0;round<9;round++)for(const [name,m] of round&1?[...machines].reverse():machines){
+                    const iterations=iterationsByVariant[name];
                     m.prepare(op,...args,iterations);const start=performance.now();const result=m.execute();
-                    samples[name].push((performance.now()-start)/iterations);
+                    const elapsed=performance.now()-start;
+                    batchSamples[name].push(elapsed);samples[name].push(elapsed/iterations);
                     if(result!==expected)throw new Error(`Wrong timed ${op} ${mode} result`);
                 }
                 for(const [name,m] of machines){
@@ -54,12 +70,12 @@ export async function benchmarkStrings(variants){
                     if(name==='candidate'&&m.stringStats()?.[statIndex[op]]===hits)throw new Error(`${op}: native path not exercised`);
                 }
                 const medians=Object.fromEntries(Object.entries(samples).map(([name,xs])=>[name,median(xs)]));
-                results.push({case:`${op} ${mode} ${length} units +${offset}`,op,length,stride,offset,mode,iterations,
-                    mediansMs:medians,samplesMs:samples,speedupVsParent:medians.parent/medians.candidate,
+                results.push({case:`${op} ${mode} ${length} units +${offset}`,op,length,stride,offset,mode,iterationsByVariant,
+                    mediansMs:medians,samplesMs:samples,batchSamplesMs:batchSamples,speedupVsParent:medians.parent/medians.candidate,
                     speedupVsRebuilt:medians.rebuilt?medians.rebuilt/medians.candidate:null});
             }
         }
-        return {note:'CPU microbenchmarks in JIT-warmed guest CALL/OUT/RET loops; resident pages; no staging copies; not game FPS or a native-runtime comparison.',
+        return {note:'CPU microbenchmarks in JIT-warmed guest CALL/OUT/RET loops; resident pages; batches calibrated per binary toward >=3 ms; no staging copies; not game FPS or a native-runtime comparison.',
             engines:Object.fromEntries(machines.map(([name,m])=>[name,{jitFinalizations:m.finalized,hostCalls:m.hostCalls,stringStats:m.stringStats()}])),results};
     }finally{for(const [,m] of machines)m.close();}
 }

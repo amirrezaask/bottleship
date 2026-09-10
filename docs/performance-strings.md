@@ -74,13 +74,17 @@ The shared guest fixture executes real x86 CALL/OUT/RET loops with observed JIT
 finalizations and zero API-host-fallback counts. Both engines report all 192 cases:
 eight existing operations, empty through 65,536-unit strings, aligned and odd
 pointers, and equal/early/late/absent results. Nine alternating-order batches follow
-warm-up. Guards, guest calls and work are timed; setup, page priming and correctness
-checks are not. Return values and copied bytes/canaries are validated. New narrow
-search handlers are correctness-tested rather than assigned a misleading ratio
-against an artificial JS fallback. Tiny/early calls can regress; consult all rows.
+warm-up. Each binary's iteration count is calibrated separately toward at least
+three milliseconds per batch, so fast paths are not measured with clock-sized
+samples. Both batch durations and per-call samples/counts are recorded; calibration
+is bounded and hosted timings remain advisory, not flaky pass/fail thresholds.
+Guards, guest calls and work are timed; setup, page priming, calibration and
+correctness checks are not. Return values and copied bytes/canaries are validated.
+New narrow search handlers are correctness-tested rather than assigned a misleading
+ratio against an artificial JS fallback. Tiny/early calls can regress; consult all rows.
 
 Regression tests cover scalar-vs-SIMD results, all nonzero UTF-16 values, NUL lane
-positions, unsigned differences, odd pitches/addresses, real memory growth, code
+positions, unsigned differences, odd addresses, real memory growth, code
 invalidation, flags/SSE/nonvolatile state, cold/remapped/denied pages, historical
 caps and capability-gated host registration. Some new-handler rejection tests use
 a recording-only host fallback and do not model complete Windows exception handling.
