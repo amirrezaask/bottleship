@@ -1,0 +1,47 @@
+name: Pixel performance
+
+on:
+  push:
+    branches: ['perf/wasm-pixel-*']
+  pull_request:
+    paths:
+      - 'tools/build-dxt-kernel/**'
+      - 'src/worker/modules/ddraw/gpu-texture-utils.ts'
+      - 'src/worker/backends/webgpu/shared/**'
+      - 'tools/perf/**'
+      - 'tools/tests/**'
+      - '.github/workflows/pixel-performance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Record parent PR baseline and reproducible source
+        run: |
+          mkdir -p performance-results
+          git bundle create performance-results/source.bundle HEAD
+          git submodule status > performance-results/submodules.txt
+          bun tools/perf/runtime-fastpaths.ts d99c61599bbe5adcb2031cdc88cef7a35c964d2f performance-results/parent-baseline.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pixel-performance-baseline
+          path: performance-results/
+          retention-days: 14
