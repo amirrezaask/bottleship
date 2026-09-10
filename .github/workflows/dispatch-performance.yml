@@ -18,29 +18,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  baseline:
+  bootstrap-core:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/perf/wasm-dispatch-fastpaths-stacked'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - run: bun install --frozen-lockfile
-      - name: Preserve reproducible source and CPU baseline
+      - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Build identical-toolchain baseline and patched core
+        env:
+          V86_BASELINE_OUTPUT: performance-results/v86-baseline-rebuilt.wasm
+        run: node tools/build-v86-runtime/build.mjs
+      - name: Publish generated core on this stacked branch only
         run: |
-          mkdir -p performance-results
+          git apply --check tools/build-v86-runtime/host-bootstrap.patch
+          git apply tools/build-v86-runtime/host-bootstrap.patch
+          git rm tools/build-v86-runtime/host-bootstrap.patch
+          git add public/v86.wasm tools/build-v86-runtime/manifest.json src/worker/core/cpu/hypercall-data.ts
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: publish guarded bulk-memory core and versioned host bindings'
+          git push origin HEAD:perf/wasm-dispatch-fastpaths-stacked
           git bundle create performance-results/source.bundle --all
-          git -C vendor/v86 bundle create ../../performance-results/v86.bundle HEAD
-          git rev-parse HEAD > performance-results/candidate.txt
-          git submodule status > performance-results/submodules.txt
-          bun tools/perf/runtime-fastpaths.ts 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/bun-baseline.json
-          node tools/perf/browser-fastpaths.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/chromium-baseline.json
+          cp public/v86.wasm performance-results/v86-candidate.wasm
+          cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: dispatch-baseline-source
+          name: dispatch-core-build
           path: performance-results/
           retention-days: 14
