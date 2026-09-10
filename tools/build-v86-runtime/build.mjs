@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const source = join(root, 'vendor/v86');
 const pinned = '97704021d3b9f75ef5b1504e9f1f1e7fe95094d4';
-const rust = '1.85.0';
+const rust = '1.90.0';
 const sha256 = p => createHash('sha256').update(readFileSync(p)).digest('hex');
 const at = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 if (at !== pinned) throw new Error(`Expected v86 ${pinned}, got ${at}; review and rebase the patch first`);

@@ -29,7 +29,7 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
-      - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
       - name: Build identical-toolchain baseline and patched core
         env:
           V86_BASELINE_OUTPUT: performance-results/v86-baseline-rebuilt.wasm
