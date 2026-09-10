@@ -43,6 +43,8 @@ export async function benchmarkRep(variants){
                 m.warm(a,bytes);m.warm(b,bytes,op==='stos'||op==='movs');
                 m.prepareRep(op,size,src,dst,length,{...options,iterations:64});m.execute();check(m);
             }
+            // Permit asynchronous browser/WASM compilation to settle between phases.
+            await pause();
             const statIndex=op==='cmps'?0:op==='scas'?1:op==='stos'&&size>1?size===2?2:3:-1;
             const shouldHit=statIndex>=0&&offset%size===0&&length>=(op==='stos'?64/size:16/size);
             const before=machines.find(([n])=>n==='candidate')?.[1].repStats()?.[statIndex];
@@ -56,9 +58,13 @@ export async function benchmarkRep(variants){
                 }
                 counts[name]=iterations;
             }
-            for(let round=0;round<9;round++)for(const [name,m] of round&1?[...machines].reverse():machines){
+            await pause();
+            for(let round=0;round<9;round++){
+              await pause();
+              for(const [name,m] of round&1?[...machines].reverse():machines){
                 m.prepareRep(op,size,src,dst,length,{...options,iterations:counts[name]});const begin=performance.now();m.execute();const elapsed=performance.now()-begin;
                 batches[name].push(elapsed);samples[name].push(elapsed/counts[name]);check(m);
+              }
             }
             for(const [name,m] of machines){
                 if(m.hostCalls)throw new Error(`${name}: unexpected API host dispatch`);
@@ -72,7 +78,7 @@ export async function benchmarkRep(variants){
             results.push({case:`${equal?'REPE':'REPNE'} ${op}${size*8} ${mode} ${length} units ${backwards?'backward':'forward'} +${offset} value=${value>>>0}`,...c,
                 mediansMs:medians,iterationsByVariant:counts,samplesMs:samples,batchSamplesMs:batches,speedupVsParent:medians.parent/medians.candidate,speedupVsRebuilt:medians.rebuilt?medians.rebuilt/medians.candidate:null});
         }
-        return {note:'Real JIT-warmed guest REP instructions, resident pages, same caller. Timings include register setup/CALL/RET/loop and page translation; no API thunks, staging copies, GPU or native-performance comparison. All 212 cases retained, including existing bulk controls and unaligned fallback cases.',
+        return {note:'Real JIT-warmed guest REP instructions, resident pages, same caller; event-loop yields between warm-up/calibration/sample batches allow async tiering to settle. Timings include register setup/CALL/RET/loop and page translation; no API thunks, staging copies, GPU or native-performance comparison. All 212 cases retained, including existing bulk controls and unaligned fallback cases.',
             engines:Object.fromEntries(machines.map(([n,m])=>[n,{jitFinalizations:m.finalized,hostCalls:m.hostCalls,repStats:m.repStats()}])),results};
     }finally{for(const [,m] of machines)m.close();}
 }
