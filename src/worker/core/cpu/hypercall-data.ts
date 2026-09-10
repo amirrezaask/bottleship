@@ -884,12 +884,12 @@ export class HypercallDataManager {
      * Idempotent; survives dispatch-table rebuild via registeredEntries.
      */
     registerRawHandler(functionId: number, handlerId: number): void {
-        if (functionId <= 0 || functionId >= 4096) {
+        if (!Number.isInteger(functionId) || functionId <= 0 || functionId >= 4096) {
             Logger.warn(LogCategory.SYSTEM,
                 `[HYPERCALL] registerRawHandler: functionId ${functionId} out of dispatch-table range`);
             return;
         }
-        if (handlerId <= 0 || handlerId > 255) {
+        if (!Number.isInteger(handlerId) || handlerId <= 0 || handlerId > 255) {
             Logger.warn(LogCategory.SYSTEM,
                 `[HYPERCALL] registerRawHandler: handlerId ${handlerId} not a u8`);
             return;
