@@ -6,7 +6,7 @@ on:
   pull_request:
     paths:
       - 'tools/build-dxt-kernel/**'
-      - 'src/worker/modules/ddraw/gpu-texture-utils.ts'
+      - 'src/worker/modules/ddraw/gpu-texture-*.ts'
       - 'src/worker/backends/webgpu/shared/**'
       - 'tools/perf/**'
       - 'tools/tests/**'
@@ -20,16 +20,43 @@ defaults:
   run:
     shell: bash
 
+concurrency:
+  group: pixel-performance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  kernel:
+  pixels:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
       - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
       - run: node tools/build-dxt-kernel/build.mjs
-      - uses: actions/upload-artifact@v4
+      - name: Verify both committed WASM variants match Rust source
+        run: git diff --exit-code -- src/worker/backends/webgpu/shared/dxt-kernel.wasm src/worker/backends/webgpu/shared/dxt-kernel-simd.wasm
+      - uses: oven-sh/setup-bun@v2
         with:
-          name: pixel-kernels
-          path: src/worker/backends/webgpu/shared/dxt-kernel*.wasm
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Full tests (including scalar and SIMD differential tests)
+        run: |
+          mkdir -p performance-results
+          bun test 2>&1 | tee performance-results/tests.log
+      - run: bun run build
+      - name: Compare public pixel paths against parent PR in Bun
+        run: bun tools/perf/pixel-fastpaths.ts d99c61599bbe5adcb2031cdc88cef7a35c964d2f performance-results/bun-pixels.json
+      - name: Compare public pixel paths against parent PR in Chromium
+        run: node tools/perf/browser-fastpaths.mjs d99c61599bbe5adcb2031cdc88cef7a35c964d2f performance-results/chromium-pixels.json --pixels
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pixel-performance-results
+          path: performance-results/
           retention-days: 14
