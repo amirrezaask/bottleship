@@ -1,0 +1,26 @@
+name: Refresh texture assets
+on:
+  push:
+    branches: [perf/wasm-pixel-fastpaths-stacked]
+    paths: [.github/workflows/refresh-texture-assets.yml]
+permissions:
+  contents: write
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
+      - run: node tools/build-dxt-kernel/build.mjs
+      - name: Commit only the generated texture assets
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+        run: |
+          git add -- src/worker/backends/webgpu/shared/dxt-kernel.wasm src/worker/backends/webgpu/shared/dxt-kernel-simd.wasm
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'build: regenerate scalar and SIMD texture assets'
+            git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          fi
