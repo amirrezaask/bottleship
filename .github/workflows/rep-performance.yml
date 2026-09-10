@@ -1,0 +1,26 @@
+name: REP performance
+on:
+  push:
+    branches: ['perf/wasm-rep-fastpaths-stacked']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Preserve exact parent and source
+        run: |
+          mkdir -p performance-results
+          git bundle create performance-results/source.bundle --all
+          git rev-parse HEAD > performance-results/head.txt
+          git show fb04401f30b1267548b05cb2574ace7b9d47f4dc:public/v86.wasm > performance-results/v86-pr4.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rep-baseline-source
+          path: performance-results/
+          retention-days: 14
