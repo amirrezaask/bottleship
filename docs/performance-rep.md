@@ -19,6 +19,12 @@ existing physical RAM with no staging copy, extra instance, worker, host thunk o
 per-invocation allocation. `REP MOVS` and byte `STOS` already used bulk operations;
 they were not rewritten and are included as benchmark controls.
 
+The large helpers are marked `inline(never)` to limit their effect on the surrounding
+specialized instruction functions. This is a measured code-generation tradeoff,
+not a claim that inlining is always bad: an internal WASM call per eligible page
+chunk is preferable to inflating the caller and slowing its scalar fallbacks.
+Recheck the full workload, including unaligned paths, before changing this boundary.
+
 The intrinsic runs only inside the existing translated-page fast path. Normal CPU
 translation still enforces access permissions and updates accessed/dirty bits.
 Unlike the earlier HLE resident-identity guards, remapped ordinary RAM is supported
@@ -109,8 +115,8 @@ Timed batches include guest register loading, CALL/RET, the instruction and norm
 page translations. Setup, page priming, calibration and verification are excluded.
 Each binary's count is calibrated toward >=3 ms and nine alternating-order samples
 are recorded with raw batch durations. Timing on shared runners is reported rather
-than used as a brittle pass/fail threshold. Tiny/early-result cases may regress;
-all results, including controls and fallbacks, are retained. Do not multiply these
+than used as a brittle pass/fail threshold. Tiny/early-result cases and unchanged
+fallbacks or controls may regress; all results are retained. Do not multiply these
 ratios by earlier HLE/texture improvements or interpret them as game FPS.
 
 The pinned v86 submodule is unchanged. The build helper applies this repository's
