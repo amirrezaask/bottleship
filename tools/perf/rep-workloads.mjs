@@ -51,6 +51,15 @@ export async function benchmarkRep(variants,cases=repCases()){
             const before=candidate?.repStats()?.[statIndex];
             const extraStats=m=>m?.api.get_unaligned_rep_stats_ptr?Array.from(new Uint32Array(m.cpu.wasm_memory.buffer,m.api.get_unaligned_rep_stats_ptr()>>>0,8)):null;
             const extraBefore=extraStats(candidate);
+            // A backward early result can finish in a scalar page-edge bridge,
+            // before any vector chunk is legal. Verify that exact path rather
+            // than requiring SIMD work after the instruction already terminated.
+            let requiredCounter=null;
+            if(c.requireUnaligned){
+                const pageElements=address=>{const offset=address&4095;return offset>4096-size?0:backwards?Math.floor(offset/size)+1:Math.floor((4096-offset)/size);};
+                const firstChunk=Math.min(length,pageElements(dst),op==='cmps'?pageElements(src):length);
+                requiredCounter=mode==='first'&&firstChunk<16/size?6:(op==='cmps'?0:op==='scas'?2:4)+Number(size===4);
+            }
             const counts={},samples=Object.fromEntries(machines.map(([n])=>[n,[]])),batches=Object.fromEntries(machines.map(([n])=>[n,[]]));
             for(const [name,m] of machines){
                 let iterations=length===0||mode==='first'?20000:Math.max(8,Math.min(20000,Math.floor(262144/Math.max(1,bytes))));
@@ -73,17 +82,18 @@ export async function benchmarkRep(variants,cases=repCases()){
                 if(m.hostCalls)throw new Error(`${name}: unexpected API host dispatch`);
                 if(name==='candidate'&&shouldHit&&m.repStats()?.[statIndex]===before)throw new Error(`REP intrinsic not exercised ${JSON.stringify(c)}`);
                 if(name==='candidate'&&c.requireUnaligned){
-                    const index=(op==='cmps'?0:op==='scas'?2:4)+Number(size===4);
-                    if(!extraBefore||extraStats(m)[index]===extraBefore[index])throw new Error('Unaligned intrinsic not exercised');
+                    if(!extraBefore||extraStats(m)[requiredCounter]===extraBefore[requiredCounter])throw new Error(`Required unaligned counter ${requiredCounter} did not advance: ${JSON.stringify(c)}`);
                 }
                 if(op==='stos'||op==='movs'){
                     const mem=m.guest();for(let i=0;i<bytes;i++)if(mem[b+i]!==((value>>>((i%size)*8))&255))throw new Error('REP write mismatch');
                     if(mem[b-1]!==173||mem[b+bytes]!==173)throw new Error('REP write canary changed');
                 }
             }
+            const extraAfter=extraStats(candidate);
+            const unalignedCounterDeltas=extraBefore&&extraAfter?extraAfter.map((value,i)=>(value-extraBefore[i])>>>0):null;
             const medians=Object.fromEntries(Object.entries(samples).map(([name,xs])=>[name,median(xs)]));
             results.push({case:`${equal?'REPE':'REPNE'} ${op}${size*8} ${mode} ${length} units ${backwards?'backward':'forward'} +${offset}/+${c.dstOffset??offset} value=${value>>>0}`,...c,
-                mediansMs:medians,iterationsByVariant:counts,samplesMs:samples,batchSamplesMs:batches,speedupVsParent:medians.parent/medians.candidate,speedupVsRebuilt:medians.rebuilt?medians.rebuilt/medians.candidate:null});
+                requiredUnalignedCounter:requiredCounter,unalignedCounterDeltas,mediansMs:medians,iterationsByVariant:counts,samplesMs:samples,batchSamplesMs:batches,speedupVsParent:medians.parent/medians.candidate,speedupVsRebuilt:medians.rebuilt?medians.rebuilt/medians.candidate:null});
         }
         return {note:'Real JIT-warmed guest REP instructions, resident pages, same caller; event-loop yields between warm-up/calibration/sample batches allow async tiering to settle. Timings include register setup/CALL/RET/loop and page translation; no API thunks, staging copies, GPU or native-performance comparison. All supplied cases retained, including controls and fallbacks.', caseCount:cases.length,
             engines:Object.fromEntries(machines.map(([n,m])=>[n,{jitFinalizations:m.finalized,hostCalls:m.hostCalls,repStats:m.repStats(),unalignedStats:m.api.get_unaligned_rep_stats_ptr?Array.from(new Uint32Array(m.cpu.wasm_memory.buffer,m.api.get_unaligned_rep_stats_ptr()>>>0,8)):null}])),results};
