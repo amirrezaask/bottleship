@@ -45,7 +45,7 @@ unsafe fn checked_ptr(start: u32, bytes: u32, write: bool) -> Option<*mut u8> {
 #[cfg(target_feature = "simd128")]
 #[inline]
 fn equal_mask<const WIDE: bool>(a: v128, b: v128) -> u32 {
-    if WIDE { i16x8_bitmask(i16x8_eq(a, b)) } else { i8x16_bitmask(i8x16_eq(a, b)) }
+    if WIDE { i16x8_bitmask(i16x8_eq(a, b)) as u32 } else { i8x16_bitmask(i8x16_eq(a, b)) as u32 }
 }
 #[cfg(target_feature = "simd128")]
 #[inline]
