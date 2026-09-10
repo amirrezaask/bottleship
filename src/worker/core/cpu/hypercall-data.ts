@@ -328,6 +328,11 @@ const HANDLER_MAP: Record<string, number> = {
     'crtdll._strcmpi': HANDLER_STRICMP,
     'msvcrt.memcmp': HANDLER_MEMCMP,
     'crtdll.memcmp': HANDLER_MEMCMP,
+    // Versioned bulk-memory ABI; old v86 assets must retain the existing JS handlers.
+    'msvcrt.memmove': 82,
+    'crtdll.memmove': 82,
+    'msvcrt.memchr': 83,
+    'crtdll.memchr': 83,
     // Narrow ANSI string leaves — _strnicmp (count==0 → equal, NARROW convention), strstr, atoi/atol
     'msvcrt._strnicmp': HANDLER_STRNICMP,
     'crtdll._strnicmp': HANDLER_STRNICMP,
@@ -846,6 +851,8 @@ export class HypercallDataManager {
         const key = `${dllName.toLowerCase()}.${functionName.toLowerCase()}`;
         const handlerId = HANDLER_MAP[key];
         if (!handlerId) return;
+        if ((handlerId === 82 || handlerId === 83) &&
+            this.cpu?.wm?.exports?.get_bulk_memory_abi?.() !== 1) return;
 
         this.refreshViews();
         if (!this.view) return;

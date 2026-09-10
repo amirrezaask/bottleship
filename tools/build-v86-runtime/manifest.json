@@ -1,0 +1,14 @@
+{
+  "v86Commit": "97704021d3b9f75ef5b1504e9f1f1e7fe95094d4",
+  "rust": "1.90.0",
+  "target": "wasm32-unknown-unknown",
+  "features": [
+    "bulk-memory",
+    "multivalue",
+    "simd128"
+  ],
+  "patchSha256": "d5c99c3a4ccb3217a693774b6136b772e6bbbfbc0dcfaf875e030150368e5bbd",
+  "kernelSha256": "bd38e02563391cf5de0302b155cdee75a0ad23747533919b60b5b0069211a71d",
+  "buildScriptSha256": "947babbb5d5374942d4155e896cbeb6ab945b30286c94f39efe615056b022ee6",
+  "wasmSha256": "d0b2d114dc74b3eca37f8c73ac35575e5917e06dac2ac23854b0815f625cb1ec"
+}
