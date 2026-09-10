@@ -9,7 +9,10 @@ selection are not replaced.
 
 The existing texture WASM module now handles RGB565, RGB555, ARGB1555, ARGB8888
 and XRGB8888 surface conversion. It combines conversion and color-key transparency
-in one specialized pass, rather than separate TypeScript loops. Scalar and SIMD
+in one specialized pass, rather than separate TypeScript loops. Unkeyed RGB565
+keeps the faster TypeScript lookup-table path: CPU benchmarks showed staging overhead
+can outweigh SIMD there. The checked Rust implementation remains tested, but public
+routing does not force it. Scalar and SIMD
 builds use the same checked ABI. SIMD processes four pixels per iteration, with
 unaligned-safe loads, exact row-boundary reads and scalar tails. Rounded 5/6-bit
 channel expansion, alpha and the existing zero-pixel color-key policy are preserved.

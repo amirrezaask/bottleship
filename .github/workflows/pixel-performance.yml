@@ -31,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.85.0 --profile minimal --target wasm32-unknown-unknown
@@ -50,6 +51,8 @@ jobs:
           mkdir -p performance-results
           bun test 2>&1 | tee performance-results/tests.log
       - run: bun run build
+      - name: Record generated-file changes
+        run: git status --short > performance-results/working-tree.txt
       - name: Compare public pixel paths against parent PR in Bun
         run: bun tools/perf/pixel-fastpaths.ts d99c61599bbe5adcb2031cdc88cef7a35c964d2f performance-results/bun-pixels.json
       - name: Compare public pixel paths against parent PR in Chromium

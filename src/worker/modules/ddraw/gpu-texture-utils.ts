@@ -18,7 +18,8 @@ export function convertSurfaceToRGBA(
     const out = outBuffer && outBuffer.length >= bytes ? outBuffer : new Uint8Array(bytes);
     if (bytes === 0) return out;
     const kind = detectPixelFormat(format);
-    if (tryConvertPixelKernel(kind, mem, surfacePtr, pitch, width, height, out, colorkey)) return out;
+    // Unkeyed RGB565 is a single LUT pass; staging copies cost more than they save.
+    if ((kind !== 1 || colorkey) && tryConvertPixelKernel(kind, mem, surfacePtr, pitch, width, height, out, colorkey)) return out;
 
     const bpp = Math.max(1, format.bpp >> 3);
     const rowBytes = width * bpp;
