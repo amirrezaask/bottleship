@@ -1,0 +1,27 @@
+name: Unaligned performance
+on:
+  push:
+    branches: ['perf/wasm-unaligned-rep-stacked']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - run: |
+          mkdir -p performance-results
+          git archive HEAD | gzip > performance-results/source.tar.gz
+          git -C vendor/v86 archive HEAD | gzip > performance-results/v86-source.tar.gz
+          git rev-parse HEAD > performance-results/head.txt
+          git rev-parse HEAD^{tree} > performance-results/tree.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unaligned-baseline-source
+          path: performance-results/
+          retention-days: 14
