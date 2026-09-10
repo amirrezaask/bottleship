@@ -1,38 +1,74 @@
 name: REP performance
+
 on:
   push:
-    branches: ['perf/wasm-rep-fastpaths-stacked']
+    branches: [main, master, 'perf/wasm-rep-*']
+  pull_request:
   workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: rep-performance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  bootstrap:
-    if: github.ref == 'refs/heads/perf/wasm-rep-fastpaths-stacked'
+  instructions:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           submodules: true
           fetch-depth: 0
       - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-      - name: Build integrated REP core and parent control
+      - name: Rebuild integrated core and same-compiler PR4 control
         env:
           V86_REP_BASELINE_OUTPUT: performance-results/v86-pr4-rebuilt.wasm
         run: node tools/build-v86-runtime/build.mjs
-      - name: Publish generated assets on this branch only
+      - name: Verify committed assets and exact parent control
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add public/v86.wasm tools/build-v86-runtime/manifest.json
-          if ! git diff --cached --quiet; then
-            git commit -m 'build: publish integrated REP runtime and provenance'
-            git push origin HEAD:perf/wasm-rep-fastpaths-stacked
-          fi
-          git bundle create performance-results/source.bundle --all
+          git diff --exit-code -- public/v86.wasm tools/build-v86-runtime/manifest.json vendor/v86
+          git show fb04401f30b1267548b05cb2574ace7b9d47f4dc:public/v86.wasm > performance-results/v86-pr4-shipped.wasm
+          cmp performance-results/v86-pr4-shipped.wasm performance-results/v86-pr4-rebuilt.wasm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Project suite and compiled CPU regressions
+        run: |
+          bun test 2>&1 | tee performance-results/project-tests.log
+          node --test tools/runtime-test/*.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+      - run: bun run build
+      - name: Verify against actual native x86 REP instructions
+        run: |
+          gcc -O2 -Wall -Wextra -Werror tools/runtime-test/rep-native-oracle.c -o performance-results/rep-native-oracle
+          node tools/perf/verify-rep-native.mjs ./performance-results/rep-native-oracle performance-results/native-oracle.json
+      - name: Incremental instruction benchmarks against PR4
+        env:
+          V86_REBUILT_BASELINE: performance-results/v86-pr4-rebuilt.wasm
+        run: |
+          node tools/perf/rep-memory.mjs fb04401f30b1267548b05cb2574ace7b9d47f4dc performance-results/node-rep.json
+          node tools/perf/browser-rep-memory.mjs fb04401f30b1267548b05cb2574ace7b9d47f4dc performance-results/chromium-rep.json
+      - name: Record provenance and generator changes
+        if: always()
+        run: |
+          mkdir -p performance-results
+          git status --short > performance-results/working-tree.txt
+          cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rep-core-build
+          name: rep-performance-results
           path: performance-results/
           retention-days: 14
