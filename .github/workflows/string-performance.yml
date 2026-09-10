@@ -13,22 +13,36 @@ defaults:
     shell: bash
 
 jobs:
-  baseline:
+  bootstrap:
+    if: github.ref == 'refs/heads/perf/wasm-string-fastpaths-stacked'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
-      - name: Preserve exact parent and sources
+      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Build parent control and integrated string core
+        env:
+          V86_STRING_BASELINE_OUTPUT: performance-results/v86-pr3-rebuilt.wasm
         run: |
-          mkdir -p performance-results
+          git apply --check tools/build-v86-runtime/host-string.patch
+          git apply tools/build-v86-runtime/host-string.patch
+          node tools/build-v86-runtime/build.mjs
+      - name: Publish generated assets on this branch only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/v86.wasm tools/build-v86-runtime/manifest.json src/worker/core/cpu/hypercall-data.ts
+          git commit -m 'build: publish integrated string runtime and versioned host bindings'
+          git push origin HEAD:refs/heads/perf/wasm-string-fastpaths-stacked
           git bundle create performance-results/source.bundle --all
-          git rev-parse HEAD > performance-results/head.txt
-          git show dd9914a7f4cf90bb2bc833d34733d2d0ce0ec9e8:public/v86.wasm > performance-results/v86-pr3.wasm
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: string-baseline-source
+          name: string-core-build
           path: performance-results/
           retention-days: 14

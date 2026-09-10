@@ -1,0 +1,113 @@
+--- a/src/rust/cpu/hypercall.rs
++++ b/src/rust/cpu/hypercall.rs
+@@ -344,6 +344,8 @@
+         81 => handle_wait_for_single_object(),
+         82 => handle_memmove_bulk(),
+         83 => handle_memchr_bulk(),
++        84 => handle_strchr_native::<false>(),
++        85 => handle_strchr_native::<true>(),
+ 
+         // ── Handler-id band 128..=255: Guarded Inner-Loop HLE engine kernels,
+         //    kept in a distinct range from the
+@@ -1082,6 +1084,7 @@
+         write_reg32(EAX, 0);
+         return true;
+     }
++    if let Some(n) = super::string_memory::try_length::<true>(str_ptr as u32) { write_reg32(EAX, n as i32); return true; }
+     let mut len: u32 = 0;
+     loop {
+         let ch = match hc_safe_read16(str_ptr + len as i32 * 2) {
+@@ -1111,6 +1114,7 @@
+         write_reg32(EAX, dst);
+         return true;
+     }
++    if super::string_memory::try_copy::<true>(dst as u32, src as u32) { write_reg32(EAX, dst); return true; }
+     let mut i: u32 = 0;
+     loop {
+         let ch = match hc_safe_read16(src + i as i32 * 2) {
+@@ -1179,6 +1183,7 @@
+         Ok(v) => v,
+         Err(_) => return false,
+     };
++    if let Some(d) = super::string_memory::try_compare::<true, true>(s1 as u32, s2 as u32) { write_reg32(EAX, d); return true; }
+     let mut i: u32 = 0;
+     let result = loop {
+         let c1 = match hc_safe_read16(s1 + i as i32 * 2) {
+@@ -1216,6 +1221,7 @@
+         write_reg32(EAX, 0);
+         return true;
+     }
++    if let Some(p) = super::string_memory::try_find::<true, false>(str_ptr as u32, target as u32) { write_reg32(EAX, p as i32); return true; }
+     let mut i: u32 = 0;
+     loop {
+         let ch = match hc_safe_read16(str_ptr + i as i32 * 2) {
+@@ -1474,6 +1480,7 @@
+         write_reg32(EAX, 0);
+         return true;
+     }
++    if let Some(n) = super::string_memory::try_length::<false>(str_ptr as u32) { write_reg32(EAX, n as i32); return true; }
+     let mut len: u32 = 0;
+     loop {
+         let ch = match hc_safe_read8(str_ptr + len as i32) {
+@@ -1499,6 +1506,7 @@
+         Ok(v) => v,
+         Err(_) => return false,
+     };
++    if let Some(d) = super::string_memory::try_compare::<false, false>(s1 as u32, s2 as u32) { write_reg32(EAX, d); return true; }
+     let mut i: u32 = 0;
+     let result = loop {
+         let c1 = match hc_safe_read8(s1 + i as i32) {
+@@ -1533,6 +1541,7 @@
+         write_reg32(EAX, dst);
+         return true;
+     }
++    if super::string_memory::try_copy::<false>(dst as u32, src as u32) { write_reg32(EAX, dst); return true; }
+     let mut i: u32 = 0;
+     loop {
+         let ch = match hc_safe_read8(src + i as i32) {
+@@ -1559,6 +1568,7 @@
+         Ok(v) => v,
+         Err(_) => return false,
+     };
++    if let Some(d) = super::string_memory::try_compare::<false, true>(s1 as u32, s2 as u32) { write_reg32(EAX, d); return true; }
+     let mut i: u32 = 0;
+     let result = loop {
+         let c1 = match hc_safe_read8(s1 + i as i32) {
+@@ -2342,3 +2352,16 @@
+     }
+     false
+ }
++
++// Only bound by the host when get_string_memory_abi() is supported.
++unsafe fn handle_strchr_native<const REVERSE: bool>() -> bool {
++    let esp = read_reg32(ESP);
++    let Ok(src) = safe_read32s(esp.wrapping_add(4)) else { return false; };
++    let Ok(ch) = safe_read32s(esp.wrapping_add(8)) else { return false; };
++    if src == 0 { write_reg32(EAX, 0); return true; }
++    if let Some(p) = super::string_memory::try_find::<false, REVERSE>(src as u32, ch as u8 as u32) {
++        write_reg32(EAX, p as i32);
++        return true;
++    }
++    false
++}
+--- a/src/rust/cpu/mod.rs
++++ b/src/rust/cpu/mod.rs
+@@ -6,6 +6,7 @@
+ pub mod global_pointers;
+ pub mod hypercall;
+ pub mod bulk_memory;
++pub mod string_memory;
+ pub mod hypercall_eagl;
+ pub mod hypercall_rtti;
+ pub mod instructions;
+--- a/src/rust/cpu/bulk_memory.rs
++++ b/src/rust/cpu/bulk_memory.rs
+@@ -21,7 +21,7 @@
+ 
+ /// Do not populate TLB entries here: a probe must neither fault nor set A/D bits.
+ /// Valid resident entries already carry those effects from normal CPU translation.
+-unsafe fn resident_span(start: u32, len: u32, write: bool) -> bool {
++pub(super) unsafe fn resident_span(start: u32, len: u32, write: bool) -> bool {
+     if !ENABLED || len == 0 || start < 0x10_0000 { return false; }
+     let Some(end) = start.checked_add(len - 1) else { return false; };
+     if end >= *global_pointers::memory_size { return false; }
