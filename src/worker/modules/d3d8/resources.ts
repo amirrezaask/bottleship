@@ -35,6 +35,7 @@ import {
     decodeD3DTextureToRgba8,
     getD3DTextureLayout,
 } from '../../backends/webgpu/shared/texture-formats';
+import { isTextureDirectUploadEnabled } from '../../backends/webgpu/shared/dxt-kernel';
 import type { BitmapTextureSurface, DirectDrawSurfaceState, RenderSurface } from '../../modules/ddraw/com-objects';
 import { isBitmapTexture, isRenderSurface } from '../../modules/ddraw/com-objects';
 import { surfaceSyncManager } from '../ddraw/surface-sync';
@@ -171,7 +172,11 @@ function clampRectToSurface(rect: RectI, width: number, height: number): RectI {
     return { left, top, right, bottom };
 }
 
-function syncBitmapSurfaceFromGuest(surface: BitmapTextureSurface): void {
+function syncBitmapSurfaceFromGuest(
+    surface: BitmapTextureSurface,
+    adapter?: D3D8DeviceAdapter,
+    allowDirectDxtUpload = false,
+): void {
     surface.gpuNeedsUpload = true;
 
     const process = System.getInstance().process;
@@ -189,6 +194,10 @@ function syncBitmapSurfaceFromGuest(surface: BitmapTextureSurface): void {
     const srcBytes = pitch * rows;
     const start = surface.surfacePtr;
     if (start + srcBytes > guestMem.length) return;
+
+    if (allowDirectDxtUpload && isTextureDirectUploadEnabled() && adapter?.renderer.tryUploadDxtTextureFromGuest(
+        surface, guestMem, d3dFormat,
+    )) return;
 
     const pixelSize = surface.width * surface.height * 4;
 
@@ -912,7 +921,8 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         const adapter = resourceToDevice.get(args[0]);
         const surface = resolveLockSurface(info, adapter);
         if (isBitmapTexture(surface)) {
-            syncBitmapSurfaceFromGuest(surface);
+            const isCubeLevel = !!info.texturePtr && cubeTextures.has(info.texturePtr);
+            syncBitmapSurfaceFromGuest(surface, adapter, !isCubeLevel);
         } else if (isRenderSurface(surface)) {
             surface.version++;
             surface.gpuDirty = true;

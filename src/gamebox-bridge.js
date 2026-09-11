@@ -12,6 +12,23 @@ export function installGameBoxBridge(worker, closeAudio) {
     status = message;
     window.dispatchEvent(new Event('gamebox:bottleship-status'));
   };
+  const aotRequest = (mode, extra = {}) =>
+    new Promise((resolve, reject) => {
+      const id = crypto.randomUUID();
+      const timer = setTimeout(() => {
+        worker.removeEventListener('message', receive);
+        reject(new Error('Translation cache operation timed out'));
+      }, 60000);
+      const receive = ({ data }) => {
+        if (data.type !== 'gamebox_aot_result' || data.id !== id) return;
+        clearTimeout(timer);
+        worker.removeEventListener('message', receive);
+        if (data.error) reject(new Error(data.error));
+        else resolve(data.result);
+      };
+      worker.addEventListener('message', receive);
+      worker.postMessage({ type: 'gamebox_aot', id, mode, ...extra });
+    });
   worker.addEventListener('message', ({ data }) => {
     if (data.type === 'ready') {
       ready = true;
@@ -53,7 +70,13 @@ export function installGameBoxBridge(worker, closeAudio) {
     get status() {
       return status;
     },
-    async start({ gameUrl, saveNamespace, aotUrl }) {
+    async start({
+      gameUrl,
+      saveNamespace,
+      aotUrl,
+      lowestGraphics = false,
+      translationCache = 'enabled',
+    }) {
       if (!ready || launched || stopped)
         throw new Error('BottleShip cannot start another game in this player');
       const url = new URL(gameUrl, location.href);
@@ -73,22 +96,40 @@ export function installGameBoxBridge(worker, closeAudio) {
         ).join('');
       const gameId = `app:gamebox-${await hash(saveNamespace)}`;
       const cacheKey = `gamebox-${await hash(url.pathname)}.wgb`;
-      worker.postMessage({ type: 'gamebox_configure', gameId, cacheKey });
+      worker.postMessage({
+        type: 'gamebox_configure',
+        gameId,
+        cacheKey,
+        lowestGraphics: lowestGraphics === true,
+      });
       if (aotUrl) {
-        await new Promise((resolve, reject) => {
-          const id = crypto.randomUUID();
-          const timer = setTimeout(() => { worker.removeEventListener('message', receive); reject(new Error('AOT preparation timed out')); }, 60000);
-          const receive = ({data}) => {
-            if (data.type !== 'gamebox_aot_result' || data.id !== id) return;
-            clearTimeout(timer); worker.removeEventListener('message', receive);
-            if (data.error) reject(new Error(data.error)); else resolve(data.result);
-          };
-          worker.addEventListener('message', receive);
-          worker.postMessage({type: 'gamebox_aot', id, mode: 'load', url: aotUrl});
-        });
+        await aotRequest('load', { url: aotUrl });
+      } else if (translationCache !== 'disabled') {
+        // Persistence is opportunistic. Unsupported storage, quota pressure, or
+        // corrupt data must leave the existing live translator fully usable.
+        try {
+          if (translationCache === 'reset') await aotRequest('persistent-clear');
+          await aotRequest('persistent-start');
+        } catch (cacheError) {
+          console.warn('Persistent translation cache unavailable:', cacheError);
+        }
       }
       launched = true;
       await window.loadApp(url.href);
+    },
+    async translationCache(mode, payload = {}) {
+      const allowed = new Set([
+        'stats',
+        'report',
+        'clear',
+        'clear-game',
+        'clear-module',
+        'clear-all',
+        'export',
+        'import',
+      ]);
+      if (!allowed.has(mode)) throw new Error('Unknown translation cache developer operation');
+      return aotRequest(`persistent-${mode}`, payload);
     },
     async stop() {
       if (stopped) return;

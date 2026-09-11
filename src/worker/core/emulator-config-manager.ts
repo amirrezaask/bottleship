@@ -281,6 +281,11 @@ export class EmulatorConfig {
     // on top at load. Intentionally NOT cleared by reset() (see note there).
     public quality: QualityConfig = { ...DEFAULT_QUALITY };
 
+    // GameBox can make its performance-first launch policy authoritative for the
+    // lifetime of this worker. This keeps persisted host enhancements and a WGB's
+    // optional quality layer from raising GPU cost after the game starts.
+    public lowestGraphics = false;
+
     // Skip video playback (BinkOpen/SmackOpen return stubs)
     public skipVideo = false;
 
@@ -541,7 +546,7 @@ export class EmulatorConfig {
 
         // Apply per-game graphics quality override (layers on top of the global user pref)
         if (config.quality) {
-            this.quality = mergeQuality(this.quality, config.quality as Partial<QualityConfig>);
+            this.applyQuality(config.quality as Partial<QualityConfig>);
             Logger.log(
                 LogCategory.SYSTEM,
                 `EmulatorConfig: quality from manifest (aniso=${this.quality.anisotropy} bright=${this.quality.brightness} aspect=${this.quality.aspectMode})`
@@ -602,7 +607,16 @@ export class EmulatorConfig {
      * Validates + clamps + merges onto the current config. Returns the new effective config.
      */
     applyQuality(partial: Partial<QualityConfig> | null | undefined): QualityConfig {
-        this.quality = mergeQuality(this.quality, partial);
+        this.quality = this.lowestGraphics
+            ? { ...DEFAULT_QUALITY }
+            : mergeQuality(this.quality, partial);
+        return this.quality;
+    }
+
+    /** Lock or unlock the host-renderer portion of the lowest-graphics launch policy. */
+    setLowestGraphics(enabled: boolean): QualityConfig {
+        this.lowestGraphics = enabled;
+        if (enabled) this.quality = { ...DEFAULT_QUALITY };
         return this.quality;
     }
 

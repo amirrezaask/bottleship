@@ -40,6 +40,7 @@ import { isGdiSurfaceHidden } from '../../modules/ddraw/gdi-visibility';
 import { hpFreezeWatchdog } from './hp-freeze-watchdog';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
+import { getTextureKernelCopyStats, isTextureDirectUploadEnabled, setTextureDirectUploadEnabled } from '../../backends/webgpu/shared/dxt-kernel';
 
 interface DbgConfig {
     enabled: boolean;
@@ -335,19 +336,59 @@ export const dbg = {
      *  and promotions REFUSED because the page-set cap (256) was full. blockedByCap > 0
      *  with a saturated pageCount means the hot set outgrew the cap — the exact failure
      *  mode that makes threshold changes read as "no effect" (see the in-race NFSU A/B). */
-    tier2Stats(): { pageCount: number; promotions: number; blockedByCap: number; threshold: number } | null {
+    tier2Stats(): { pageCount: number; promotions: number; blockedByCap: number; threshold: number; moduleEntries: number; chainedModuleEntries: number; promotedPages: number; blockedPages: number; promotionCoverage: number | null } | null {
         const w = wasm(); if (!w?.jit_get_tier2_page_count) {
             console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
         }
+        const promotions = w.jit_get_tier2_promotions() >>> 0;
+        const blockedByCap = w.jit_get_tier2_blocked_by_cap() >>> 0;
         const s = {
             pageCount: w.jit_get_tier2_page_count() >>> 0,
-            promotions: w.jit_get_tier2_promotions() >>> 0,
-            blockedByCap: w.jit_get_tier2_blocked_by_cap() >>> 0,
+            promotions,
+            blockedByCap,
             threshold: w.get_jit_config ? (w.get_jit_config(15) >>> 0) : -1,
+            moduleEntries: w.jit_get_tier2_module_entries ? Number(w.jit_get_tier2_module_entries()) : 0,
+            chainedModuleEntries: w.jit_get_tier2_chained_module_entries ? Number(w.jit_get_tier2_chained_module_entries()) : 0,
+            promotedPages: w.jit_get_tier2_promoted_pages ? (w.jit_get_tier2_promoted_pages() >>> 0) : 0,
+            blockedPages: w.jit_get_tier2_blocked_pages ? (w.jit_get_tier2_blocked_pages() >>> 0) : 0,
+            promotionCoverage: promotions + blockedByCap > 0 ? promotions / (promotions + blockedByCap) : null,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/256 promotions=${s.promotions} blockedByCap=${s.blockedByCap} threshold=${s.threshold}`);
+        console.log(`[dbg] tier2: pages=${s.pageCount}/256 promotions=${s.promotions} blockedByCap=${s.blockedByCap} coverage=${s.promotionCoverage ?? 'n/a'} entries=${s.moduleEntries} chained=${s.chainedModuleEntries} threshold=${s.threshold}`);
         return s;
+    },
+    /** One serializable snapshot for controlled gameplay qualification. Keep the
+     *  raw values alongside named fields so a report is independently auditable. */
+    qualificationStats(): any {
+        const w = wasm();
+        if (!w?.get_jit_config) return null;
+        const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21];
+        const raw = Object.fromEntries(indices.map((index) => [index, w.get_jit_config(index) >>> 0]));
+        const fastmem = dbg.fastmemStats();
+        const writeAudit = raw[19] ? dbg.fastmemWriteAudit() : null;
+        return {
+            raw,
+            named: {
+                maxPages: raw[1],
+                retChaining: !!raw[12],
+                retSpeculation: !!raw[13],
+                tier2Threshold: raw[15],
+                tier2RetSpecMaxInstructions: raw[16],
+                tier2MaxPages: raw[17],
+                fastmemReads: !!raw[9],
+                fastmemReadSplit: !!raw[18],
+                fastmemWrites: !!raw[19],
+                flagLocals: !!raw[21],
+            },
+            tier2: dbg.tier2Stats(),
+            fastmem,
+            writeAudit,
+            textureCopies: { ...getTextureKernelCopyStats(), directUploadEnabled: isTextureDirectUploadEnabled() },
+        };
+    },
+    textureDirectUpload(on = true): void {
+        setTextureDirectUploadEnabled(on);
+        console.log(`[dbg][texture] direct DXT upload=${isTextureDirectUploadEnabled()}`);
     },
     /** Fastmem read speculation. Default ON; clears JIT cache so blocks recompile. */
     fastmemReads(on = true): void {

@@ -26,8 +26,11 @@ import {
 } from "../../../modules/ddraw/gpu-texture-utils";
 import {
     decodeSurfaceFormatToRgba8,
+    getD3DTextureLayout,
     getSurfaceFormatLayout,
+    isDxtFormat,
 } from "../shared/texture-formats";
+import { tryDecodeDxtKernelLease } from "../shared/dxt-kernel";
 import {
     markGpuSyncedFromCpu,
     setAuthorityCpu,
@@ -295,7 +298,9 @@ export class DDrawWebGPUExecutor {
 
     /** Effective sample count for the frame = max(quality.msaa, guest-requested), clamped {1,2,4}. */
     private effectiveMsaa(): number {
-        const q = EmulatorConfig.getInstance().quality.msaa | 0;
+        const config = EmulatorConfig.getInstance();
+        if (config.lowestGraphics) return 1;
+        const q = config.quality.msaa | 0;
         const g = this.guestRequestedMsaa | 0;
         const m = q >= g ? q : g;
         return m >= 4 ? 4 : m >= 2 ? 2 : 1;
@@ -1527,6 +1532,41 @@ export class DDrawWebGPUExecutor {
         if (didSync) {
             logSurfaceState(state, "syncSurfaceFromMemory done");
         }
+    }
+
+    /** Immediate DXT upload for a D3D8 UnlockRect. The kernel output is borrowed
+     *  only until queue.writeTexture returns; unsupported layouts/kernels return
+     *  false and preserve the existing owned-scratch fallback. */
+    tryUploadDxtTextureFromGuest(
+        state: DirectDrawSurfaceState,
+        mem: Uint8Array,
+        d3dFormat: number,
+    ): boolean {
+        if (!isBitmapTexture(state) || !isDxtFormat(d3dFormat) || !state.surfacePtr ||
+            state.width < 1 || state.height < 1 || !this.queue) return false;
+        const layout = getD3DTextureLayout(d3dFormat, state.width, state.height);
+        const pitch = state.pitch || layout.pitch;
+        const srcBytes = pitch * layout.rows;
+        if (!Number.isSafeInteger(srcBytes) || state.surfacePtr + srcBytes > mem.length) return false;
+        this.ensureSurfaceGPUResources(state);
+        if (!state.gpuTexture) return false;
+        const compressed = mem.subarray(state.surfacePtr, state.surfacePtr + srcBytes);
+        const uploaded = tryDecodeDxtKernelLease(
+            (d3dFormat >>> 24) - 0x30,
+            compressed,
+            pitch,
+            state.width,
+            state.height,
+            srcBytes,
+            (rgba) => uploadToGPUTexture(
+                this.queue!, state.gpuTexture!, rgba, state.width, state.height,
+                state.rgbaPaddedScratch, state.gpuTextureFormat,
+            ),
+        );
+        if (!uploaded) return false;
+        markGpuSyncedFromCpu(state);
+        state.gpuNeedsUpload = false;
+        return true;
     }
 
     async syncSurfaceToMemory(state: DirectDrawSurfaceState): Promise<void> {

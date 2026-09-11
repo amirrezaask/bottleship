@@ -74,6 +74,20 @@ test("WASM reuses its arena and refreshes detached views after growth", () => {
     assert.equal(runtime.tryDecode(5, src, 16384, 16384, 16384, dst, src.length), false);
 });
 
+test("borrowed decode output is exact and cannot escape through reentrant reuse", () => {
+    const runtime = new DxtKernel(instance());
+    const width = 16, height = 16, pitch = dxtRowPitch(format(5), width);
+    const src = fill(pitch * Math.ceil(height / 4), 117);
+    const expected = new Uint8Array(width * height * 4);
+    decodeDxtToRgbaReference(format(5), src, pitch, width, height, expected);
+    let observed: Uint8Array | undefined;
+    assert.equal(runtime.tryDecodeLease(5, src, pitch, width, height, src.length, rgba => {
+        observed = new Uint8Array(rgba);
+        assert.equal(runtime.tryDecodeLease(5, src, pitch, width, height, src.length, () => {}), false);
+    }), true);
+    assert.deepEqual(observed, expected);
+});
+
 test("the public decoder rejects malformed spans without writing output", () => {
     const src = new Uint8Array(32), dst = new Uint8Array(256).fill(173);
     for (const [pitch, width, height] of [[7, 4, 4], [8, -1, 4], [8, 1.5, 4], [8, NaN, 4], [8, Infinity, 4], [8, 4, 9999]]) {

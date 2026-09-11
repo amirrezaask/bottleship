@@ -1,5 +1,5 @@
 import { V86 } from "v86";
-import { gameboxAot } from "./core/gamebox-aot";
+import { finishPersistentTranslationCache, gameboxAot } from "./core/gamebox-aot";
 import { ThunkGenerator } from "./core/thunking/thunk-generator";
 import { Process } from "./core/process";
 import { System } from "./core/system";
@@ -2525,6 +2525,9 @@ async function gameboxStop(id: string) {
     framePacer.stop();
     system.windowManager.wakeWaiters();
     await system.process?.v86?.stop();
+    await finishPersistentTranslationCache().catch(error => {
+      Logger.warn(LogCategory.SYSTEM, `Persistent translation cache flush failed: ${String(error)}`);
+    });
     cancelRegistryAutosave();
     await system.fileSystem.flushAll();
     const state = system.registry.serialize();
@@ -2558,7 +2561,9 @@ self.onmessage = (event: MessageEvent) => {
   if (message?.type === 'gamebox_configure') {
     if (!gameboxGameId && /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) && /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)) {
       gameboxGameId = message.gameId;
+      (globalThis as any).__gameboxGameId = message.gameId;
       (globalThis as any).__gameboxCacheKey = message.cacheKey;
+      EmulatorConfig.getInstance().setLowestGraphics(message.lowestGraphics === true);
     }
     return;
   }

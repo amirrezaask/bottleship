@@ -20,6 +20,7 @@ export class DxtKernel {
     private bytes: Uint8Array;
     private output: Uint8Array = new Uint8Array(0);
     private outputOffset = -1;
+    private leased = false;
 
     constructor(instance: WebAssembly.Instance) {
         this.api = instance.exports as KernelExports;
@@ -64,9 +65,35 @@ export class DxtKernel {
         const out = this.reserve(srcBytes, outputBytes);
         if (out < 0) return false;
         this.bytes.set(src.length === srcBytes ? src : src.subarray(0, srcBytes), this.base);
+        stats.inputBytesCopied += srcBytes;
         const status = this.api.decode_dxt(kind, this.base, srcBytes, pitch, width, height, out, outputBytes);
         if (status !== 0) throw new Error(`DXT WASM rejected validated input (${status})`);
         dst.set(this.output);
+        stats.outputBytesCopied += outputBytes;
+        return true;
+    }
+
+    /** Decode into the bounded kernel arena and synchronously consume its output.
+     *  The view is borrowed only for the callback; callers must not retain it. This
+     *  lets queue.writeTexture perform its specified immediate source-data copy
+     *  without an additional kernel-output -> surface-scratch staging copy. */
+    tryDecodeLease(kind: number, src: Uint8Array, pitch: number, width: number,
+        height: number, srcBytes: number, consume: (rgba: Uint8Array) => void): boolean {
+        if (this.leased || width * height < MIN_PIXELS) return false;
+        const outputBytes = width * height * 4;
+        const out = this.reserve(srcBytes, outputBytes);
+        if (out < 0) return false;
+        this.bytes.set(src.length === srcBytes ? src : src.subarray(0, srcBytes), this.base);
+        stats.inputBytesCopied += srcBytes;
+        const status = this.api.decode_dxt(kind, this.base, srcBytes, pitch, width, height, out, outputBytes);
+        if (status !== 0) throw new Error(`DXT WASM rejected validated input (${status})`);
+        this.leased = true;
+        try {
+            consume(this.output);
+            stats.outputBytesLeased += outputBytes;
+        } finally {
+            this.leased = false;
+        }
         return true;
     }
 
@@ -97,6 +124,8 @@ let kernel: DxtKernel | null = null;
 let initialization: Promise<boolean> | null = null;
 let failure: string | null = null;
 let variant: 'scalar' | 'simd' | 'provided' | null = null;
+const stats = { inputBytesCopied: 0, outputBytesCopied: 0, outputBytesLeased: 0 };
+let directUploadEnabled = false;
 
 export function supportsTextureSimd(): boolean {
     // A function containing v128.const and drop; validation never executes code.
@@ -154,9 +183,18 @@ export function getDxtKernelStatus(): { ready: boolean; failure: string | null; 
     return { ready: kernel !== null, failure, variant };
 }
 
+export function getTextureKernelCopyStats(): Readonly<typeof stats> { return { ...stats }; }
+export function setTextureDirectUploadEnabled(enabled: boolean): void { directUploadEnabled = enabled; }
+export function isTextureDirectUploadEnabled(): boolean { return directUploadEnabled; }
+
 export function tryDecodeDxtKernel(kind: number, src: Uint8Array, pitch: number,
     width: number, height: number, dst: Uint8Array, srcBytes: number): boolean {
     return kernel !== null && kernel.tryDecode(kind, src, pitch, width, height, dst, srcBytes);
+}
+
+export function tryDecodeDxtKernelLease(kind: number, src: Uint8Array, pitch: number,
+    width: number, height: number, srcBytes: number, consume: (rgba: Uint8Array) => void): boolean {
+    return kernel !== null && kernel.tryDecodeLease(kind, src, pitch, width, height, srcBytes, consume);
 }
 
 export function tryConvertPixelKernel(kind: number, src: Uint8Array, srcOffset: number, pitch: number,
