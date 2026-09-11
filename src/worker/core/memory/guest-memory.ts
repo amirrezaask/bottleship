@@ -31,7 +31,8 @@ export function toPlainGuestMemory<T extends Uint8Array | null | undefined>(raw:
     if (raw.constructor === Uint8Array) return raw;
     const buffer = raw.buffer; // proxy get → the CURRENT (possibly just-grown) ArrayBuffer
     if (!buffer) return raw;
-    if (buffer === _lastBuffer && _lastPlain) return _lastPlain as T;
+    if (buffer === _lastBuffer && _lastPlain &&
+        raw.byteOffset === _lastPlain.byteOffset && raw.length === _lastPlain.length) return _lastPlain as T;
     // NB: read `raw.length` (whitelisted in v86's view() Proxy get-trap), NOT
     // `raw.byteLength` (absent from the whitelist → trips dbg_assert in a DEBUG
     // v86 build). For a Uint8Array the two are identical.
@@ -89,11 +90,11 @@ function makeStaleGuard(view: Uint8Array): Uint8Array {
         }
     };
     return new Proxy(view, {
-        get(target, prop, receiver) {
+        get(target, prop) {
             if (typeof prop === "string" && (prop === "buffer" || prop === "byteLength" || /^\d+$/.test(prop))) {
                 assertLive(prop);
             }
-            const x = Reflect.get(target, prop, receiver);
+            const x = Reflect.get(target, prop, target);
             return typeof x === "function" ? x.bind(target) : x;
         },
         set(target, prop, value) {
