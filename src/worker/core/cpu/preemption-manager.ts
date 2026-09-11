@@ -35,7 +35,7 @@ export class PreemptionManager {
      *  Kill-switches: setFastmemReads/setX87Locals/setPushRunCoalescing(false) or the
      *  dbg.*(false) verbs (which route through these setters, so the choice survives a
      *  game reload). fastmem carries the read relaxation + its own thrash auto-latch.
-     *  x87-locals is a no-op under strict/PC=24 FPU (codegen self-gates). */
+     *  x87-locals is a no-op under strict FPU; inline arithmetic preserves PC=24 rounding. */
     private fastmemReadsEnabled = true;         // config idx 9
     private fastmemReadSplitEnabled = true;     // config idx 18 (split-range read shape)
     private x87LocalsEnabled = true;            // config idx 10
