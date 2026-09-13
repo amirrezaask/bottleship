@@ -1,0 +1,94 @@
+--- a/src/rust/jit.rs
++++ b/src/rust/jit.rs
+@@ -151,7 +151,12 @@
+ // acceptance set; A/B via set_jit_config idx 18 + JIT cache clear (shape is baked in
+ // at module compile time).
+ static mut JIT_FASTMEM_READ_SPLIT: bool = true;
+-const TIER2_PAGE_SET_CAP: usize = 256;
++// Runtime-tunable (set_jit_config idx 20). 256 pages is under a small title's whole
++// hot set but far under a large one's, so on big games the cap — not the threshold —
++// decides how much code ever gets the tier-2 budget, and every promotion after it
++// fills is refused. Tunable so that limit can be A/B'd like the rest of the tier-2
++// knobs; raising it trades the compile-storm guard for coverage.
++static mut TIER2_PAGE_SET_CAP: u32 = 256;
+ static mut MODULE_EXEC_COUNTS: [u32; 0x10000] = [0; 0x10000];
+ 
+ // Tier-2 observability (read via dbg.tier2Stats()): without these there is no way to
+@@ -248,7 +253,7 @@
+         .iter()
+         .filter(|p| !ctx.tier2_pages.contains(p))
+         .count();
+-    if !tier2_cap_allows(ctx.tier2_pages.len(), new_pages) {
++    if !tier2_cap_allows(ctx.tier2_pages.len(), new_pages, unsafe { TIER2_PAGE_SET_CAP }) {
+         unsafe { MODULE_EXEC_COUNTS[wasm_table_index as usize] = 0 };
+         unsafe {
+             TIER2_BLOCKED_BY_CAP = TIER2_BLOCKED_BY_CAP.saturating_add(1);
+@@ -268,8 +273,8 @@
+ }
+ 
+ #[inline]
+-fn tier2_cap_allows(current_pages: usize, new_pages: usize) -> bool {
+-    current_pages.saturating_add(new_pages) <= TIER2_PAGE_SET_CAP
++fn tier2_cap_allows(current_pages: usize, new_pages: usize, cap: u32) -> bool {
++    current_pages.saturating_add(new_pages) <= cap as usize
+ }
+ 
+ #[inline]
+@@ -289,18 +294,36 @@
+ 
+ #[cfg(test)]
+ mod tier2_policy_tests {
+-    use super::{tier2_cap_allows, TIER2_PAGE_SET_CAP};
++    use super::tier2_cap_allows;
++
++    const CAP: usize = 256;
+ 
+     #[test]
+     fn tier2_cap_accepts_exact_capacity_and_rejects_overflow() {
+-        assert!(tier2_cap_allows(TIER2_PAGE_SET_CAP - 2, 2));
+-        assert!(!tier2_cap_allows(TIER2_PAGE_SET_CAP - 2, 3));
+-        assert!(tier2_cap_allows(TIER2_PAGE_SET_CAP, 0));
++        assert!(tier2_cap_allows(CAP - 2, 2, CAP as u32));
++        assert!(!tier2_cap_allows(CAP - 2, 3, CAP as u32));
++        assert!(tier2_cap_allows(CAP, 0, CAP as u32));
+     }
+ 
+     #[test]
+     fn tier2_cap_counts_only_new_pages() {
+-        assert!(tier2_cap_allows(TIER2_PAGE_SET_CAP - 1, 1));
++        assert!(tier2_cap_allows(CAP - 1, 1, CAP as u32));
++    }
++
++    #[test]
++    fn tier2_cap_follows_the_configured_value() {
++        // A raised cap admits promotions the default refuses; a zero cap admits
++        // nothing new, which is how a sweep pins tier-2 off without touching the
++        // threshold.
++        assert!(!tier2_cap_allows(CAP, 1, CAP as u32));
++        assert!(tier2_cap_allows(CAP, 1, 4096));
++        assert!(!tier2_cap_allows(0, 1, 0));
++        assert!(tier2_cap_allows(0, 0, 0));
++    }
++
++    #[test]
++    fn tier2_cap_saturates_instead_of_wrapping() {
++        assert!(!tier2_cap_allows(usize::MAX, 1, u32::MAX));
+     }
+ }
+ 
+@@ -4569,6 +4592,7 @@
+         17 => TIER2_MAX_PAGES = value,
+         18 => JIT_FASTMEM_READ_SPLIT = value != 0,
+         19 => JIT_FASTMEM_WRITES = value != 0,
++        20 => TIER2_PAGE_SET_CAP = value,
+         21 => JIT_FLAG_LOCALS = value != 0,
+         _ => dbg_assert!(false),
+     }
+@@ -4596,6 +4620,7 @@
+         17 => TIER2_MAX_PAGES,
+         18 => JIT_FASTMEM_READ_SPLIT as u32,
+         19 => JIT_FASTMEM_WRITES as u32,
++        20 => TIER2_PAGE_SET_CAP,
+         21 => JIT_FLAG_LOCALS as u32,
+         _ => 0,
+     }

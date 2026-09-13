@@ -31,6 +31,7 @@ const PTE_PRESENT = 0x01;
 const PTE_RW = 0x02;
 const PTE_USER = 0x04;
 const PTE_DEFAULT = PTE_PRESENT | PTE_RW | PTE_USER; // 0x07
+const PTE_ACCESSED_DIRTY = 0x60;
 const FASTMEM_BUMP_PAGE_TABLE_DECOMMIT = 5;
 const FASTMEM_BUMP_PAGE_TABLE_COMMIT = 6;
 const FASTMEM_BUMP_PAGE_TABLE_PROTECT = 7;
@@ -43,6 +44,8 @@ export class PageTableManager {
     private pagingEnabled = false;
     private getMemory: () => Uint8Array;
     private getWasmExports: () => any;
+    private commitCalls = 0;
+    private unchangedMappingCommits = 0;
 
     constructor(getMemory: () => Uint8Array, getWasmExports: () => any, private pageDirectoryAddress: number) {
         this.getMemory = getMemory;
@@ -168,20 +171,38 @@ export class PageTableManager {
         const endPage = ((baseAddr + sizeBytes + PAGE_SIZE - 1) >>> 12);
         const mem = this.getMemory();
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        let mappingChanged = false;
 
         for (let page = startPage; page < endPage; page++) {
             const physAddr = page * PAGE_SIZE;
             const pteOffset = this._getPteOffset(page);
-            view.setUint32(pteOffset, physAddr | PTE_DEFAULT, true);
+            const previous = view.getUint32(pteOffset, true);
+            const next = (physAddr | PTE_DEFAULT) >>> 0;
+            // Accessed/dirty bits describe use, not a mapping or permission
+            // change. Preserve them when this is already the required PTE.
+            if (((previous & ~PTE_ACCESSED_DIRTY) >>> 0) !== next) {
+                view.setUint32(pteOffset, next, true);
+                mappingChanged = true;
+            }
         }
 
-        // Flush TLB. full_clear_tlb no longer bumps the fastmem generation (routine
-        // churn), so commit must bump explicitly — a recommitted page changes read
-        // validity for any unit that speculated over it while decommitted.
+        this.commitCalls++;
+        if (!mappingChanged) this.unchangedMappingCommits++;
         const exports = this.getWasmExports();
-        this.bumpFastmemGeneration(FASTMEM_BUMP_PAGE_TABLE_COMMIT);
-        if (exports?.full_clear_tlb) {
-            exports.full_clear_tlb();
+        // Zeroing still changes guest bytes, even when the mapping is already
+        // present. Invalidate translations of precisely those physical pages,
+        // including in-flight compilations, before writing. Older runtimes
+        // without this export retain conservative global invalidation.
+        const canInvalidateBytes = typeof exports?.jit_dirty_cache === 'function';
+        if (sizeBytes > 0 && canInvalidateBytes) {
+            exports.jit_dirty_cache(baseAddr, baseAddr + sizeBytes);
+        }
+        // Real recommits, permission changes and remaps still invalidate every
+        // speculative fast read. Ordinary allocations into the existing RW
+        // identity map do not change that contract and need no global recompile.
+        if (mappingChanged || !canInvalidateBytes) {
+            this.bumpFastmemGeneration(FASTMEM_BUMP_PAGE_TABLE_COMMIT);
+            exports?.full_clear_tlb?.();
         }
         // Track 2b Phase W: committed pages are present + RW → mark base-writable (Rust
         // clamps to the identity-RAM envelope and skips the THUNK_CODE exclusion band).
@@ -295,6 +316,10 @@ export class PageTableManager {
 
     isPagingEnabled(): boolean {
         return this.pagingEnabled;
+    }
+
+    getCommitStats(): { calls: number; unchangedMappings: number } {
+        return { calls: this.commitCalls, unchangedMappings: this.unchangedMappingCommits };
     }
 
     /**

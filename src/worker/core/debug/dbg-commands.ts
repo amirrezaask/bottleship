@@ -397,7 +397,11 @@ export const dbg = {
      *  7=JIT_INDIRECT_REGION_MIN_SHARE(%) 8=JIT_INDIRECT_REGION_MAX_PAGES
      *  9=JIT_FASTMEM_READS 10=JIT_X87_LOCALS 11=JIT_PUSH_RUN_COALESCING
      *  12=JIT_RET_CHAINING 13=JIT_RET_SPECULATION 14=JIT_RET_SPEC_MAX_INSTR
-     *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR.
+     *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR 17=TIER2_MAX_PAGES
+     *  18=JIT_FASTMEM_READ_SPLIT 19=JIT_FASTMEM_WRITES 20=TIER2_PAGE_SET_CAP
+     *  21=JIT_FLAG_LOCALS.
+     *  Indices 19 and 21 have correctness-sensitive setup — use dbg.fastmemWrites /
+     *  dbg.flagLocals rather than setting them here.
      *  Then reads all knobs back. */
     jitcfg(index: number, value: number): void {
         const w = wasm(); if (!w) return;
@@ -449,10 +453,11 @@ export const dbg = {
         console.log(`[dbg] JIT_TIER2_THRESHOLD=${g(15)} tier2SpecBudget=${g(16)} tier2MaxPages=${g(17)} (runtime knob, no cache clear)`);
     },
     /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
-     *  and promotions REFUSED because the page-set cap (256) was full. blockedByCap > 0
-     *  with a saturated pageCount means the hot set outgrew the cap — the exact failure
-     *  mode that makes threshold changes read as "no effect" (see the in-race NFSU A/B). */
-    tier2Stats(): { pageCount: number; promotions: number; blockedByCap: number; threshold: number; moduleEntries: number; chainedModuleEntries: number; promotedPages: number; blockedPages: number; promotionCoverage: number | null } | null {
+     *  and promotions REFUSED because the page-set cap was full. blockedByCap > 0
+     *  with pageCount saturated at pageCap means the hot set outgrew the cap — the exact
+     *  failure mode that makes threshold changes read as "no effect" (see the in-race
+     *  NFSU A/B), and the normal state for a large title at the default cap. */
+    tier2Stats(): { pageCount: number; pageCap: number; promotions: number; blockedByCap: number; threshold: number; moduleEntries: number; chainedModuleEntries: number; promotedPages: number; blockedPages: number; promotionCoverage: number | null } | null {
         const w = wasm(); if (!w?.jit_get_tier2_page_count) {
             console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
@@ -461,6 +466,7 @@ export const dbg = {
         const blockedByCap = w.jit_get_tier2_blocked_by_cap() >>> 0;
         const s = {
             pageCount: w.jit_get_tier2_page_count() >>> 0,
+            pageCap: w.get_jit_config ? (w.get_jit_config(20) >>> 0) : -1,
             promotions,
             blockedByCap,
             threshold: w.get_jit_config ? (w.get_jit_config(15) >>> 0) : -1,
@@ -470,7 +476,7 @@ export const dbg = {
             blockedPages: w.jit_get_tier2_blocked_pages ? (w.jit_get_tier2_blocked_pages() >>> 0) : 0,
             promotionCoverage: promotions + blockedByCap > 0 ? promotions / (promotions + blockedByCap) : null,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/256 promotions=${s.promotions} blockedByCap=${s.blockedByCap} coverage=${s.promotionCoverage ?? 'n/a'} entries=${s.moduleEntries} chained=${s.chainedModuleEntries} threshold=${s.threshold}`);
+        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} coverage=${s.promotionCoverage ?? 'n/a'} entries=${s.moduleEntries} chained=${s.chainedModuleEntries} threshold=${s.threshold}`);
         return s;
     },
     /** One serializable snapshot for controlled gameplay qualification. Keep the
@@ -478,7 +484,7 @@ export const dbg = {
     qualificationStats(): any {
         const w = wasm();
         if (!w?.get_jit_config) return null;
-        const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21];
+        const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
         const raw = Object.fromEntries(indices.map((index) => [index, w.get_jit_config(index) >>> 0]));
         const fastmem = dbg.fastmemStats();
         const writeAudit = raw[19] ? dbg.fastmemWriteAudit() : null;
@@ -491,6 +497,7 @@ export const dbg = {
                 tier2Threshold: raw[15],
                 tier2RetSpecMaxInstructions: raw[16],
                 tier2MaxPages: raw[17],
+                tier2PageCap: raw[20],
                 fastmemReads: !!raw[9],
                 fastmemReadSplit: !!raw[18],
                 fastmemWrites: !!raw[19],
@@ -621,6 +628,7 @@ export const dbg = {
             deoptRecompiles: w.fastmem_get_deopt_recompiles ? (w.fastmem_get_deopt_recompiles() >>> 0) : 0,
             thrashLatched: w.fastmem_get_thrash_latched ? !!(w.fastmem_get_thrash_latched() >>> 0) : false,
             bumps,
+            commits: System.getInstance().process?.pageTableManager?.getCommitStats() ?? null,
             // Fastmem-write map (bit0 base, bit1 code, bit2 watch; accept = byte==1).
             writesEnabled: w.get_jit_config ? !!(w.get_jit_config(19) >>> 0) : false,
             speculatedStoresCompiled: w.fastmem_get_speculated_stores_compiled ? (w.fastmem_get_speculated_stores_compiled() >>> 0) : 0,

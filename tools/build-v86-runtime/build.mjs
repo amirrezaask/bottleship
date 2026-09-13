@@ -20,6 +20,8 @@ const output = resolve(root, process.env.V86_OUTPUT || 'public/v86.wasm');
 const baseline = process.env.V86_BASELINE_OUTPUT && resolve(root, process.env.V86_BASELINE_OUTPUT);
 const patch = join(root, 'tools/build-v86-runtime/bulk-memory.patch');
 const kernel = join(root, 'tools/build-v86-runtime/bulk-memory.rs');
+const jitPolicyPatch = join(root, 'tools/build-v86-runtime/jit-policy.patch');
+const profileCountersPatch = join(root, 'tools/build-v86-runtime/profile-counters.patch');
 const stringPatch = join(root, 'tools/build-v86-runtime/string-memory.patch');
 const stringKernel = join(root, 'tools/build-v86-runtime/string-memory.rs');
 const stringBaseline = process.env.V86_STRING_BASELINE_OUTPUT && resolve(root, process.env.V86_STRING_BASELINE_OUTPUT);
@@ -52,6 +54,10 @@ try {
         chmodSync(target, 0o644);
         run(process.execPath, ['tools/check-wasm-exports.mjs', target]);
     };
+    run('git', ['apply', '--check', jitPolicyPatch]);
+    run('git', ['apply', jitPolicyPatch]);
+    run('git', ['apply', '--check', profileCountersPatch]);
+    run('git', ['apply', profileCountersPatch]);
     if (baseline) compile(baseline);
     run('git', ['apply', '--check', patch]);
     run('git', ['apply', patch]);
@@ -77,7 +83,9 @@ try {
         if (!WebAssembly.Module.exports(module).some(e => e.name === name)) throw new Error(`Missing export ${name}`);
     }
     const manifest = { v86Commit: pinned, rust, target: 'wasm32-unknown-unknown',
-        features: ['bulk-memory', 'multivalue', 'simd128'], patchSha256: sha256(patch),
+        features: ['bulk-memory', 'multivalue', 'simd128'], jitPolicyPatchSha256: sha256(jitPolicyPatch),
+        profileCountersPatchSha256: sha256(profileCountersPatch),
+        patchSha256: sha256(patch),
         kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),
         stringKernelSha256: sha256(stringKernel), repPatchSha256: sha256(repPatch),
         repKernelSha256: sha256(repKernel), unalignedPatchSha256: sha256(unalignedPatch),
