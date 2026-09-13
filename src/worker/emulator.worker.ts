@@ -1,147 +1,190 @@
-import { V86 } from "v86";
-import { finishPersistentTranslationCache, gameboxAot } from "./core/gamebox-aot";
-import { ThunkGenerator } from "./core/thunking/thunk-generator";
-import { Process } from "./core/process";
-import { System } from "./core/system";
-import { APIRegistry } from "./core/api-registry";
-import { memoryWatch } from "./core/memory/memory-watch";
-import { Kernel32 } from "./modules/kernel32";
-import { User32 } from "./modules/user32";
-import { GDI32 } from "./modules/gdi32";
-import { D3D9 } from "./modules/d3d9";
-import { Advapi32 } from "./modules/advapi32";
-import { Ntdll } from "./modules/ntdll";
-import { DSound } from "./modules/dsound";
-import { WinMM } from "./modules/winmm";
-import { Ole32 } from "./modules/ole32";
-import { Oleaut32 } from "./modules/oleaut32";
-import { DDraw } from "./modules/ddraw";
-import { shouldSuppress3DGdiOverlay } from "./modules/ddraw/gdi-visibility";
-import { hasLiveDialogOverlay, getLiveDialogOverlayRects } from "./modules/user32/dialog-overlay";
-import { DInput } from "./modules/dinput";
-import { DPlayX } from "./modules/dplayx";
-import { MSS32 } from "./modules/mss32";
-import { SmackW32 } from "./modules/smackw32";
-import { BinkW32 } from "./modules/binkw32";
-import { Glide2x } from "./modules/glide2x";
-import { OpenGL32 } from "./modules/opengl32";
-import { Glu32 } from "./modules/glu32";
-import { Wsock32 } from "./modules/wsock32";
-import { Shell32 } from "./modules/shell32";
-import { Shlwapi } from "./modules/shlwapi";
-import { Comdlg32 } from "./modules/comdlg32";
-import { Comctl32 } from "./modules/comctl32";
-import { Version } from "./modules/version";
-import { W32skrnl } from "./modules/w32skrnl";
-import { Msvcrt } from "./modules/msvcrt";
-import { Msvcp90 } from "./modules/msvcp90";
-import { Msvcp60 } from "./modules/msvcp60";
-import { Crtdll } from "./modules/crtdll";
-import { Winspool } from "./modules/winspool";
-import { Dwmapi } from "./modules/dwmapi";
-import { Riched32 } from "./modules/riched32";
-import { Wtsapi32 } from "./modules/wtsapi32";
-import { Imm32 } from "./modules/imm32";
-import { Msimg32 } from "./modules/msimg32";
-import { Uxtheme } from "./modules/uxtheme";
-import { Wintrust } from "./modules/wintrust";
-import { Crypt32 } from "./modules/crypt32";
-import { Ws2_32 } from "./modules/ws2_32";
-import { Psapi } from "./modules/psapi";
-import { Iphlpapi } from "./modules/iphlpapi";
-import { Tapi32 } from "./modules/tapi32";
-import { Setupapi } from "./modules/setupapi";
-import { Netapi32 } from "./modules/netapi32";
-import { ImageHlp } from "./modules/imagehlp";
-import { DbgHelp } from "./modules/dbghelp";
-import { Wininet } from "./modules/wininet";
-import { IFC20 } from "./modules/ifc20";
-import { GdiPlus } from "./modules/gdiplus";
-import { Bass } from "./modules/bass";
-import { D3D8 } from "./modules/d3d8";
-import { D3dx9 } from "./modules/d3dx9";
-import { OpenAL, ALUT } from "./modules/openal/openal";
-import { Quartz } from "./modules/quartz";
-import { A3d } from "./modules/a3d";
-import { Avifil32 } from "./modules/avifil32";
-import { Rpcrt4 } from "./modules/rpcrt4";
-import { Msvfw32 } from "./modules/msvfw32";
-import { createBootloader, createGDT } from "./core/bootloader";
-import { extractAppIcon } from "./modules/kernel32/icon-extractor";
+import {
+  cancelGameBoxProfile,
+  finishGameBoxProfile,
+  startGameBoxProfile,
+} from './core/gamebox-profile-session';
+import { graphicsProfile } from './core/graphics-profile';
+import { V86 } from 'v86';
+import { finishPersistentTranslationCache, gameboxAot } from './core/gamebox-aot';
+import { ThunkGenerator } from './core/thunking/thunk-generator';
+import { Process } from './core/process';
+import { System } from './core/system';
+import { APIRegistry } from './core/api-registry';
+import { memoryWatch } from './core/memory/memory-watch';
+import { Kernel32 } from './modules/kernel32';
+import { User32 } from './modules/user32';
+import { GDI32 } from './modules/gdi32';
+import { D3D9 } from './modules/d3d9';
+import { Advapi32 } from './modules/advapi32';
+import { Ntdll } from './modules/ntdll';
+import { DSound } from './modules/dsound';
+import { WinMM } from './modules/winmm';
+import { Ole32 } from './modules/ole32';
+import { Oleaut32 } from './modules/oleaut32';
+import { DDraw } from './modules/ddraw';
+import { shouldSuppress3DGdiOverlay } from './modules/ddraw/gdi-visibility';
+import { hasLiveDialogOverlay, getLiveDialogOverlayRects } from './modules/user32/dialog-overlay';
+import { DInput } from './modules/dinput';
+import { DPlayX } from './modules/dplayx';
+import { MSS32 } from './modules/mss32';
+import { SmackW32 } from './modules/smackw32';
+import { BinkW32 } from './modules/binkw32';
+import { Glide2x } from './modules/glide2x';
+import { OpenGL32 } from './modules/opengl32';
+import { Glu32 } from './modules/glu32';
+import { Wsock32 } from './modules/wsock32';
+import { Shell32 } from './modules/shell32';
+import { Shlwapi } from './modules/shlwapi';
+import { Comdlg32 } from './modules/comdlg32';
+import { Comctl32 } from './modules/comctl32';
+import { Version } from './modules/version';
+import { W32skrnl } from './modules/w32skrnl';
+import { Msvcrt } from './modules/msvcrt';
+import { Msvcp90 } from './modules/msvcp90';
+import { Msvcp60 } from './modules/msvcp60';
+import { Crtdll } from './modules/crtdll';
+import { Winspool } from './modules/winspool';
+import { Dwmapi } from './modules/dwmapi';
+import { Riched32 } from './modules/riched32';
+import { Wtsapi32 } from './modules/wtsapi32';
+import { Imm32 } from './modules/imm32';
+import { Msimg32 } from './modules/msimg32';
+import { Uxtheme } from './modules/uxtheme';
+import { Wintrust } from './modules/wintrust';
+import { Crypt32 } from './modules/crypt32';
+import { Ws2_32 } from './modules/ws2_32';
+import { Psapi } from './modules/psapi';
+import { Iphlpapi } from './modules/iphlpapi';
+import { Tapi32 } from './modules/tapi32';
+import { Setupapi } from './modules/setupapi';
+import { Netapi32 } from './modules/netapi32';
+import { ImageHlp } from './modules/imagehlp';
+import { DbgHelp } from './modules/dbghelp';
+import { Wininet } from './modules/wininet';
+import { IFC20 } from './modules/ifc20';
+import { GdiPlus } from './modules/gdiplus';
+import { Bass } from './modules/bass';
+import { D3D8 } from './modules/d3d8';
+import { D3dx9 } from './modules/d3dx9';
+import { OpenAL, ALUT } from './modules/openal/openal';
+import { Quartz } from './modules/quartz';
+import { A3d } from './modules/a3d';
+import { Avifil32 } from './modules/avifil32';
+import { Rpcrt4 } from './modules/rpcrt4';
+import { Msvfw32 } from './modules/msvfw32';
+import { createBootloader, createGDT } from './core/bootloader';
+import { extractAppIcon } from './modules/kernel32/icon-extractor';
 import {
   EMU_MEMORY_SIZE,
   EMU_VGA_MEMORY_SIZE,
   EMU_SCHEDULER_INTERVAL_MS,
   EMU_HEARTBEAT_INTERVAL_MS,
   EMU_AUDIO_SAMPLE_UPDATE_INTERVAL_MS,
-  EMU_NATIVE_VIDEO_DLLS
-} from "./core/cpu/emulator-config";
-import { WgbLoader, buildRomIndex, readEntrypointBytes, type WgbWriteFileSpec } from "./runtime/filesystem/wgb-loader";
-import { WgbCache } from "./runtime/filesystem/wgb-cache";
-import { detectFormat, sniffBlobHead } from "@bottleship/repack/detect";
-import { installerBytesToWgb } from "@bottleship/repack/installer-to-wgb";
-import { guessCacheKey } from "@bottleship/repack/manifest-synth";
-import { BufferSource, InnoFormatError, parseInnoHeader, MultiSliceReader, parseSliceFile, type SliceData } from "@bottleship/formats/inno";
-import { SyncHttpRangeSource } from "@bottleship/formats/zip";
-import { SabIoSource } from "./runtime/filesystem/sab-io-source";
-import { UnpackDecoder } from "@bottleship/formats/unpack";
-import { RegistryPersistence } from "./runtime/filesystem/registry-persistence";
-import { resolveGameId, gameIdToContainerDir } from "@bottleship/formats/wgb/container-id";
-import { PathPolicy } from "./runtime/filesystem/path-policy";
-import { detectUe1, detectUe2PcPackages, pinUeEngineIni, UE1_RENDER_DEVICE as UE1_RENDER_DEVICE_NAME } from "./runtime/filesystem/ue1-firstrun";
-import { buildStagedBundle, inspectBundle, finalizeBundle, readStagedEntry, type BuildSource, type FinalizeDestination } from "./runtime/filesystem/wgb-build";
-import { TimeService } from "./runtime/time";
-import { resolveMessageBox } from "./runtime/dialog-bridge";
-import { Logger, LogLevel, LogCategory } from "./core/logger";
-import { WebGPUBackend } from "./backends/webgpu/webgpu-backend";
-import { profiler } from "./core/profiler";
-import { frameProfiler } from "./core/frame-profiler";
-import { frameVarianceDiagnostics } from "./core/frame-variance-diagnostics";
-import { framePacer } from "./core/frame-pacer";
-import { EmulatorConfig } from "./core/emulator-config-manager";
-import { videoEngine } from "../video/video-engine";
-import { preemptionManager } from "./core/cpu/preemption-manager";
-import { statsOverlay } from "./core/stats-overlay";
-import { hypercallDataManager } from "./core/cpu/hypercall-data";
-import { d3d9WasmArena } from "./backends/webgpu/d3d9/d3d9-wasm-arena";
-import { bootMark, dumpBootTimeline } from "./core/boot-timer";
-import { setBootOverlayActive } from "./runtime/boot-status";
-import { ThreadState } from "./core/scheduler/types";
-import { libHleManager } from "./core/hle-lib/lib-hle-manager";
-import { hookRegistry } from "./core/hooks";
-import { Galaxy } from "./modules/galaxy";
-import { registerFastPathMessageFunctions } from "./modules/user32/message";
-import { registerFastPathFileIOFunctions } from "./modules/kernel32/file-io";
-import { registerFastPathLocaleFunctions } from "./modules/kernel32/locale";
-import { registerFastPathHeapFunctions, allocateHeapSlab, resetHeapSlab } from "./modules/kernel32/memory";
-import { registerFastPathMsvcrtFunctions } from "./modules/msvcrt";
-import { registerFastPathPointerFunctions } from "./modules/kernel32/exception";
-import { registerFastPathProcessFunctions } from "./modules/kernel32/process/process";
-import { prePopulateGetProcAddressCache, registerFastPathModuleFunctions, ensureGetProcAddressDynamicExports } from "./modules/kernel32/module/module";
-import { KERNEL32_VISTA_WARMUP_EXPORTS } from "./api/kernel32-vista-supplement";
+  EMU_NATIVE_VIDEO_DLLS,
+} from './core/cpu/emulator-config';
+import { prepareGameboxRuntime } from './core/gamebox-prepared-runtime';
+import { GameboxCatalog, type GameboxImage } from './runtime/filesystem/gamebox-catalog';
+import {
+  WgbLoader,
+  buildRomIndex,
+  readEntrypointBytes,
+  type WgbManifest,
+  type WgbWriteFileSpec,
+} from './runtime/filesystem/wgb-loader';
+import { WgbCache } from './runtime/filesystem/wgb-cache';
+import { detectFormat, sniffBlobHead } from '@bottleship/repack/detect';
+import { installerBytesToWgb } from '@bottleship/repack/installer-to-wgb';
+import { guessCacheKey } from '@bottleship/repack/manifest-synth';
+import {
+  BufferSource,
+  InnoFormatError,
+  parseInnoHeader,
+  MultiSliceReader,
+  parseSliceFile,
+  type SliceData,
+} from '@bottleship/formats/inno';
+import { SyncHttpRangeSource } from '@bottleship/formats/zip';
+import { SabIoSource } from './runtime/filesystem/sab-io-source';
+import { UnpackDecoder } from '@bottleship/formats/unpack';
+import { RegistryPersistence } from './runtime/filesystem/registry-persistence';
+import { resolveGameId, gameIdToContainerDir } from '@bottleship/formats/wgb/container-id';
+import { PathPolicy } from './runtime/filesystem/path-policy';
+import {
+  detectUe1,
+  detectUe2PcPackages,
+  pinUeEngineIni,
+  UE1_RENDER_DEVICE as UE1_RENDER_DEVICE_NAME,
+} from './runtime/filesystem/ue1-firstrun';
+import {
+  buildStagedBundle,
+  inspectBundle,
+  finalizeBundle,
+  readStagedEntry,
+  type BuildSource,
+  type FinalizeDestination,
+} from './runtime/filesystem/wgb-build';
+import { TimeService } from './runtime/time';
+import { resolveMessageBox } from './runtime/dialog-bridge';
+import { Logger, LogLevel, LogCategory } from './core/logger';
+import { WebGPUBackend } from './backends/webgpu/webgpu-backend';
+import { profiler } from './core/profiler';
+import { frameProfiler } from './core/frame-profiler';
+import { frameVarianceDiagnostics } from './core/frame-variance-diagnostics';
+import { framePacer } from './core/frame-pacer';
+import { EmulatorConfig } from './core/emulator-config-manager';
+import { videoEngine } from '../video/video-engine';
+import { preemptionManager } from './core/cpu/preemption-manager';
+import { statsOverlay } from './core/stats-overlay';
+import { hypercallDataManager } from './core/cpu/hypercall-data';
+import { d3d9WasmArena } from './backends/webgpu/d3d9/d3d9-wasm-arena';
+import { bootMark, dumpBootTimeline } from './core/boot-timer';
+import { setBootOverlayActive } from './runtime/boot-status';
+import { ThreadState } from './core/scheduler/types';
+import { libHleManager } from './core/hle-lib/lib-hle-manager';
+import { hookRegistry } from './core/hooks';
+import { Galaxy } from './modules/galaxy';
+import { registerFastPathMessageFunctions } from './modules/user32/message';
+import { registerFastPathFileIOFunctions } from './modules/kernel32/file-io';
+import { registerFastPathLocaleFunctions } from './modules/kernel32/locale';
+import {
+  registerFastPathHeapFunctions,
+  allocateHeapSlab,
+  resetHeapSlab,
+} from './modules/kernel32/memory';
+import { registerFastPathMsvcrtFunctions } from './modules/msvcrt';
+import { registerFastPathPointerFunctions } from './modules/kernel32/exception';
+import { registerFastPathProcessFunctions } from './modules/kernel32/process/process';
+import {
+  prePopulateGetProcAddressCache,
+  registerFastPathModuleFunctions,
+  ensureGetProcAddressDynamicExports,
+} from './modules/kernel32/module/module';
+import { KERNEL32_VISTA_WARMUP_EXPORTS } from './api/kernel32-vista-supplement';
 // Load diagnostics commands (exposes frameDiagnostics to console)
-import "./core/diagnostics-commands";
-import { handleDbgCommand } from "./core/debug/dbg-commands";
-import { debugSession } from "./core/debug/debug-session";
-import { harnessService } from "./harness/service";
-import { HARNESS_RPC, HARNESS_CANCEL } from "./harness/rpc";
-import "./harness/commands"; // side-effect: register all harness commands
+import './core/diagnostics-commands';
+import { handleDbgCommand } from './core/debug/dbg-commands';
+import { debugSession } from './core/debug/debug-session';
+import { harnessService } from './harness/service';
+import { HARNESS_RPC, HARNESS_CANCEL } from './harness/rpc';
+import './harness/commands'; // side-effect: register all harness commands
 // onmessage handler families (static imports — worker bundled with inlineDynamicImports).
-import { handleAudioBridgeMessage } from "./worker-handlers/audio-bridge";
-import { handleLoggingMessage } from "./worker-handlers/logging";
-import { handleDebugMonitorMessage } from "./worker-handlers/debug-monitor";
-import { handleRegistryMessage } from "./worker-handlers/registry";
+import { handleAudioBridgeMessage } from './worker-handlers/audio-bridge';
+import { handleLoggingMessage } from './worker-handlers/logging';
+import { handleDebugMonitorMessage } from './worker-handlers/debug-monitor';
+import { handleRegistryMessage } from './worker-handlers/registry';
 
-bootMark("worker-script-start");
+bootMark('worker-script-start');
 
 // Catch unhandled promise rejections in worker (captures truncated browser errors with full message)
 self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
-    const reason = event.reason;
-    const msg = reason?.message ?? reason?.toString?.() ?? String(reason ?? '(empty)');
-    const stack = reason?.stack ?? '';
-    Logger.error(LogCategory.SYSTEM,
-        `[WORKER] Unhandled rejection: ${msg}${stack ? '\n' + stack : ''}`);
-    event.preventDefault();
+  const reason = event.reason;
+  const msg = reason?.message ?? reason?.toString?.() ?? String(reason ?? '(empty)');
+  const stack = reason?.stack ?? '';
+  Logger.error(
+    LogCategory.SYSTEM,
+    `[WORKER] Unhandled rejection: ${msg}${stack ? '\n' + stack : ''}`,
+  );
+  event.preventDefault();
 });
 
 // Capture v86 WASM hard traps (e.g. "RuntimeError: memory access out of bounds" from
@@ -151,58 +194,115 @@ self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
 // stop v86 to break the storm so the state stays inspectable.
 let __wasmTrapReported = false;
 self.addEventListener('error', (event: ErrorEvent) => {
-    const msg = event?.message ?? String(event?.error ?? '');
-    if (__wasmTrapReported || !/out of bounds|RuntimeError|unreachable/i.test(msg)) return;
-    __wasmTrapReported = true;
+  const msg = event?.message ?? String(event?.error ?? '');
+  if (__wasmTrapReported || !/out of bounds|RuntimeError|unreachable/i.test(msg)) return;
+  __wasmTrapReported = true;
+  try {
+    const sys = System.getInstance();
+    const v86: any = sys.process?.v86;
+    const cpu = v86?.cpu || v86?.v86?.cpu;
+    const mem8 = v86?.mem8 || cpu?.mem8;
+    const eip = (cpu?.instruction_pointer?.[0] ?? 0) >>> 0;
+    const esp = (cpu?.reg32?.[4] ?? 0) >>> 0;
+    let bytes = '';
+    if (mem8 && eip + 24 <= mem8.length)
+      bytes = Array.from(mem8.slice(eip, eip + 24))
+        .map((b: any) => b.toString(16).padStart(2, '0'))
+        .join(' ');
+    const recent = (sys.process?.dispatcher as any)?.getLastWinApiCalls?.(10) ?? [];
+    // Stack words around ESP — a wild EIP usually came from a RET popping a garbage
+    // return address; the offending value is typically at [ESP-4] (just-popped) or [ESP].
+    const stack: string[] = [];
+    if (mem8 && cpu?.reg32 && esp >= 16 && esp + 32 <= mem8.length) {
+      const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
+      for (let i = -2; i < 6; i++)
+        stack.push(
+          `[ESP${i < 0 ? i * 4 : '+' + i * 4}]=0x${(view.getUint32(esp + i * 4, true) >>> 0).toString(16)}`,
+        );
+    }
+    const regs = cpu?.reg32
+      ? `eax=0x${(cpu.reg32[0] >>> 0).toString(16)} ecx=0x${(cpu.reg32[1] >>> 0).toString(16)} edx=0x${(cpu.reg32[2] >>> 0).toString(16)} ebx=0x${(cpu.reg32[3] >>> 0).toString(16)} ebp=0x${(cpu.reg32[5] >>> 0).toString(16)} esi=0x${(cpu.reg32[6] >>> 0).toString(16)} edi=0x${(cpu.reg32[7] >>> 0).toString(16)}`
+      : '';
+    // Per-thread saved context EIPs — reveals if an async-wake restored a corrupt EIP.
+    const sched: any = sys.scheduler;
+    const threads: string[] = [];
     try {
-        const sys = System.getInstance();
-        const v86: any = sys.process?.v86;
-        const cpu = v86?.cpu || v86?.v86?.cpu;
-        const mem8 = v86?.mem8 || cpu?.mem8;
-        const eip = (cpu?.instruction_pointer?.[0] ?? 0) >>> 0;
-        const esp = (cpu?.reg32?.[4] ?? 0) >>> 0;
-        let bytes = '';
-        if (mem8 && eip + 24 <= mem8.length) bytes = Array.from(mem8.slice(eip, eip + 24)).map((b: any) => b.toString(16).padStart(2, '0')).join(' ');
-        const recent = (sys.process?.dispatcher as any)?.getLastWinApiCalls?.(10) ?? [];
-        // Stack words around ESP — a wild EIP usually came from a RET popping a garbage
-        // return address; the offending value is typically at [ESP-4] (just-popped) or [ESP].
-        const stack: string[] = [];
-        if (mem8 && cpu?.reg32 && esp >= 16 && esp + 32 <= mem8.length) {
-            const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
-            for (let i = -2; i < 6; i++) stack.push(`[ESP${i < 0 ? i * 4 : '+' + i * 4}]=0x${(view.getUint32(esp + i * 4, true) >>> 0).toString(16)}`);
+      for (const [id, t] of sched?.threads ?? new Map())
+        threads.push(
+          `T${id}:state=${t.state},ctxEip=0x${((t.context?.eip ?? 0) >>> 0).toString(16)},ctxEsp=0x${((t.context?.esp ?? 0) >>> 0).toString(16)}`,
+        );
+    } catch {
+      /* */
+    }
+    const curTid = sched?.currentThreadId ?? sched?.getCurrentThreadId?.();
+    const info = `[WASM-TRAP] ${msg} | EIP=0x${eip.toString(16)} ESP=0x${esp.toString(16)} curThread=${curTid} | ${regs} | stack=[${stack.join(' ')}] | threads=[${threads.join(' | ')}] | last10thunks=${JSON.stringify(recent)}`;
+    Logger.error(LogCategory.SYSTEM, info);
+    // Keep the rich wasm_trap message for back-compat (harness/console diagnostics).
+    try {
+      (self as unknown as Worker).postMessage({
+        type: 'wasm_trap',
+        message: info,
+        eip,
+        esp,
+        bytes,
+        recent,
+        stack,
+        regs,
+        threads,
+        curTid,
+      });
+    } catch {
+      /* */
+    }
+    // Route through the single crash funnel so the host shows the crash dialog
+    // (with a copyable report) AND the harness 'fault' event fires — same as every
+    // other crash class. Build structured regs/stackDump for the report.
+    const regsObj = cpu?.reg32
+      ? {
+          ecx: cpu.reg32[1] >>> 0,
+          ebx: cpu.reg32[3] >>> 0,
+          esp: cpu.reg32[4] >>> 0,
+          ebp: cpu.reg32[5] >>> 0,
+          esi: cpu.reg32[6] >>> 0,
+          edi: cpu.reg32[7] >>> 0,
         }
-        const regs = cpu?.reg32 ? `eax=0x${(cpu.reg32[0] >>> 0).toString(16)} ecx=0x${(cpu.reg32[1] >>> 0).toString(16)} edx=0x${(cpu.reg32[2] >>> 0).toString(16)} ebx=0x${(cpu.reg32[3] >>> 0).toString(16)} ebp=0x${(cpu.reg32[5] >>> 0).toString(16)} esi=0x${(cpu.reg32[6] >>> 0).toString(16)} edi=0x${(cpu.reg32[7] >>> 0).toString(16)}` : '';
-        // Per-thread saved context EIPs — reveals if an async-wake restored a corrupt EIP.
-        const sched: any = sys.scheduler;
-        const threads: string[] = [];
-        try { for (const [id, t] of (sched?.threads ?? new Map())) threads.push(`T${id}:state=${t.state},ctxEip=0x${((t.context?.eip ?? 0) >>> 0).toString(16)},ctxEsp=0x${((t.context?.esp ?? 0) >>> 0).toString(16)}`); } catch { /* */ }
-        const curTid = sched?.currentThreadId ?? sched?.getCurrentThreadId?.();
-        const info = `[WASM-TRAP] ${msg} | EIP=0x${eip.toString(16)} ESP=0x${esp.toString(16)} curThread=${curTid} | ${regs} | stack=[${stack.join(' ')}] | threads=[${threads.join(' | ')}] | last10thunks=${JSON.stringify(recent)}`;
-        Logger.error(LogCategory.SYSTEM, info);
-        // Keep the rich wasm_trap message for back-compat (harness/console diagnostics).
-        try { (self as unknown as Worker).postMessage({ type: 'wasm_trap', message: info, eip, esp, bytes, recent, stack, regs, threads, curTid }); } catch { /* */ }
-        // Route through the single crash funnel so the host shows the crash dialog
-        // (with a copyable report) AND the harness 'fault' event fires — same as every
-        // other crash class. Build structured regs/stackDump for the report.
-        const regsObj = cpu?.reg32 ? {
-            ecx: cpu.reg32[1] >>> 0, ebx: cpu.reg32[3] >>> 0, esp: cpu.reg32[4] >>> 0,
-            ebp: cpu.reg32[5] >>> 0, esi: cpu.reg32[6] >>> 0, edi: cpu.reg32[7] >>> 0,
-        } : null;
-        const stackDump: number[] = [];
-        if (mem8 && esp >= 0 && esp + 128 <= mem8.length) {
-            const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
-            for (let i = 0; i < 32; i++) stackDump.push(view.getUint32(esp + i * 4, true) >>> 0);
-        }
-        try {
-            System.getInstance().reportGuestCrash({
-                reason: `WASM trap: ${msg}`,
-                eip,
-                threadId: typeof curTid === 'number' ? curTid : null,
-                fault: { regs: regsObj, recentCalls: recent.map((r: any) => typeof r === 'string' ? r : JSON.stringify(r)), gameEsp: esp, stackDump, lastThunk: recent.length ? String(recent[recent.length - 1]) : '' },
-            });
-        } catch { /* reportGuestCrash also stops v86; fall through to the guard below */ }
-        try { v86?.stop?.(); } catch { /* */ }
-    } catch (e) { try { (self as unknown as Worker).postMessage({ type: 'wasm_trap', message: msg + ' (state read failed: ' + (e as Error)?.message + ')' }); } catch { /* */ } }
+      : null;
+    const stackDump: number[] = [];
+    if (mem8 && esp >= 0 && esp + 128 <= mem8.length) {
+      const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
+      for (let i = 0; i < 32; i++) stackDump.push(view.getUint32(esp + i * 4, true) >>> 0);
+    }
+    try {
+      System.getInstance().reportGuestCrash({
+        reason: `WASM trap: ${msg}`,
+        eip,
+        threadId: typeof curTid === 'number' ? curTid : null,
+        fault: {
+          regs: regsObj,
+          recentCalls: recent.map((r: any) => (typeof r === 'string' ? r : JSON.stringify(r))),
+          gameEsp: esp,
+          stackDump,
+          lastThunk: recent.length ? String(recent[recent.length - 1]) : '',
+        },
+      });
+    } catch {
+      /* reportGuestCrash also stops v86; fall through to the guard below */
+    }
+    try {
+      v86?.stop?.();
+    } catch {
+      /* */
+    }
+  } catch (e) {
+    try {
+      (self as unknown as Worker).postMessage({
+        type: 'wasm_trap',
+        message: msg + ' (state read failed: ' + (e as Error)?.message + ')',
+      });
+    } catch {
+      /* */
+    }
+  }
 });
 
 // Expose profiler to console for debugging
@@ -237,7 +337,13 @@ const state: WorkerState = {
 
 let placeholderActive = true;
 let pendingPeData: Uint8Array | null = null;
+let preparedCatalog: GameboxCatalog | null = null;
 let pendingBundle: { data?: Uint8Array; url?: string; blob?: Blob } | null = null;
+/** Embedded GameBox launches transfer the canvas before the bundle URL is known.
+ * Defer v86 construction until the bundle manifest supplies its RAM size. */
+let deferV86Init = false;
+let deferredV86InitPromise: Promise<void> | null = null;
+const pendingGameboxAot: Array<Record<string, unknown>> = [];
 let heartbeatInterval: number | null = null;
 let schedulerInterval: number | null = null;
 let registryFlushInterval: number | null = null;
@@ -317,7 +423,7 @@ const gdiPresentLoop = () => {
     // When a hardware 3D renderer owns exclusive fullscreen, GDI/video overlays are
     // not visible — do not composite them over the 3D frame. Re-present the last 3D
     // frame at display rate so the canvas does not go black between low-fps presents.
-    const ddrawCtx = (system.process?.getModule("ddraw") as any)?.context;
+    const ddrawCtx = (system.process?.getModule('ddraw') as any)?.context;
     const screen3DOwned = shouldSuppress3DGdiOverlay(renderActive, ddrawCtx);
 
     if (screen3DOwned) {
@@ -342,14 +448,16 @@ const gdiPresentLoop = () => {
 
     // Include dirty clears (hasOverlayContent=false after clearOverlay) so the GPU
     // canvas is actually cleared instead of staying stale/black.
-    const gdiCanvas = (gdi.hasOverlayContent() || gdiDirty) ? gdi.getOverlayCanvas() : null;
+    const gdiCanvas = gdi.hasOverlayContent() || gdiDirty ? gdi.getOverlayCanvas() : null;
     const videoDirty = videoOverlay.isDirty();
 
     // One-shot diagnostic for GDI present loop
-    if (!gdiPresentDiagLogged && (gdiDirty || (gdiCanvas !== null))) {
+    if (!gdiPresentDiagLogged && (gdiDirty || gdiCanvas !== null)) {
       gdiPresentDiagLogged = true;
-      Logger.log(LogCategory.SYSTEM,
-        `[GDI-PRESENT] First content: hasOverlay=${gdiCanvas !== null} dirty=${gdiDirty} renderActive=${renderActive}`);
+      Logger.log(
+        LogCategory.SYSTEM,
+        `[GDI-PRESENT] First content: hasOverlay=${gdiCanvas !== null} dirty=${gdiDirty} renderActive=${renderActive}`,
+      );
     }
 
     // When a 3D renderer is active, only composite if GDI/video has fresh content.
@@ -376,7 +484,7 @@ const gdiPresentLoop = () => {
       }
 
       if (composedAny) {
-        system.services.render.notifyPresent("gdi");
+        system.services.render.notifyPresent('gdi');
       }
     }
   }
@@ -399,7 +507,7 @@ const startHeartbeat = (v86: any) => {
   let lastEip = 0;
   let lastEipTime = Date.now();
   let eipStuckLogged = false;
-  let lastExecModule = "";
+  let lastExecModule = '';
   let lastExecNonThunked = false;
   let lastPendingRestores = 0;
 
@@ -408,7 +516,7 @@ const startHeartbeat = (v86: any) => {
   const RECENT_WORKER_DEATH_WINDOW_MS = 30000;
   let watchdogStuckSince = 0; // timestamp when stuck condition first detected (0 = not stuck)
   let tickCountAtStuckStart = 0; // do_tick count when the stuck window opened (liveness delta at fire)
-  let watchdogFired = false;  // prevent firing more than once
+  let watchdogFired = false; // prevent firing more than once
   let terminatedBaselineInitialized = false;
   let lastTerminatedCount = 0;
   let lastWorkerTerminationTime = 0;
@@ -416,7 +524,7 @@ const startHeartbeat = (v86: any) => {
   heartbeatInterval = setInterval(() => {
     if (isPaused) return;
 
-    profiler.start("heartbeat");
+    profiler.start('heartbeat');
     try {
       const system = System.getInstance();
 
@@ -424,41 +532,46 @@ const startHeartbeat = (v86: any) => {
       const now = Date.now();
       const sampleDeltaMs = now - lastSampleUpdateTime;
       if (sampleDeltaMs >= EMU_AUDIO_SAMPLE_UPDATE_INTERVAL_MS) {
-        profiler.start("audio_update");
+        profiler.start('audio_update');
         const audioStart = frameProfiler.startTimer();
-        const mss32 = system.process?.getModule("mss32") as any;
+        const mss32 = system.process?.getModule('mss32') as any;
         if (mss32?.updatePlayingSamplesPositions) {
           mss32.updatePlayingSamplesPositions(sampleDeltaMs);
         }
         lastSampleUpdateTime = now;
-        profiler.end("audio_update");
-        frameProfiler.endTimer("audio", audioStart);
+        profiler.end('audio_update');
+        frameProfiler.endTimer('audio', audioStart);
       }
 
       // Simplified heartbeat - only calculate expensive metrics every 2nd beat
-      const isFullBeat = (Date.now() % 4000) < 2000; // Every other beat
+      const isFullBeat = Date.now() % 4000 < 2000; // Every other beat
 
       if (isFullBeat) {
-        profiler.start("heartbeat_full");
+        profiler.start('heartbeat_full');
         const isRunning = v86?.is_running?.() ?? false;
         const renderActive = system.services.render.getActive();
         const dispatcher = system.process?.dispatcher;
-        const activeThunks = dispatcher ? (dispatcher as any).getActiveAsyncThunks?.() ?? [] : [];
-        const cpu = system.process?.v86?.cpu || (system.process?.v86?.v86 && system.process?.v86?.v86.cpu);
+        const activeThunks = dispatcher ? ((dispatcher as any).getActiveAsyncThunks?.() ?? []) : [];
+        const cpu =
+          system.process?.v86?.cpu || (system.process?.v86?.v86 && system.process?.v86?.v86.cpu);
         if (cpu && isRunning) {
           const eip = (cpu.instruction_pointer?.[0] ?? 0) >>> 0;
           const atSpinLoop = system.scheduler?.isSpinLoopAddress?.(eip) ?? false;
 
           // Async wait threads park at spin loop by design; don't report those as stuck EIP.
           if (!atSpinLoop && eip === lastEip) {
-            if (!eipStuckLogged && (now - lastEipTime) > 1200) {
+            if (!eipStuckLogged && now - lastEipTime > 1200) {
               const recent = dispatcher?.getLastWinApiCalls?.(6) ?? [];
-              const mem8 = system.process?.v86?.mem8 || (system.process?.v86?.v86 && system.process?.v86?.v86.cpu.mem8);
-              let bytes = "";
+              const mem8 =
+                system.process?.v86?.mem8 ||
+                (system.process?.v86?.v86 && system.process?.v86?.v86.cpu.mem8);
+              let bytes = '';
               if (mem8 && eip + 24 <= mem8.length) {
-                bytes = ` bytes=${Array.from(mem8.slice(eip, eip + 24)).map((b: any) => b.toString(16).padStart(2, "0")).join(" ")}`;
+                bytes = ` bytes=${Array.from(mem8.slice(eip, eip + 24))
+                  .map((b: any) => b.toString(16).padStart(2, '0'))
+                  .join(' ')}`;
               }
-              let stackInfo = "";
+              let stackInfo = '';
               if (mem8 && cpu?.reg32) {
                 const esp = cpu.reg32[4] >>> 0;
                 if (esp + 24 <= mem8.length) {
@@ -468,10 +581,10 @@ const startHeartbeat = (v86: any) => {
                     const addr = view.getUint32(esp + i * 4, true) >>> 0;
                     frames.push(`[ESP+${i * 4}]=0x${addr.toString(16)}`);
                   }
-                  stackInfo = ` stack=${frames.join(" ")}`;
+                  stackInfo = ` stack=${frames.join(' ')}`;
                 }
               }
-              let regsInfo = "";
+              let regsInfo = '';
               if (cpu?.reg32) {
                 regsInfo =
                   ` regs=EAX=0x${(cpu.reg32[0] >>> 0).toString(16)} ECX=0x${(cpu.reg32[1] >>> 0).toString(16)} EDX=0x${(cpu.reg32[2] >>> 0).toString(16)}` +
@@ -479,7 +592,7 @@ const startHeartbeat = (v86: any) => {
               }
               Logger.warn(
                 LogCategory.SYSTEM,
-                `[HEARTBEAT] EIP stuck at 0x${eip.toString(16)} for ${(now - lastEipTime)}ms; recent thunks=${recent.join(" | ")}${bytes}${stackInfo}${regsInfo}`
+                `[HEARTBEAT] EIP stuck at 0x${eip.toString(16)} for ${now - lastEipTime}ms; recent thunks=${recent.join(' | ')}${bytes}${stackInfo}${regsInfo}`,
               );
               eipStuckLogged = true;
             }
@@ -491,25 +604,27 @@ const startHeartbeat = (v86: any) => {
         }
 
         // Check frame progress (only on full beat)
-        let frameInfo = "";
+        let frameInfo = '';
         let frameDeltaForWatchdog: number | null = null;
         if (renderActive) {
           const counters = renderActive.getCounters?.();
-          if (counters && typeof counters.frames === "number") {
+          if (counters && typeof counters.frames === 'number') {
             const currentFrames = counters.frames;
             const delta = currentFrames - lastFrameCount;
             frameDeltaForWatchdog = delta;
             const timeDelta = Date.now() - lastFrameTime;
-            const fps = timeDelta > 0 ? (delta / timeDelta * 1000).toFixed(1) : "0";
+            const fps = timeDelta > 0 ? ((delta / timeDelta) * 1000).toFixed(1) : '0';
             frameInfo = `, frames=${currentFrames} (+${delta}, ~${fps} FPS)`;
 
             // Log diagnostic when FPS drops to 0 (game might be stuck in CPU loop)
             if (delta === 0 && lastFrameCount > 0 && cpu) {
               const eip = (cpu.instruction_pointer?.[0] ?? 0) >>> 0;
               const recent = dispatcher?.getLastWinApiCalls?.(4) ?? [];
-              let memInfo = "";
-              let bytesInfo = "";
-              const mem8 = system.process?.v86?.mem8 || (system.process?.v86?.v86 && system.process?.v86?.v86.cpu.mem8);
+              let memInfo = '';
+              let bytesInfo = '';
+              const mem8 =
+                system.process?.v86?.mem8 ||
+                (system.process?.v86?.v86 && system.process?.v86?.v86.cpu.mem8);
               // Check the suspected data structure at 0x609b18 (from HOMM3 analysis)
               if (mem8 && 0x609b30 <= mem8.length) {
                 const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
@@ -517,14 +632,17 @@ const startHeartbeat = (v86: any) => {
                 for (let i = 0; i < 6; i++) {
                   struct.push(`+${i * 4}=0x${view.getUint32(0x609b18 + i * 4, true).toString(16)}`);
                 }
-                memInfo = ` struct@0x609b18=[${struct.join(", ")}]`;
+                memInfo = ` struct@0x609b18=[${struct.join(', ')}]`;
               }
               // Dump instruction bytes at EIP
               if (mem8 && eip + 16 <= mem8.length) {
-                bytesInfo = ` bytes@EIP=[${Array.from(mem8.slice(eip, eip + 16) as Uint8Array).map((b) => b.toString(16).padStart(2, "0")).join(" ")}]`;
+                bytesInfo = ` bytes@EIP=[${Array.from(mem8.slice(eip, eip + 16) as Uint8Array)
+                  .map((b) => b.toString(16).padStart(2, '0'))
+                  .join(' ')}]`;
               }
-              Logger.warn(LogCategory.SYSTEM,
-                `[HEARTBEAT] 0 FPS - EIP=0x${eip.toString(16)} recent=${recent.join("|")}${memInfo}${bytesInfo}`
+              Logger.warn(
+                LogCategory.SYSTEM,
+                `[HEARTBEAT] 0 FPS - EIP=0x${eip.toString(16)} recent=${recent.join('|')}${memInfo}${bytesInfo}`,
               );
             }
 
@@ -534,7 +652,7 @@ const startHeartbeat = (v86: any) => {
         }
 
         // Thread diagnostics (always show when there might be issues)
-        let threadInfo = "";
+        let threadInfo = '';
         const threadSummary = system.scheduler?.getThreadSummary?.();
         const switchIntent = system.scheduler?.getSwitchIntentSnapshot?.();
         const criticalRuntime = system.scheduler?.getCriticalRuntimeSnapshot?.();
@@ -552,79 +670,103 @@ const startHeartbeat = (v86: any) => {
           hasRecentWorkerDeaths =
             terminatedNow > 0 &&
             lastWorkerTerminationTime > 0 &&
-            (now - lastWorkerTerminationTime) <= RECENT_WORKER_DEATH_WINDOW_MS;
+            now - lastWorkerTerminationTime <= RECENT_WORKER_DEATH_WINDOW_MS;
 
           threadInfo = `, threads=${threadSummary.total}(run=${threadSummary.running},rdy=${threadSummary.ready},wait=${threadSummary.waiting},susp=${threadSummary.suspended},cre=${threadSummary.created ?? 0})`;
           if (switchIntent) {
-            threadInfo += `, switchIntent(active=${switchIntent.active ? 1 : 0},age=${switchIntent.ageMs.toFixed(1)}ms,` +
+            threadInfo +=
+              `, switchIntent(active=${switchIntent.active ? 1 : 0},age=${switchIntent.ageMs.toFixed(1)}ms,` +
               `def=${switchIntent.deferrals},reason=${switchIntent.lastBlockReason},target=${switchIntent.targetThreadId ?? 0})`;
           }
           if (criticalRuntime) {
-            threadInfo += `, criticalRt(active=${criticalRuntime.active ? 1 : 0},owner=${criticalRuntime.ownerThreadId},` +
+            threadInfo +=
+              `, criticalRt(active=${criticalRuntime.active ? 1 : 0},owner=${criticalRuntime.ownerThreadId},` +
               `gen=${criticalRuntime.generation},def=${criticalRuntime.deferredSwitchCount})`;
           }
           if (apcTelemetry) {
-            threadInfo += `, apc(total=${apcTelemetry.pendingApcTotal},cur=${apcTelemetry.pendingApcByCurrent},` +
+            threadInfo +=
+              `, apc(total=${apcTelemetry.pendingApcTotal},cur=${apcTelemetry.pendingApcByCurrent},` +
               `dispatchOnResume=${apcTelemetry.apcDispatchOnResume},target=${apcTelemetry.pendingApcTargetThreadId})`;
           }
           // Debug: If no running threads but we have threads, something is wrong
           if (threadSummary.running === 0 && threadSummary.total > 0) {
             const detailedInfo = system.scheduler?.getDetailedThreadInfo?.();
             if (detailedInfo) {
-              Logger.warn(LogCategory.SYSTEM, `[THREAD DIAGNOSTIC] No RUNNING thread! Details: ${detailedInfo}`);
+              Logger.warn(
+                LogCategory.SYSTEM,
+                `[THREAD DIAGNOSTIC] No RUNNING thread! Details: ${detailedInfo}`,
+              );
             }
           }
         }
 
         // Hypercall stats
-        let hcInfo = "";
+        let hcInfo = '';
         if (hypercallDataManager.isEnabled()) {
           hcInfo = `, hc=${hypercallDataManager.getCallCount()}`;
         }
 
         // Only log if there's something interesting
-        const pendingRestores = dispatcher ? ((dispatcher as any).pendingAsyncRestores?.length ?? 0) : 0;
+        const pendingRestores = dispatcher
+          ? ((dispatcher as any).pendingAsyncRestores?.length ?? 0)
+          : 0;
         if (pendingRestores !== lastPendingRestores) {
           const pendingInfo = dispatcher?.peekPendingAsyncRestoreDescriptor?.();
           if (pendingInfo) {
             Logger.warn(
               LogCategory.SYSTEM,
               `[ASYNC-RESTORE] pendingRestores ${lastPendingRestores}->${pendingRestores} ` +
-              `next={tid=${pendingInfo.threadId},gen=${pendingInfo.asyncParkGeneration},fn=0x${(pendingInfo.functionId >>> 0).toString(16)},` +
-              `name=${pendingInfo.completionName},cleanup=${pendingInfo.cleanupBytes},` +
-              `esp=0x${(pendingInfo.esp >>> 0).toString(16)},ret=0x${(pendingInfo.returnAddr >>> 0).toString(16)},` +
-              `err=${pendingInfo.errorFlag ? 1 : 0}}`
+                `next={tid=${pendingInfo.threadId},gen=${pendingInfo.asyncParkGeneration},fn=0x${(pendingInfo.functionId >>> 0).toString(16)},` +
+                `name=${pendingInfo.completionName},cleanup=${pendingInfo.cleanupBytes},` +
+                `esp=0x${(pendingInfo.esp >>> 0).toString(16)},ret=0x${(pendingInfo.returnAddr >>> 0).toString(16)},` +
+                `err=${pendingInfo.errorFlag ? 1 : 0}}`,
             );
           } else {
-            Logger.warn(LogCategory.SYSTEM, `[ASYNC-RESTORE] pendingRestores ${lastPendingRestores}->${pendingRestores}`);
+            Logger.warn(
+              LogCategory.SYSTEM,
+              `[ASYNC-RESTORE] pendingRestores ${lastPendingRestores}->${pendingRestores}`,
+            );
           }
           lastPendingRestores = pendingRestores;
         }
-        if (frameInfo || threadInfo || activeThunks.length > 0 || pendingRestores > 0 || !isRunning) {
-          const pendingInfo = pendingRestores > 0 ? dispatcher?.peekPendingAsyncRestoreDescriptor?.() : null;
+        if (
+          frameInfo ||
+          threadInfo ||
+          activeThunks.length > 0 ||
+          pendingRestores > 0 ||
+          !isRunning
+        ) {
+          const pendingInfo =
+            pendingRestores > 0 ? dispatcher?.peekPendingAsyncRestoreDescriptor?.() : null;
           const pendingDetail = pendingInfo
             ? `, pendingHead={tid=${pendingInfo.threadId},gen=${pendingInfo.asyncParkGeneration},fn=0x${(pendingInfo.functionId >>> 0).toString(16)},name=${pendingInfo.completionName},esp=0x${(pendingInfo.esp >>> 0).toString(16)}}`
-            : "";
-          Logger.log(LogCategory.SYSTEM,
-            `[HEARTBEAT] v86=${isRunning}${frameInfo}${threadInfo}${hcInfo}, pendingAsync=${activeThunks.length}, pendingRestores=${pendingRestores}${pendingDetail}`
+            : '';
+          Logger.log(
+            LogCategory.SYSTEM,
+            `[HEARTBEAT] v86=${isRunning}${frameInfo}${threadInfo}${hcInfo}, pendingAsync=${activeThunks.length}, pendingRestores=${pendingRestores}${pendingDetail}`,
           );
         }
-
 
         // Log stuck async thunks
         if (activeThunks.length > 0) {
           for (const thunk of activeThunks) {
             const elapsed = performance.now() - thunk.startTime;
             if (elapsed > 1000) {
-              Logger.warn(LogCategory.THUNK,
-                `[STUCK] Async thunk "${thunk.functionName}" running for ${elapsed.toFixed(0)}ms`
+              Logger.warn(
+                LogCategory.THUNK,
+                `[STUCK] Async thunk "${thunk.functionName}" running for ${elapsed.toFixed(0)}ms`,
               );
             }
           }
         }
 
         // Warn if v86 is stopped (but not during intentional yieldToHost pauses)
-        if (!isRunning && system.process && !system.isExiting && !system.scheduler?.intentionalYield) {
+        if (
+          !isRunning &&
+          system.process &&
+          !system.isExiting &&
+          !system.scheduler?.intentionalYield
+        ) {
           Logger.warn(LogCategory.SYSTEM, `[HEARTBEAT] v86 is NOT running!`);
         }
 
@@ -636,9 +778,10 @@ const startHeartbeat = (v86: any) => {
           // Spin loop is the normal parking spot for async thunks — EIP sitting there
           // is expected behavior, not a hang. Only flag EIP as stuck if it's in guest code.
           const atSpinLoop = system.scheduler?.isSpinLoopAddress?.(eip) ?? false;
-          const eipStuck = !atSpinLoop && (eip === lastEip) && (now - lastEipTime > 2000);
+          const eipStuck = !atSpinLoop && eip === lastEip && now - lastEipTime > 2000;
           // Check 0 FPS: frame delta measured before lastFrameCount was updated
-          const zeroFps = frameDeltaForWatchdog !== null && frameDeltaForWatchdog === 0 && lastFrameCount > 0;
+          const zeroFps =
+            frameDeltaForWatchdog !== null && frameDeltaForWatchdog === 0 && lastFrameCount > 0;
 
           if (eipStuck && zeroFps && aliveThreads <= 1 && hasRecentWorkerDeaths) {
             if (watchdogStuckSince === 0) {
@@ -655,45 +798,61 @@ const startHeartbeat = (v86: any) => {
               //   tickDelta>0 + cycleLimit>0   → do_tick alive, budget fine → freeze is below us
               //                                  (WASM-level / genuine guest spin at one EIP).
               const tickDelta = (tickBeforeCount - tickCountAtStuckStart) >>> 0;
-              const cycleLimit = preemptionManager.isInitialized() ? preemptionManager.getCycleLimit() : -1;
+              const cycleLimit = preemptionManager.isInitialized()
+                ? preemptionManager.getCycleLimit()
+                : -1;
               const diag = `tickDelta=${tickDelta} cycleLimit=${cycleLimit} heals=${tickHealCount} intentionalYield=${system.scheduler?.intentionalYield ? 1 : 0}`;
-              Logger.error(LogCategory.SYSTEM,
+              Logger.error(
+                LogCategory.SYSTEM,
                 `[WATCHDOG] FATAL: Game irrecoverably hung! ` +
-                `EIP stuck at 0x${eip.toString(16)} for ${(now - lastEipTime)}ms, ` +
-                `0 FPS for ${(now - watchdogStuckSince)}ms, ` +
-                `alive=${aliveThreads} terminated=${threadSummary.terminated ?? 0}. ` +
-                `${diag}. Recent thunks: ${recent.join(' | ')}`
+                  `EIP stuck at 0x${eip.toString(16)} for ${now - lastEipTime}ms, ` +
+                  `0 FPS for ${now - watchdogStuckSince}ms, ` +
+                  `alive=${aliveThreads} terminated=${threadSummary.terminated ?? 0}. ` +
+                  `${diag}. Recent thunks: ${recent.join(' | ')}`,
               );
               Logger.error(LogCategory.SYSTEM, `[WATCHDOG] Thread details: ${detailedInfo}`);
 
               // Route through the single crash funnel (same as #PF / WASM trap / bad RET)
               // so the host shows the crash dialog + copyable report and harness 'fault' fires.
               const esp = (cpu.reg32?.[4] ?? 0) >>> 0;
-              const regsObj = cpu?.reg32 ? {
-                ecx: cpu.reg32[1] >>> 0, ebx: cpu.reg32[3] >>> 0, esp,
-                ebp: cpu.reg32[5] >>> 0, esi: cpu.reg32[6] >>> 0, edi: cpu.reg32[7] >>> 0,
-              } : null;
-              const mem8 = system.process?.v86?.mem8 || (system.process?.v86?.v86 && system.process?.v86?.v86.cpu?.mem8);
+              const regsObj = cpu?.reg32
+                ? {
+                    ecx: cpu.reg32[1] >>> 0,
+                    ebx: cpu.reg32[3] >>> 0,
+                    esp,
+                    ebp: cpu.reg32[5] >>> 0,
+                    esi: cpu.reg32[6] >>> 0,
+                    edi: cpu.reg32[7] >>> 0,
+                  }
+                : null;
+              const mem8 =
+                system.process?.v86?.mem8 ||
+                (system.process?.v86?.v86 && system.process?.v86?.v86.cpu?.mem8);
               const stackDump: number[] = [];
               if (mem8 && esp >= 0 && esp + 128 <= mem8.length) {
                 const view = new DataView(mem8.buffer, mem8.byteOffset, mem8.byteLength);
-                for (let i = 0; i < 32; i++) stackDump.push(view.getUint32(esp + i * 4, true) >>> 0);
+                for (let i = 0; i < 32; i++)
+                  stackDump.push(view.getUint32(esp + i * 4, true) >>> 0);
               }
               const curTid = system.scheduler?.getCurrentThreadId?.();
               try {
                 system.reportGuestCrash({
-                  reason: `Game hung: worker threads terminated, main thread stuck for ${(now - lastEipTime)}ms [${diag}]`,
+                  reason: `Game hung: worker threads terminated, main thread stuck for ${now - lastEipTime}ms [${diag}]`,
                   eip,
-                  threadId: typeof curTid === "number" ? curTid : null,
+                  threadId: typeof curTid === 'number' ? curTid : null,
                   fault: {
                     regs: regsObj,
-                    recentCalls: recent.map((r: unknown) => typeof r === "string" ? r : JSON.stringify(r)),
+                    recentCalls: recent.map((r: unknown) =>
+                      typeof r === 'string' ? r : JSON.stringify(r),
+                    ),
                     gameEsp: esp,
                     stackDump,
-                    lastThunk: recent.length ? String(recent[recent.length - 1]) : "",
+                    lastThunk: recent.length ? String(recent[recent.length - 1]) : '',
                   },
                 });
-              } catch { /* reportGuestCrash also stops v86 */ }
+              } catch {
+                /* reportGuestCrash also stops v86 */
+              }
             }
           } else {
             // Condition no longer met — reset
@@ -701,12 +860,12 @@ const startHeartbeat = (v86: any) => {
           }
         }
 
-        profiler.end("heartbeat_full");
+        profiler.end('heartbeat_full');
       }
     } catch (e) {
       Logger.error(LogCategory.SYSTEM, `[HEARTBEAT] Error: ${e}`);
     } finally {
-      profiler.end("heartbeat");
+      profiler.end('heartbeat');
     }
   }, EMU_HEARTBEAT_INTERVAL_MS) as unknown as number;
 };
@@ -752,9 +911,10 @@ const startScheduler = (v86: any) => {
         // would execute the thunk region with a poison context → guest fault (e.g. Exception 0xee).
         const cpu = system.process.v86?.cpu || (system.process.v86 as any)?.v86?.cpu;
         const curEip = (cpu?.instruction_pointer?.[0] ?? 0) >>> 0;
-        const hasWork = system.scheduler.hasRunnableThread()
-          || system.scheduler.hasRunningThread(curEip)   // current thread mid-computation at guest EIP (e.g. DWN pow-LUT) — resume it
-          || (system.process.dispatcher?.hasPendingAsyncRestores?.() ?? false);
+        const hasWork =
+          system.scheduler.hasRunnableThread() ||
+          system.scheduler.hasRunningThread(curEip) || // current thread mid-computation at guest EIP (e.g. DWN pow-LUT) — resume it
+          (system.process.dispatcher?.hasPendingAsyncRestores?.() ?? false);
         if (hasWork) v86.run();
       }
     }
@@ -817,10 +977,15 @@ const drawPlaceholder = () => {
   requestAnimationFrame(drawPlaceholder);
 };
 
-const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
+const loadPeData = async (
+  peData: Uint8Array | undefined,
+  skipReset: boolean = false,
+  image?: GameboxImage,
+) => {
   const system = System.getInstance();
   if (!system.process) {
-    Logger.log(LogCategory.SYSTEM, "System not ready, queuing PE data");
+    Logger.log(LogCategory.SYSTEM, 'System not ready, queuing PE data');
+    if (!peData || image) throw new Error('Prepared launch requires an initialized process');
     pendingPeData = peData;
     return;
   }
@@ -837,25 +1002,36 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
   }
 
   try {
-    const module = await system.process.loader.loadExecutable(peData);
-    Logger.log(LogCategory.SYSTEM, `Loaded PE. Entry point: 0x${module.entryPoint.toString(16)}, base: 0x${module.baseAddress.toString(16)}`);
+    const loader = system.process.loader;
+    const module = image
+      ? image.descriptor
+        ? await loader.loadPreparedExecutable(image.source, image.descriptor)
+        : await loader.loadSourceExecutable(image.source)
+      : await loader.loadExecutable(peData!);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `Loaded PE. Entry point: 0x${module.entryPoint.toString(16)}, base: 0x${module.baseAddress.toString(16)}`,
+    );
 
     // Update PEB ImageBaseAddress now that we know the actual EXE base
     system.scheduler?.tebManager.updatePebImageBase(module.baseAddress);
 
     // Extract app icon from PE resources and send to host page for favicon
     try {
-        const mem8 = system.process.getCurrentMemory();
-        const iconData = extractAppIcon(mem8, module.baseAddress);
-        if (iconData) {
-            const buffer = iconData.buffer.slice(iconData.byteOffset, iconData.byteOffset + iconData.byteLength);
-            (self as unknown as Worker).postMessage({ type: "window_icon", data: buffer }, [buffer]);
-            Logger.log(LogCategory.SYSTEM, `Sent app icon to host (${iconData.byteLength} bytes)`);
-        } else {
-            Logger.warn(LogCategory.SYSTEM, `No icon found in PE (RT_GROUP_ICON not present)`);
-        }
+      const mem8 = system.process.getCurrentMemory();
+      const iconData = extractAppIcon(mem8, module.baseAddress);
+      if (iconData) {
+        const buffer = iconData.buffer.slice(
+          iconData.byteOffset,
+          iconData.byteOffset + iconData.byteLength,
+        );
+        (self as unknown as Worker).postMessage({ type: 'window_icon', data: buffer }, [buffer]);
+        Logger.log(LogCategory.SYSTEM, `Sent app icon to host (${iconData.byteLength} bytes)`);
+      } else {
+        Logger.warn(LogCategory.SYSTEM, `No icon found in PE (RT_GROUP_ICON not present)`);
+      }
     } catch (e) {
-        Logger.warn(LogCategory.SYSTEM, `Icon extraction failed: ${e}`);
+      Logger.warn(LogCategory.SYSTEM, `Icon extraction failed: ${e}`);
     }
 
     // Note: Apply pending registrations AFTER PE loading
@@ -865,38 +1041,41 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     system.process.dispatcher.applyPendingRegistrations();
     prePopulateGetProcAddressCache(system.process.dispatcher);
     ensureGetProcAddressDynamicExports(system.process.dispatcher, [
-      { dll: "d3d9", name: "Direct3DShaderValidatorCreate9" },
-      { dll: "d3d9", name: "DebugSetMute" },
-      { dll: "w32skrnl", name: "_ImteFromHModule@4" },
-      { dll: "w32skrnl", name: "_BaseAddrFromImte@4" },
-      { dll: "kernel32", name: "GetDiskFreeSpaceExA" },
-      { dll: "kernel32", name: "GetDiskFreeSpaceExW" },
+      { dll: 'd3d9', name: 'Direct3DShaderValidatorCreate9' },
+      { dll: 'd3d9', name: 'DebugSetMute' },
+      { dll: 'w32skrnl', name: '_ImteFromHModule@4' },
+      { dll: 'w32skrnl', name: '_BaseAddrFromImte@4' },
+      { dll: 'kernel32', name: 'GetDiskFreeSpaceExA' },
+      { dll: 'kernel32', name: 'GetDiskFreeSpaceExW' },
       ...KERNEL32_VISTA_WARMUP_EXPORTS,
     ]);
 
     try {
-        const { ensureProcessDefaultActivationContext } = await import("./modules/kernel32/process/actctx");
-        await ensureProcessDefaultActivationContext(
-            system.process.getCurrentMemory(),
-            module.baseAddress
-        );
+      const { ensureProcessDefaultActivationContext } =
+        await import('./modules/kernel32/process/actctx');
+      await ensureProcessDefaultActivationContext(
+        system.process.getCurrentMemory(),
+        module.baseAddress,
+      );
     } catch (e) {
-        Logger.warn(LogCategory.SYSTEM, `[ActCtx] preload failed: ${e}`);
+      Logger.warn(LogCategory.SYSTEM, `[ActCtx] preload failed: ${e}`);
     }
 
     // Enable WASM hypercall dispatch now that stubs are registered
     if (hypercallDataManager.isInitialized() && hypercallDataManager.getRegisteredCount() > 0) {
-        hypercallDataManager.enable();
-        // NOTE: Heap slab allocation deferred — allocating 4MB during init steals memory
-        // from MapViewOfFile and other game loading operations. Slab will be allocated
-        // lazily after the first frame when loading pressure subsides.
+      hypercallDataManager.enable();
+      // NOTE: Heap slab allocation deferred — allocating 4MB during init steals memory
+      // from MapViewOfFile and other game loading operations. Slab will be allocated
+      // lazily after the first frame when loading pressure subsides.
     }
 
     // Collect DLLs that need DllMain(DLL_PROCESS_ATTACH) before EXE entry
     const pendingDllInits = system.process.loader.getPendingDllInits();
     if (pendingDllInits.length > 0) {
-      Logger.warn(LogCategory.SYSTEM,
-        `DllMain trampoline: ${pendingDllInits.length} DLL(s): ${pendingDllInits.map(d => `${d.name}@0x${d.entryPoint.toString(16)}`).join(', ')}`);
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `DllMain trampoline: ${pendingDllInits.length} DLL(s): ${pendingDllInits.map((d) => `${d.name}@0x${d.entryPoint.toString(16)}`).join(', ')}`,
+      );
     } else {
       Logger.warn(LogCategory.SYSTEM, `DllMain trampoline: NO DLLs with entry points queued`);
     }
@@ -905,10 +1084,11 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     await system.process.v86.stop();
 
     const cpu = system.process.v86.cpu || (system.process.v86.v86 && system.process.v86.v86.cpu);
-    const mem8 = system.process.v86.mem8 || (system.process.v86.v86 && system.process.v86.v86.cpu.mem8);
+    const mem8 =
+      system.process.v86.mem8 || (system.process.v86.v86 && system.process.v86.v86.cpu.mem8);
 
     if (!cpu || !mem8) {
-      Logger.error(LogCategory.SYSTEM, "Could not find CPU or memory for bootloader setup");
+      Logger.error(LogCategory.SYSTEM, 'Could not find CPU or memory for bootloader setup');
       return;
     }
 
@@ -923,28 +1103,40 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     if (system.process?.memory) {
       const stackBase = system.process.memory.alloc(mainStackSize, 'HEAP');
       stackPointer = stackBase + mainStackSize;
-      Logger.log(LogCategory.SYSTEM,
-        `Main thread stack: 0x${stackBase.toString(16)}-0x${stackPointer.toString(16)} (${(mainStackSize / 1024).toFixed(0)}KB, PE requested ${(peStackReserve / 1024).toFixed(0)}KB)`);
+      Logger.log(
+        LogCategory.SYSTEM,
+        `Main thread stack: 0x${stackBase.toString(16)}-0x${stackPointer.toString(16)} (${(mainStackSize / 1024).toFixed(0)}KB, PE requested ${(peStackReserve / 1024).toFixed(0)}KB)`,
+      );
     } else {
       // Fallback to low-memory boot stack if HEAP not available yet
       stackPointer = 0x90000;
-      Logger.warn(LogCategory.SYSTEM, `Main thread stack: fallback to 0x${stackPointer.toString(16)} (HEAP not available)`);
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `Main thread stack: fallback to 0x${stackPointer.toString(16)} (HEAP not available)`,
+      );
     }
-    const { code: bootCode, loadAddress, startAddress } = createBootloader(module.entryPoint, stackPointer, pendingDllInits);
+    const {
+      code: bootCode,
+      loadAddress,
+      startAddress,
+    } = createBootloader(module.entryPoint, stackPointer, pendingDllInits);
 
     // Write bootloader at 0x7C00 (includes code + boot sig + GDT at 0x7E00)
     mem8.set(bootCode, loadAddress);
-    Logger.log(LogCategory.SYSTEM, `Bootloader+GDT written at 0x${loadAddress.toString(16)}, size: ${bootCode.length}`);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `Bootloader+GDT written at 0x${loadAddress.toString(16)}, size: ${bootCode.length}`,
+    );
 
     // Initialize page tables in guest memory (identity-mapped).
     // Pages are all Present+RW+User. Paging is ENABLED later by thunk dispatcher
     // when bootloader signals PM+IDT ready (0xDEAD0003 marker).
     const { PageTableManager } = await import('./core/memory/page-table-manager');
-    const pageTables = system.process!.memory.alloc(0x401000, "THUNK_DATA", "rw", 0x1000);
+    const pageTables = system.process!.memory.alloc(0x401000, 'THUNK_DATA', 'rw', 0x1000);
     const ptm = new PageTableManager(
-        () => system.process!.v86.mem8 || system.process!.v86.v86?.cpu?.mem8,
-        () => cpu.wm?.exports,
-        pageTables
+      () => system.process!.v86.mem8 || system.process!.v86.v86?.cpu?.mem8,
+      () => cpu.wm?.exports,
+      pageTables,
     );
     const { VER_PLATFORM_WIN32_WINDOWS } = await import('./core/emulator-config-manager');
     const win9x = EmulatorConfig.getInstance().osVersion.platformId === VER_PLATFORM_WIN32_WINDOWS;
@@ -969,7 +1161,10 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
       }
     }
 
-    Logger.log(LogCategory.SYSTEM, `Starting bootloader execution at CS:IP = 0:0x${startAddress.toString(16)}`);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `Starting bootloader execution at CS:IP = 0:0x${startAddress.toString(16)}`,
+    );
 
     resumeEmulator();
     framePacer.start();
@@ -981,6 +1176,7 @@ const loadPeData = async (peData: Uint8Array, skipReset: boolean = false) => {
     // "game crashed" dialog with a copyable report (e.g. a missing HLE API
     // discovered while generating import thunks), instead of a silent worker log.
     system.reportGuestCrash({ reason: `PE load failed: ${message}`, eip: 0, threadId: null });
+    throw err;
   }
 };
 
@@ -995,10 +1191,10 @@ const writeVfsOverride = async (path: string, data: Uint8Array): Promise<void> =
 };
 
 const decodeWriteFileSpec = (spec: WgbWriteFileSpec): Uint8Array | null => {
-  if (typeof spec.text === "string") {
+  if (typeof spec.text === 'string') {
     return new TextEncoder().encode(spec.text);
   }
-  if (typeof spec.base64 === "string") {
+  if (typeof spec.base64 === 'string') {
     const bin = atob(spec.base64);
     const data = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
@@ -1035,12 +1231,18 @@ const applyManifestWriteFiles = async (): Promise<void> => {
   const vfs = System.getInstance().fileSystem;
   for (const spec of specs) {
     if (spec.ifAbsent && vfs.getFileSize(spec.path) > 0) {
-      Logger.log(LogCategory.SYSTEM, `writeFiles: "${spec.path}" already present, skipped (ifAbsent)`);
+      Logger.log(
+        LogCategory.SYSTEM,
+        `writeFiles: "${spec.path}" already present, skipped (ifAbsent)`,
+      );
       continue;
     }
     const data = decodeWriteFileSpec(spec);
     if (!data) {
-      Logger.warn(LogCategory.SYSTEM, `writeFiles: "${spec.path}" has no valid content (text/base64/leDwords) — skipped`);
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `writeFiles: "${spec.path}" has no valid content (text/base64/leDwords) — skipped`,
+      );
       continue;
     }
     try {
@@ -1063,7 +1265,7 @@ const applyManifestWriteFiles = async (): Promise<void> => {
 // config-ini materialization (kernel32 CreateFile*) also gates on this flag.
 // Non-UE1 games: detectUe1() returns false → this is a complete no-op.
 const pinGuestEngineIni = async (
-  vfs: ReturnType<typeof System.getInstance>["fileSystem"],
+  vfs: ReturnType<typeof System.getInstance>['fileSystem'],
   iniPath: string,
   hasPcPackages: boolean,
 ): Promise<void> => {
@@ -1073,11 +1275,14 @@ const pinGuestEngineIni = async (
     if (!handle) return;
     const size = vfs.getFileSize(iniPath);
     const bytes = size > 0 ? await vfs.read(handle, size) : new Uint8Array(0);
-    const text = new TextDecoder("utf-8").decode(bytes);
+    const text = new TextDecoder('utf-8').decode(bytes);
     const pinned = pinUeEngineIni(text, { hasPcPackages });
     if (pinned !== text) {
       await writeVfsOverride(iniPath, new TextEncoder().encode(pinned));
-      Logger.log(LogCategory.SYSTEM, `UE1: pinned engine defaults in ${iniPath} (render=${UE1_RENDER_DEVICE_NAME})`);
+      Logger.log(
+        LogCategory.SYSTEM,
+        `UE1: pinned engine defaults in ${iniPath} (render=${UE1_RENDER_DEVICE_NAME})`,
+      );
     } else {
       Logger.log(LogCategory.SYSTEM, `UE1: ${iniPath} already has engine defaults`);
     }
@@ -1092,14 +1297,17 @@ const applyUe1FirstRunSetup = async (entrypointPath?: string): Promise<void> => 
   const exists = (guestPath: string): boolean => vfs.getFileSize(guestPath) > 0;
   config.ue1 = detectUe1(exists);
   if (!config.ue1) return;
-  Logger.log(LogCategory.SYSTEM, "UE1: detected Unreal Engine 1 bundle — enabling generic first-run handler");
+  Logger.log(
+    LogCategory.SYSTEM,
+    'UE1: detected Unreal Engine 1 bundle — enabling generic first-run handler',
+  );
 
   const hasPcPackages = detectUe2PcPackages(exists);
   // Pin D3D render device + UE2 WinDrv ForceFeedbackManager in factory and active configs.
-  const iniPaths = ["C:\\System\\Default.ini"];
+  const iniPaths = ['C:\\System\\Default.ini'];
   if (entrypointPath) {
-    const exeName = entrypointPath.split(/[\\/]/).pop() ?? "";
-    const gameIni = exeName.replace(/\.[^.]+$/i, "");
+    const exeName = entrypointPath.split(/[\\/]/).pop() ?? '';
+    const gameIni = exeName.replace(/\.[^.]+$/i, '');
     if (gameIni) iniPaths.push(`C:\\System\\${gameIni}.ini`);
   }
   for (const iniPath of iniPaths) {
@@ -1112,7 +1320,14 @@ const deepMergeInto = (target: Record<string, unknown>, src: Record<string, unkn
   for (const k of Object.keys(src)) {
     const v = src[k];
     const cur = target[k];
-    if (v && typeof v === "object" && !Array.isArray(v) && cur && typeof cur === "object" && !Array.isArray(cur)) {
+    if (
+      v &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      cur &&
+      typeof cur === 'object' &&
+      !Array.isArray(cur)
+    ) {
       deepMergeInto(cur as Record<string, unknown>, v as Record<string, unknown>);
     } else {
       target[k] = v;
@@ -1141,7 +1356,10 @@ const orderSliceFiles = (bins: File[], base: string, slicesPerDisk: number): Fil
   const ordered: File[] = [];
   for (let i = 0; i < bins.length; i++) {
     const f = byName.get(sliceFilename(base, i, slicesPerDisk).toLowerCase());
-    if (!f) { ordered.length = 0; break; }
+    if (!f) {
+      ordered.length = 0;
+      break;
+    }
     ordered.push(f);
   }
   if (ordered.length === bins.length) return ordered;
@@ -1154,10 +1372,20 @@ const orderSliceFiles = (bins: File[], base: string, slicesPerDisk: number): Fil
  */
 const prepareFullGameSwitch = async (): Promise<void> => {
   if (gameSessionActive) {
-    Logger.log(LogCategory.SYSTEM, "[GameSwitch] full reset before loading new game");
+    Logger.log(LogCategory.SYSTEM, '[GameSwitch] full reset before loading new game');
   }
   _prefetchController?.abort();
   _prefetchController = null;
+  graphicsProfile.cancel();
+  delete (globalThis as any).__gameboxContentHash;
+  delete (globalThis as any).__gameboxGraphicsRuntime;
+  delete (globalThis as any).__gameboxGraphicsScenario;
+  delete (globalThis as any).__gameboxGraphicsGpu;
+  delete (globalThis as any).__gameboxGraphicsProfile;
+  delete (globalThis as any).__gameboxGraphicsPreparedStats;
+  preparedCatalog?.dispose();
+  preparedCatalog = null;
+  System.getInstance().process?.loader.setPreparedSourceResolver(null);
   WgbCache.releaseMountedSource();
   setBootOverlayActive(false);
 
@@ -1182,17 +1410,22 @@ const prepareFullGameSwitch = async (): Promise<void> => {
   resetHeapSlab();
   await system.reset();
   gameSessionActive = false;
-  bootMark("system-reset-done");
+  bootMark('system-reset-done');
 };
 
-const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] }) => {
+const loadBundleImpl = async (payload: {
+  data?: Uint8Array;
+  url?: string;
+  blob?: Blob;
+  blobs?: File[];
+}) => {
   const system = System.getInstance();
   if (!system.process) {
     pendingBundle = payload;
     return;
   }
 
-  bootMark("load-bundle-start");
+  bootMark('load-bundle-start');
 
   await prepareFullGameSwitch();
 
@@ -1205,7 +1438,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
   try {
     // NOTE: the writable overlay is opened AFTER the bundle's gameId is known (per-game container,
     // see below) — it can't be rooted before we know which game's container to open.
-    bootMark("pre-overlay");
+    bootMark('pre-overlay');
 
     let bundle;
     if (payload.url) {
@@ -1220,7 +1453,8 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       // Pages sets COOP/COEP; the dev server too) and a Range-honoring origin (the R2
       // Pages Function serves 206). create() probes both, so any failure throws and we
       // fall through to the OPFS-download/staging path below, unchanged.
-      const streamCapable = (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+      const streamCapable =
+        (globalThis as unknown as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
       if (streamCapable) {
         try {
           // Preferred: serve the guest's synchronous reads from a dedicated I/O
@@ -1229,13 +1463,16 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           // cold read parks the guest for ~a SAB round-trip instead of a network
           // one — no serial, latency-bound sync-XHR grind. Needs cross-origin
           // isolation (SAB); falls back to the blocking sync-XHR range source.
-          let src: import("@bottleship/formats/zip").ZipSource;
+          let src: import('@bottleship/formats/zip').ZipSource;
           let sabIo: SabIoSource | null = null;
           try {
             sabIo = await SabIoSource.create(url);
             src = sabIo;
             (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = src;
-            Logger.log(LogCategory.SYSTEM, `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`);
+            Logger.log(
+              LogCategory.SYSTEM,
+              `WGB: streaming "${url}" via SAB I/O worker (parallel prefetch)`,
+            );
           } catch (sabErr) {
             throw sabErr;
           }
@@ -1243,8 +1480,8 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           // loading UI instead of a static "Streaming" — the prefetch phase below then
           // takes over with its determinate "N / M files" bar.
           const postStreamStage = (label: string) =>
-            self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label });
-          postStreamStage("Streaming");
+            self.postMessage({ type: 'loading_progress', phase: 'loading', percent: 100, label });
+          postStreamStage('Streaming');
           try {
             bundle = await WgbLoader.fromSource(src, postStreamStage);
           } catch (loadErr) {
@@ -1255,62 +1492,91 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             throw loadErr;
           }
         } catch (e) {
-          Logger.log(LogCategory.SYSTEM, `WGB: sync-stream unavailable (${(e as Error).message}) — staging to OPFS`);
+          Logger.log(
+            LogCategory.SYSTEM,
+            `WGB: sync-stream unavailable (${(e as Error).message}) — staging to OPFS`,
+          );
         }
       }
 
       if (!bundle) {
-        const stage = () => WgbCache.downloadToSyncSource(url, (loaded, total) => {
-          const percent = total > 0 ? Math.round(loaded / total * 100) : 0;
-          const loadedMb = (loaded / 1024 / 1024).toFixed(0);
-          const totalMb = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(0)} MB` : " MB";
-          self.postMessage({ type: "loading_progress", phase: "downloading", percent, label: `${loadedMb}${totalMb}` });
-        });
+        const stage = () =>
+          WgbCache.downloadToSyncSource(url, (loaded, total) => {
+            const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+            const loadedMb = (loaded / 1024 / 1024).toFixed(0);
+            const totalMb = total > 0 ? ` / ${(total / 1024 / 1024).toFixed(0)} MB` : ' MB';
+            self.postMessage({
+              type: 'loading_progress',
+              phase: 'downloading',
+              percent,
+              label: `${loadedMb}${totalMb}`,
+            });
+          });
         let syncSource = await WgbCache.openSyncSourceForUrl(url);
         if (syncSource) {
           try {
             bundle = await WgbLoader.fromSource(syncSource);
-            self.postMessage({ type: "loading_progress", phase: "loading", percent: 100, label: "Cached" });
+            self.postMessage({
+              type: 'loading_progress',
+              phase: 'loading',
+              percent: 100,
+              label: 'Cached',
+            });
           } catch (error) {
             syncSource.close();
             await WgbCache.evict(url);
-            Logger.warn(LogCategory.SYSTEM, `WGB: invalid cached package, retrying through disk storage: ${error}`);
+            Logger.warn(
+              LogCategory.SYSTEM,
+              `WGB: invalid cached package, retrying through disk storage: ${error}`,
+            );
           }
         }
         if (!bundle) {
           syncSource = await stage();
-          if (!syncSource) throw new Error("Game loading requires byte ranges or available browser disk storage.");
-          try { bundle = await WgbLoader.fromSource(syncSource); }
-          catch (error) { syncSource.close(); await WgbCache.evict(url); throw error; }
+          if (!syncSource)
+            throw new Error('Game loading requires byte ranges or available browser disk storage.');
+          try {
+            bundle = await WgbLoader.fromSource(syncSource);
+          } catch (error) {
+            syncSource.close();
+            await WgbCache.evict(url);
+            throw error;
+          }
         }
       }
     } else if (payload.blobs && payload.blobs.length) {
       // Multi-part installer: setup.exe (header + file list) + external setup-*.bin data slices.
       const all = payload.blobs;
-      const bins = all.filter((f) => f.name.toLowerCase().endsWith(".bin"));
-      const exe = all.find((f) => !f.name.toLowerCase().endsWith(".bin"));
-      if (!exe) throw new Error("multi-part install: no setup.exe among the dropped files");
-      if (!bins.length) throw new Error("multi-part install: no setup-*.bin data slices dropped");
+      const bins = all.filter((f) => f.name.toLowerCase().endsWith('.bin'));
+      const exe = all.find((f) => !f.name.toLowerCase().endsWith('.bin'));
+      if (!exe) throw new Error('multi-part install: no setup.exe among the dropped files');
+      if (!bins.length) throw new Error('multi-part install: no setup-*.bin data slices dropped');
 
-      self.postMessage({ type: "loading_progress", phase: "loading", percent: 0, label: "Reading installer" });
+      self.postMessage({
+        type: 'loading_progress',
+        phase: 'loading',
+        percent: 0,
+        label: 'Reading installer',
+      });
       const data = new Uint8Array(await exe.arrayBuffer());
       const kind = detectFormat(data);
-      if (kind !== "inno") {
-        const msg = kind === "inno-unsupported"
-          ? "This Inno Setup version is not supported"
-          : "Dropped files aren't a supported multi-part GOG installer";
-        self.postMessage({ type: "installer_unsupported", message: msg });
+      if (kind !== 'inno') {
+        const msg =
+          kind === 'inno-unsupported'
+            ? 'This Inno Setup version is not supported'
+            : "Dropped files aren't a supported multi-part GOG installer";
+        self.postMessage({ type: 'installer_unsupported', message: msg });
         throw new Error(msg);
       }
 
-      const wasmResp = await fetch((import.meta.env.BASE_URL + "unpack-streaming.wasm"));
+      const wasmResp = await fetch(import.meta.env.BASE_URL + 'unpack-streaming.wasm');
       const wasmBytes = await wasmResp.arrayBuffer();
       const lzma = new UnpackDecoder();
       await lzma.init(wasmBytes);
       const parsed = await parseInnoHeader(new BufferSource(data), lzma);
 
       const slicesPerDisk = Math.max(1, parsed.header.slicesPerDisk || 1);
-      const base = exe.name.replace(/\.exe$/i, "");
+      const base = exe.name.replace(/\.exe$/i, '');
       const ordered = orderSliceFiles(bins, base, slicesPerDisk);
       const sliceData: SliceData[] = [];
       for (const f of ordered) {
@@ -1321,7 +1587,12 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       const cached = await WgbCache.getByKey(cacheKey);
       if (cached) {
         Logger.log(LogCategory.SYSTEM, `GOG import (multi-part): cache hit ${cacheKey}`);
-        self.postMessage({ type: "install_progress", phase: "starting", doneBytes: cached.byteLength, totalBytes: cached.byteLength });
+        self.postMessage({
+          type: 'install_progress',
+          phase: 'starting',
+          doneBytes: cached.byteLength,
+          totalBytes: cached.byteLength,
+        });
         bundle = await WgbLoader.fromBuffer(cached);
       } else {
         let installProgressLast = 0;
@@ -1332,7 +1603,12 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
             const now = performance.now();
             if (now - installProgressLast < 100) return;
             installProgressLast = now;
-            self.postMessage({ type: "install_progress", phase: p.phase, doneBytes: p.doneBytes, totalBytes: p.totalBytes });
+            self.postMessage({
+              type: 'install_progress',
+              phase: p.phase,
+              doneBytes: p.doneBytes,
+              totalBytes: p.totalBytes,
+            });
           },
         });
         await WgbCache.put(result.cacheKey ?? cacheKey, result.wgb);
@@ -1347,34 +1623,40 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       const onCacheProgress = (done: number, total: number) => {
         const doneMb = (done / 1024 / 1024).toFixed(0);
         const totalMb = (total / 1024 / 1024).toFixed(0);
-        const percent = total > 0 ? Math.round(done / total * 100) : 0;
-        self.postMessage({ type: "loading_progress", phase: "caching", percent, label: `${doneMb} / ${totalMb} MB` });
+        const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+        self.postMessage({
+          type: 'loading_progress',
+          phase: 'caching',
+          percent,
+          label: `${doneMb} / ${totalMb} MB`,
+        });
       };
 
-      if (headKind === "wgb") {
+      if (headKind === 'wgb') {
         bundle = await WgbLoader.fromBlob(payload.blob, onCacheProgress);
-      } else if (headKind === "unknown") {
-        const msg = "Unrecognized file format";
-        self.postMessage({ type: "installer_unsupported", message: msg });
+      } else if (headKind === 'unknown') {
+        const msg = 'Unrecognized file format';
+        self.postMessage({ type: 'installer_unsupported', message: msg });
         throw new Error(msg);
       } else {
         const data = new Uint8Array(await payload.blob.arrayBuffer());
         const kind = detectFormat(data);
 
-        if (kind === "pe") {
+        if (kind === 'pe') {
           await loadPeData(data);
           return;
         }
-        if (kind === "unknown" || kind === "inno-unsupported") {
-          const msg = kind === "inno-unsupported"
-            ? "This Inno Setup version is not supported"
-            : "Unrecognized file format";
-          self.postMessage({ type: "installer_unsupported", message: msg });
+        if (kind === 'unknown' || kind === 'inno-unsupported') {
+          const msg =
+            kind === 'inno-unsupported'
+              ? 'This Inno Setup version is not supported'
+              : 'Unrecognized file format';
+          self.postMessage({ type: 'installer_unsupported', message: msg });
           throw new Error(msg);
         }
-        if (kind === "inno") {
+        if (kind === 'inno') {
           let installProgressLast = 0;
-          const wasmResp = await fetch((import.meta.env.BASE_URL + "unpack-streaming.wasm"));
+          const wasmResp = await fetch(import.meta.env.BASE_URL + 'unpack-streaming.wasm');
           const wasmBytes = await wasmResp.arrayBuffer();
 
           const lzma = new UnpackDecoder();
@@ -1386,7 +1668,12 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
           let wgbBuffer: Uint8Array;
           if (cached) {
             Logger.log(LogCategory.SYSTEM, `GOG import: cache hit ${cacheKey}`);
-            self.postMessage({ type: "install_progress", phase: "starting", doneBytes: cached.byteLength, totalBytes: cached.byteLength });
+            self.postMessage({
+              type: 'install_progress',
+              phase: 'starting',
+              doneBytes: cached.byteLength,
+              totalBytes: cached.byteLength,
+            });
             wgbBuffer = cached;
           } else {
             const result = await installerBytesToWgb(data, wasmBytes, {
@@ -1396,7 +1683,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
                 if (now - installProgressLast < 100) return;
                 installProgressLast = now;
                 self.postMessage({
-                  type: "install_progress",
+                  type: 'install_progress',
                   phase: p.phase,
                   doneBytes: p.doneBytes,
                   totalBytes: p.totalBytes,
@@ -1415,7 +1702,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       bundle = await WgbLoader.fromBuffer(payload.data as Uint8Array);
     }
 
-    bootMark("wgb-loaded");
+    bootMark('wgb-loaded');
 
     // Apply a UI-authored manifest override (manifest editor) for cached bundles — a
     // non-destructive layer merged onto the bundle's manifest, so the .wgb is never rewritten.
@@ -1424,15 +1711,32 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
       if (override) {
         const prevEntrypoint = bundle.manifest.entrypoint;
         deepMergeInto(bundle.manifest as unknown as Record<string, unknown>, override);
-        Logger.log(LogCategory.SYSTEM, `WGB: applied manifest override for "${WgbCache.keyForUrl(payload.url)}"`);
+        Logger.log(
+          LogCategory.SYSTEM,
+          `WGB: applied manifest override for "${WgbCache.keyForUrl(payload.url)}"`,
+        );
         // The entrypoint EXE bytes were resolved from the ORIGINAL manifest before the
         // override merged — if the override changed the entrypoint, re-read the new EXE
         // from the archive so the override actually takes effect (else we silently boot
         // the original entrypoint).
         if (bundle.manifest.entrypoint && bundle.manifest.entrypoint !== prevEntrypoint) {
-          bundle.entrypointBytes = await readEntrypointBytes(bundle.archive, bundle.manifest.entrypoint);
-          Logger.log(LogCategory.SYSTEM,
-            `WGB: entrypoint override "${prevEntrypoint}" -> "${bundle.manifest.entrypoint}" (${bundle.entrypointBytes.length} bytes)`);
+          if (bundle.gamebox) {
+            if (
+              bundle.manifest.rom !== 'assets' ||
+              !bundle.manifest.entrypoint.startsWith('assets/') ||
+              !bundle.gamebox.image(bundle.manifest.entrypoint.slice(7))
+            )
+              throw new Error('Prepared entrypoint override is outside the catalog');
+          } else {
+            bundle.entrypointBytes = await readEntrypointBytes(
+              bundle.archive,
+              bundle.manifest.entrypoint,
+            );
+          }
+          Logger.log(
+            LogCategory.SYSTEM,
+            `WGB: entrypoint override "${prevEntrypoint}" -> "${bundle.manifest.entrypoint}"`,
+          );
         }
       }
     }
@@ -1443,128 +1747,220 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // (below) keys by this same gameId.
     const gameId = gameboxGameId;
     if (!gameId) throw new Error('Missing GameBox save identity');
-    Logger.log(LogCategory.SYSTEM, `WGB: gameId="${gameId}" container="${gameIdToContainerDir(gameId)}"`);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `WGB: gameId="${gameId}" container="${gameIdToContainerDir(gameId)}"`,
+    );
     // Host overlay/title: surface the manifest display name as soon as we know it
     // (covers ?game=dev&load=… where the shell would otherwise keep saying "Dev").
     {
-      const title = typeof bundle.manifest.title === "string" ? bundle.manifest.title.trim() : "";
-      const name = typeof bundle.manifest.name === "string" ? bundle.manifest.name.trim() : "";
+      const title = typeof bundle.manifest.title === 'string' ? bundle.manifest.title.trim() : '';
+      const name = typeof bundle.manifest.name === 'string' ? bundle.manifest.name.trim() : '';
       const displayName = title || name;
       if (displayName) {
-        self.postMessage({ type: "bundle_meta", name: displayName, gameId });
+        self.postMessage({ type: 'bundle_meta', name: displayName, gameId });
       }
     }
     await system.fileSystem.initOverlay(gameId);
     await system.fileSystem.ensureOverlayIndex();
     // Install the per-game persist/ephemeral policy (#12): ephemeral writes stay in memory, never OPFS.
-    system.fileSystem.setPathPolicy(new PathPolicy({
+    system.fileSystem.setPathPolicy(
+      new PathPolicy({
         ephemeral: bundle.manifest.emulator?.ephemeral,
         persistOnly: bundle.manifest.emulator?.persistOnly,
         persist: bundle.manifest.emulator?.persist,
-    }));
-    bootMark("overlay-init-done");
+      }),
+    );
+    bootMark('overlay-init-done');
 
-    const romRoot = bundle.manifest.rom ?? "assets";
-    const romIndex = buildRomIndex(bundle.archive, romRoot);
+    const romRoot = bundle.manifest.rom ?? 'assets';
+    // GameBoxCatalog validates and retains its complete file/directory view while
+    // opening the catalog. Reuse that trusted snapshot instead of scanning the
+    // ZIP central directory a second time; raw WGBs retain the legacy path.
+    const romIndex = bundle.gamebox
+      ? bundle.gamebox.buildRomIndex()
+      : buildRomIndex(bundle.archive, romRoot);
     system.fileSystem.mountRom(bundle.archive, romRoot, romIndex);
+    let preparedStatus: Record<string, unknown> | null = null;
+    if (bundle.gamebox) {
+      if (romRoot !== 'assets') throw new Error('Prepared GameBox ROM root cannot be overridden');
+      preparedCatalog = bundle.gamebox;
+      const catalog = bundle.gamebox;
+      system.process.loader.setPreparedSourceResolver(async (path) => {
+        const resolved = system.fileSystem.resolveStoredFile(path);
+        // The writable overlay and Win9x/NT path aliases retain VFS precedence.
+        if (!resolved || resolved.source !== 'rom') return null;
+        return catalog.image(resolved.path);
+      });
+      Logger.log(
+        LogCategory.SYSTEM,
+        `GameBox: prepared catalog ${catalog.bundleHash}, ${catalog.files.size} files`,
+      );
+      const v86 = system.process.v86;
+      preparedStatus = await prepareGameboxRuntime(
+        v86?.cpu ?? v86?.v86?.cpu,
+        bundle.archive,
+        catalog,
+      );
+      Logger.log(LogCategory.SYSTEM, `GameBox: ${JSON.stringify(preparedStatus)}`);
+      self.postMessage({
+        type: 'gamebox_prepared',
+        bundleHash: catalog.bundleHash,
+        files: catalog.files.size,
+        ...preparedStatus,
+      });
+    }
+    self.postMessage({
+      type: 'gamebox_bundle_identity',
+      bundleHash: bundle.gamebox?.bundleHash ?? null,
+      gameContentHash: bundle.gamebox?.gameContentHash ?? (bundle.manifest as any).gameContentHash ?? null,
+      manifest: bundle.manifest,
+      prepared: Boolean(bundle.gamebox),
+      preparedStatus,
+      requestedMemoryBytes:
+        typeof bundle.manifest.emulator?.memory?.ram === 'number'
+          ? bundle.manifest.emulator.memory.ram
+          : null,
+      effectiveMemoryBytes: Number(
+        system.process?.v86?.cpu?.memory_size?.[0] ??
+          system.process?.v86?.v86?.cpu?.memory_size?.[0] ??
+          0,
+      ),
+      effectiveJitConfig: Array.from(
+        { length: 22 },
+        (_, index) =>
+          Number(
+            system.process?.v86?.cpu?.wm?.exports?.get_jit_config?.(index) ??
+              system.process?.v86?.v86?.cpu?.wm?.exports?.get_jit_config?.(index),
+          ),
+      ),
+    });
     // Always set the CD redirect (null clears a prior game's redirect — no cross-game leak).
     const cdPath = bundle.manifest.emulator?.cdPath ?? null;
     system.fileSystem.setCdRedirect(cdPath);
     if (cdPath) Logger.log(LogCategory.SYSTEM, `VFS: CD-ROM drive (D:) redirected to "${cdPath}"`);
-    bootMark("rom-mounted");
+    bootMark('rom-mounted');
 
     // Make the config/text file class sync-readable before the CPU runs: games
     // read these via GetPrivateProfileString / msvcrt fgetc, which can't await a
     // CachedSource fault-in (see VirtualFileSystem.romPinned). E.g. Morrowind
     // aborts with "Font 0 not found in Morrowind.ini" if its INI reads as empty.
     {
-        const configExts = new Set(['ini', 'cfg', 'conf', 'txt', 'cnt', 'inf', 'reg', 'lst']);
-        const configRels: string[] = [];
-        for (const [rel, entry] of romIndex) {
-            if (entry.isDirectory) continue;
-            const ext = rel.split('.').pop()?.toLowerCase() ?? '';
-            if (configExts.has(ext)) configRels.push(rel);
-        }
-        if (configRels.length > 0) {
-            await system.fileSystem.pinRomFiles(configRels, 8);
-        }
+      const configExts = new Set(['ini', 'cfg', 'conf', 'txt', 'cnt', 'inf', 'reg', 'lst']);
+      const configRels: string[] = [];
+      for (const [rel, entry] of romIndex) {
+        if (entry.isDirectory) continue;
+        const ext = rel.split('.').pop()?.toLowerCase() ?? '';
+        if (configExts.has(ext)) configRels.push(rel);
+      }
+      if (configRels.length > 0) {
+        await system.fileSystem.pinRomFiles(configRels, 8);
+      }
     }
 
     // Phase 1: parallel prefetch of DLLs, EXEs, and small files before loadPeData.
     // This converts serial per-DLL range requests into a parallel burst so the CPU
     // isn't stalled waiting for each import DLL to arrive.
     {
-        const criticalExts = new Set(['dll', 'exe', 'drv', 'ocx', 'vxd']);
-        const criticalRels: string[] = [];
-        const seen = new Set<string>();
+      const criticalExts = new Set(['dll', 'exe', 'drv', 'ocx', 'vxd']);
+      const criticalRels: string[] = [];
+      const seen = new Set<string>();
 
-        for (const [rel, entry] of romIndex) {
-            if (entry.isDirectory) continue;
-            const ext = rel.split('.').pop()?.toLowerCase() ?? '';
-            if (criticalExts.has(ext) || entry.uncompressedSize < 256 * 1024) {
-                if (!seen.has(rel)) { seen.add(rel); criticalRels.push(rel); }
-            }
+      for (const [rel, entry] of romIndex) {
+        if (entry.isDirectory) continue;
+        const ext = rel.split('.').pop()?.toLowerCase() ?? '';
+        if (bundle.gamebox && criticalExts.has(ext)) continue;
+        if (criticalExts.has(ext) || entry.uncompressedSize < 256 * 1024) {
+          if (!seen.has(rel)) {
+            seen.add(rel);
+            criticalRels.push(rel);
+          }
         }
+      }
 
-        // Add manifest prefetch hints (simple glob support)
-        if (bundle.manifest.emulator?.prefetch) {
-            for (const pattern of bundle.manifest.emulator.prefetch) {
-                const re = new RegExp(
-                    '^' + pattern.toLowerCase()
-                        .replace(/\./g, '\\.')
-                        .replace(/\*\*/g, '.*')
-                        .replace(/\*/g, '[^/]*') + '$'
-                );
-                for (const rel of romIndex.keys()) {
-                    if (re.test(rel) && !seen.has(rel)) {
-                        seen.add(rel);
-                        criticalRels.push(rel);
-                    }
-                }
+      // Add manifest prefetch hints (simple glob support)
+      if (bundle.manifest.emulator?.prefetch) {
+        for (const pattern of bundle.manifest.emulator.prefetch) {
+          const re = new RegExp(
+            '^' +
+              pattern
+                .toLowerCase()
+                .replace(/\./g, '\\.')
+                .replace(/\*\*/g, '.*')
+                .replace(/\*/g, '[^/]*') +
+              '$',
+          );
+          for (const rel of romIndex.keys()) {
+            if (
+              re.test(rel) &&
+              !seen.has(rel) &&
+              !(bundle.gamebox && criticalExts.has(rel.split('.').pop()?.toLowerCase() ?? ''))
+            ) {
+              seen.add(rel);
+              criticalRels.push(rel);
             }
+          }
         }
+      }
 
-        Logger.log(LogCategory.SYSTEM, `WGB: phase1 prefetch starting — ${criticalRels.length} files`);
-        const t1 = performance.now();
+      // Filesystem priorities only reorder the already-bounded candidate set.
+      // They never widen the phase-1 filters, and are advisory: a malformed
+      // sidecar leaves the archive order and all existing budgets untouched.
+      if (bundle.gamebox) {
+        const ordered = bundle.gamebox.orderPrefetchCandidates(criticalRels);
+        criticalRels.splice(0, criticalRels.length, ...ordered);
+        if (bundle.gamebox.filesystemPrioritySkipped) {
+          Logger.warn(LogCategory.SYSTEM, bundle.gamebox.filesystemPrioritySkipped);
+        }
+      }
 
-        // Report prefetch progress to the host loading UI as a determinate bar.
-        // Throttle by integer percent so we don't spill a postMessage per file.
-        let lastPct = -1;
-        const onPrefetchProgress = (processed: number, total: number) => {
-            if (total === 0) return;
-            const percent = Math.round((processed / total) * 100);
-            if (percent === lastPct) return;
-            lastPct = percent;
-            self.postMessage({
-                type: "loading_progress",
-                phase: "prefetch",
-                percent,
-                label: `${processed} / ${total} files`,
-            });
-        };
+      Logger.log(
+        LogCategory.SYSTEM,
+        `WGB: phase1 prefetch starting — ${criticalRels.length} files`,
+      );
+      const t1 = performance.now();
+
+      // Report prefetch progress to the host loading UI as a determinate bar.
+      // Throttle by integer percent so we don't spill a postMessage per file.
+      let lastPct = -1;
+      const onPrefetchProgress = (processed: number, total: number) => {
+        if (total === 0) return;
+        const percent = Math.round((processed / total) * 100);
+        if (percent === lastPct) return;
+        lastPct = percent;
         self.postMessage({
-            type: "loading_progress",
-            phase: "prefetch",
-            percent: 0,
-            label: `0 / ${criticalRels.length} files`,
+          type: 'loading_progress',
+          phase: 'prefetch',
+          percent,
+          label: `${processed} / ${total} files`,
         });
+      };
+      self.postMessage({
+        type: 'loading_progress',
+        phase: 'prefetch',
+        percent: 0,
+        label: `0 / ${criticalRels.length} files`,
+      });
 
-        // 3-second timeout — don't block startup on slow connections.
-        // In-flight requests continue in the background even after timeout.
-        await Promise.race([
-            system.fileSystem.prefetchRomFiles(criticalRels, 8, onPrefetchProgress),
-            new Promise<void>(r => setTimeout(r, 3000)),
-        ]);
+      // 3-second timeout — don't block startup on slow connections.
+      // In-flight requests continue in the background even after timeout.
+      await Promise.race([
+        system.fileSystem.prefetchRomFiles(criticalRels, 8, onPrefetchProgress),
+        new Promise<void>((r) => setTimeout(r, 3000)),
+      ]);
 
-        Logger.log(LogCategory.SYSTEM, `WGB: phase1 done in ${(performance.now() - t1) | 0}ms`);
+      Logger.log(LogCategory.SYSTEM, `WGB: phase1 done in ${(performance.now() - t1) | 0}ms`);
     }
-    bootMark("prefetch-done");
+    bootMark('prefetch-done');
 
     if (!EmulatorConfig.getInstance().skipVideo) {
-        void videoEngine.ensureLoaded().then(() => {
-            Logger.log(LogCategory.SYSTEM, "[VideoEngine] preloaded at boot");
-        }).catch((e) => {
-            Logger.warn(LogCategory.SYSTEM, `[VideoEngine] boot preload failed: ${e}`);
+      void videoEngine
+        .ensureLoaded()
+        .then(() => {
+          Logger.log(LogCategory.SYSTEM, '[VideoEngine] preloaded at boot');
+        })
+        .catch((e) => {
+          Logger.warn(LogCategory.SYSTEM, `[VideoEngine] boot preload failed: ${e}`);
         });
     }
 
@@ -1574,10 +1970,10 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // Baseline Windows compatibility keys expected by legacy installers/launchers.
     // Keep this before game-specific restore/seed so persisted values can override it.
     system.registry.seed({
-      root: "HKLM",
-      path: "Software\\Microsoft\\DirectX",
+      root: 'HKLM',
+      path: 'Software\\Microsoft\\DirectX',
       values: [
-        { name: "Version", type: "REG_SZ", data: "4.09.00.0904" }, // DirectX 9.0c (advertise the max we implement: ddraw/d3d7/d3d8/d3d9)
+        { name: 'Version', type: 'REG_SZ', data: '4.09.00.0904' }, // DirectX 9.0c (advertise the max we implement: ddraw/d3d7/d3d8/d3d9)
       ],
     });
 
@@ -1588,8 +1984,13 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // the car-select load transition) hang when the key can't even be opened. Seed the keys
     // so RegOpenKeyEx succeeds; queries under PerfStats are synthesized in advapi32
     // (simplified-faithful HLE of the Win9x perf mechanism — generic, not per-game).
-    for (const k of ["PerfStats", "PerfStats\\StartStat", "PerfStats\\StopStat", "PerfStats\\StatData"]) {
-      system.registry.seed({ root: "HKDD", path: k, values: [] });
+    for (const k of [
+      'PerfStats',
+      'PerfStats\\StartStat',
+      'PerfStats\\StopStat',
+      'PerfStats\\StatData',
+    ]) {
+      system.registry.seed({ root: 'HKDD', path: k, values: [] });
     }
 
     // Apply the manifest registry seed (bundle DEFAULTS) BEFORE restoring persisted
@@ -1621,7 +2022,7 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
         const deleted = await system.fileSystem.deleteFile(filePath);
         Logger.log(
           LogCategory.SYSTEM,
-          `deleteOnBoot: "${filePath}" ${deleted ? "deleted" : "not found (OK)"}`
+          `deleteOnBoot: "${filePath}" ${deleted ? 'deleted' : 'not found (OK)'}`,
         );
       }
     }
@@ -1637,7 +2038,8 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     System.getInstance().requestHostResize(width, height);
 
     // Update DDraw context display when module exists (e.g. preloaded)
-    const ddraw = system.process?.getModule("ddraw") as { updateDisplayFromConfig?: () => void } | undefined;
+    const ddraw = system.process?.getModule('ddraw') as
+      { updateDisplayFromConfig?: () => void } | undefined;
     if (ddraw?.updateDisplayFromConfig) {
       ddraw.updateDisplayFromConfig();
     }
@@ -1646,14 +2048,14 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     if (bundle.manifest.emulator?.memory?.ram !== undefined && system.process) {
       Logger.warn(
         LogCategory.SYSTEM,
-        `EmulatorConfig: RAM override specified in manifest (${(bundle.manifest.emulator.memory.ram / 1024 / 1024).toFixed(0)} MB) but v86 is already initialized. RAM can only be set at v86 initialization time.`
+        `EmulatorConfig: RAM override specified in manifest (${(bundle.manifest.emulator.memory.ram / 1024 / 1024).toFixed(0)} MB) but v86 is already initialized. RAM can only be set at v86 initialization time.`,
       );
     }
 
     // Extract executable name and full VFS path from entrypoint
     // e.g., entrypoint="rom/game/REVOLT.EXE", romRoot="rom" -> VFS path="C:\game\REVOLT.EXE"
     const entrypointPath = bundle.manifest.entrypoint;
-    const exeName = entrypointPath.split(/[\\/]/).pop() ?? "app.exe";
+    const exeName = entrypointPath.split(/[\\/]/).pop() ?? 'app.exe';
 
     // Calculate VFS path by stripping romRoot prefix from entrypoint
     const normalizedEntrypoint = entrypointPath.replace(/\//g, '\\');
@@ -1669,17 +2071,25 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
 
     system.executableName = exeName;
     system.executablePath = executablePath;
-    system.executableArgs = bundle.manifest.args ?? "";
-    const lastSlashIdx = executablePath.lastIndexOf("\\");
-    const executableDir = lastSlashIdx > 2 ? executablePath.slice(0, lastSlashIdx + 1) : "C:\\";
+    system.executableArgs = bundle.manifest.args ?? '';
+    const lastSlashIdx = executablePath.lastIndexOf('\\');
+    const executableDir = lastSlashIdx > 2 ? executablePath.slice(0, lastSlashIdx + 1) : 'C:\\';
     system.fileSystem.setCurrentDirectory(executableDir);
-    Logger.log(LogCategory.SYSTEM, `Executable: name="${exeName}", path="${executablePath}", args="${system.executableArgs}"`);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `Executable: name="${exeName}", path="${executablePath}", args="${system.executableArgs}"`,
+    );
 
-    await loadPeData(bundle.entrypointBytes, true);
-    bootMark("pe-loaded");
+    const preparedImage = bundle.gamebox?.image(vfsRelPath) ?? undefined;
+    if (bundle.gamebox && !preparedImage)
+      throw new Error('Prepared entrypoint is missing from the catalog');
+    if (preparedImage?.fallbackReason)
+      Logger.warn(LogCategory.SYSTEM, `GameBox: ${preparedImage.fallbackReason}`);
+    await loadPeData(bundle.entrypointBytes, true, preparedImage);
+    bootMark('pe-loaded');
 
     // Signal host that loading is done and the game is starting
-    self.postMessage({ type: "loading_progress", phase: "done", percent: 100, label: "" });
+    self.postMessage({ type: 'loading_progress', phase: 'done', percent: 100, label: '' });
     // Arm the first-present hook HERE (not at load start): the host has just switched
     // the overlay to "booting", and the guest's first real composite happens strictly
     // after this point. This makes first_present arrive AFTER "done" so the one-shot
@@ -1694,26 +2104,29 @@ const loadBundleImpl = async (payload: { data?: Uint8Array; url?: string; blob?:
     // Phase 2: progressive background prefetch of remaining ROM assets.
     // Yields the event loop between each file so game I/O stays responsive.
     _prefetchController = new AbortController();
-    system.fileSystem.startProgressivePrefetch(_prefetchController.signal);
+    if (!bundle.gamebox) system.fileSystem.startProgressivePrefetch(_prefetchController.signal);
     gameSessionActive = true;
   } catch (err) {
     const error = err as Error;
-    Logger.error(LogCategory.SYSTEM, `Bundle load failed: ${error.message} (${error.name})\n${error.stack}`);
-    self.postMessage({ type: "error", message: "bundle load failed: " + error.message });
+    Logger.error(
+      LogCategory.SYSTEM,
+      `Bundle load failed: ${error.message} (${error.name})\n${error.stack}`,
+    );
+    self.postMessage({ type: 'error', message: 'bundle load failed: ' + error.message });
   }
 };
 
 const loadBundle = (payload: { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] }) => {
   loadBundleChain = loadBundleChain
     .then(() => loadBundleImpl(payload))
-    .catch(err => Logger.error(LogCategory.SYSTEM, `load_bundle failed: ${err}`));
+    .catch((err) => Logger.error(LogCategory.SYSTEM, `load_bundle failed: ${err}`));
   return loadBundleChain;
 };
 
-const initV86 = async (canvas: OffscreenCanvas) => {
+const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
   // Try to apply RAM configuration from pending bundle if available
-  let ramSize = EMU_MEMORY_SIZE;
-  if (pendingBundle) {
+  let ramSize = ramOverride ?? EMU_MEMORY_SIZE;
+  if (ramOverride === undefined && pendingBundle) {
     try {
       let bundle;
       if (pendingBundle.url) {
@@ -1722,8 +2135,13 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         bundle = await WgbLoader.fromBlob(pendingBundle.blob, (done, total) => {
           const doneMb = (done / 1024 / 1024).toFixed(0);
           const totalMb = (total / 1024 / 1024).toFixed(0);
-          const percent = total > 0 ? Math.round(done / total * 100) : 0;
-          self.postMessage({ type: "loading_progress", phase: "caching", percent, label: `${doneMb} / ${totalMb} MB` });
+          const percent = total > 0 ? Math.round((done / total) * 100) : 0;
+          self.postMessage({
+            type: 'loading_progress',
+            phase: 'caching',
+            percent,
+            label: `${doneMb} / ${totalMb} MB`,
+          });
         });
       } else {
         bundle = await WgbLoader.fromBuffer(pendingBundle.data as Uint8Array);
@@ -1734,12 +2152,12 @@ const initV86 = async (canvas: OffscreenCanvas) => {
       emulatorConfig.reset();
       emulatorConfig.applyFromManifest(bundle.manifest);
       {
-        const title = typeof bundle.manifest.title === "string" ? bundle.manifest.title.trim() : "";
-        const name = typeof bundle.manifest.name === "string" ? bundle.manifest.name.trim() : "";
+        const title = typeof bundle.manifest.title === 'string' ? bundle.manifest.title.trim() : '';
+        const name = typeof bundle.manifest.name === 'string' ? bundle.manifest.name.trim() : '';
         const displayName = title || name;
         if (displayName) {
           self.postMessage({
-            type: "bundle_meta",
+            type: 'bundle_meta',
             name: displayName,
             gameId: resolveGameId(bundle.manifest),
           });
@@ -1749,12 +2167,15 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         ramSize = emulatorConfig.memory.ram;
         Logger.log(
           LogCategory.SYSTEM,
-          `EmulatorConfig: RAM from manifest applied at v86 initialization: ${(ramSize / 1024 / 1024).toFixed(0)} MB`
+          `EmulatorConfig: RAM from manifest applied at v86 initialization: ${(ramSize / 1024 / 1024).toFixed(0)} MB`,
         );
       }
     } catch (err) {
       // If manifest parsing fails, use default RAM
-      Logger.warn(LogCategory.SYSTEM, `EmulatorConfig: Failed to parse manifest for RAM config, using default`);
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `EmulatorConfig: Failed to parse manifest for RAM config, using default`,
+      );
     }
   }
 
@@ -1764,11 +2185,13 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     // DEV cache-bust: the worker's wasm fetch is NOT covered by a hard-reload's cache bypass,
     // so a rebuilt /v86.wasm would otherwise keep loading from the browser cache. Unique URL per
     // worker load forces a fresh fetch in dev. (Prod keeps the stable URL for HTTP caching.)
-    wasm_path: import.meta.env?.DEV ? `${import.meta.env.BASE_URL}v86.wasm?t=${Date.now()}` : (import.meta.env.BASE_URL + "v86.wasm"),
+    wasm_path: import.meta.env?.DEV
+      ? `${import.meta.env.BASE_URL}v86.wasm?t=${Date.now()}`
+      : import.meta.env.BASE_URL + 'v86.wasm',
     memory_size: ramSize,
     vga_memory_size: EMU_VGA_MEMORY_SIZE,
-    bios: { url: (import.meta.env.BASE_URL + "bios/seabios.bin") },
-    vga_bios: { url: (import.meta.env.BASE_URL + "bios/vgabios.bin") },
+    bios: { url: import.meta.env.BASE_URL + 'bios/seabios.bin' },
+    vga_bios: { url: import.meta.env.BASE_URL + 'bios/vgabios.bin' },
     autostart: false,
     log_level: 0, // Disable v86 debug logging for performance
   };
@@ -1777,8 +2200,8 @@ const initV86 = async (canvas: OffscreenCanvas) => {
     const v86 = new V86(settings);
     const thunkGenerator = new ThunkGenerator();
 
-    v86.add_listener("emulator-ready", async () => {
-      bootMark("v86-emulator-ready");
+    v86.add_listener('emulator-ready', async () => {
+      bootMark('v86-emulator-ready');
       const apiRegistry = APIRegistry.getInstance();
 
       // Create the Process environment
@@ -1786,13 +2209,14 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         () => v86.mem8 || (v86.v86 && v86.v86.cpu.mem8),
         v86,
         thunkGenerator,
-        apiRegistry
+        apiRegistry,
       );
       process.canvas = canvas;
 
       // Initialize System singleton
       const system = System.getInstance();
       system.initialize(process);
+      self.postMessage({ type: 'gamebox_milestone', milestone: 'process_created' });
 
       // Static Library HLE manager — wire before PE load so on-load hooks work.
       libHleManager.initialize({
@@ -1838,29 +2262,32 @@ const initV86 = async (canvas: OffscreenCanvas) => {
           state.canvas.height = height;
           // Reconfigure WebGPU context — canvas resize unconfigures it
           const backend = system.services.render.getBackend();
-          if (backend?.kind === "webgpu") {
+          if (backend?.kind === 'webgpu') {
             (backend as WebGPUBackend).reconfigure();
           }
         }
         state.width = width;
         state.height = height;
         system.gdiContext.resizeOverlay(width, height);
-        Logger.log(LogCategory.SYSTEM, `hostResize: ${prevW}x${prevH} -> ${width}x${height} (canvas=${!!state.canvas})`);
+        Logger.log(
+          LogCategory.SYSTEM,
+          `hostResize: ${prevW}x${prevH} -> ${width}x${height} (canvas=${!!state.canvas})`,
+        );
         // Notify host to resize CSS element
-        self.postMessage({ type: "app_resize", width, height });
+        self.postMessage({ type: 'app_resize', width, height });
       });
       system.setHostCursorVisibilityCallback((visible) => {
-        self.postMessage({ type: "cursor_visibility", visible });
+        self.postMessage({ type: 'cursor_visibility', visible });
       });
       system.setHostMouseCaptureCallback((capture) => {
-        self.postMessage({ type: "mouse_capture", capture });
+        self.postMessage({ type: 'mouse_capture', capture });
       });
       system.setHostWindowTitleCallback((title) => {
-        self.postMessage({ type: "window_title", title });
+        self.postMessage({ type: 'window_title', title });
       });
 
       // Initialize WebGPU backend immediately if possible
-      const canWebGpu = typeof navigator !== "undefined" && "gpu" in navigator;
+      const canWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
       if (canWebGpu) {
         try {
           const backend = new WebGPUBackend();
@@ -1870,15 +2297,18 @@ const initV86 = async (canvas: OffscreenCanvas) => {
           // tear down the loading screen exactly at the first flip (not at PE-load, which
           // left a black canvas during CRT/DirectX/asset init). One-shot per game load.
           system.services.render.onFirstPresent(() => {
-            bootMark("first-present");
+            bootMark('first-present');
             setBootOverlayActive(false);
-            self.postMessage({ type: "first_present" });
+            self.postMessage({ type: 'first_present' });
           });
           // Start GDI presentation loop
           requestAnimationFrame(gdiPresentLoop);
-          Logger.log(LogCategory.SYSTEM, "WebGPU backend initialized for compositing");
+          Logger.log(LogCategory.SYSTEM, 'WebGPU backend initialized for compositing');
         } catch (e) {
-          Logger.warn(LogCategory.SYSTEM, `Failed to initialize WebGPU backend, falling back to 2D: ${e}`);
+          Logger.warn(
+            LogCategory.SYSTEM,
+            `Failed to initialize WebGPU backend, falling back to 2D: ${e}`,
+          );
         }
       }
 
@@ -1953,30 +2383,48 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         if (!tg?.generateStubDll || !mem || !memBytes) return;
 
         // Modules that already have JS implementations (registered below) should NOT be stubbed here
-        const implemented = new Set([
-          kernel32.name, ntdll.name, user32.name, gdi32.name, d3d9.name, d3dx9.name, advapi32.name,
-          dsound.name, winmm.name, ole32.name, ddraw.name, dinput.name,
-          dplayx.name, mss32.name, wsock32.name, shell32.name, shlwapi.name, comdlg32.name, comctl32.name,
-          dwmapi.name,
-          riched32.name,
-          wtsapi32.name,
-          imm32.name,
-          msimg32.name,
-          uxtheme.name,
-          wintrust.name,
-          crypt32.name,
-          ws2_32.name,
-          psapi.name,
-          imagehlp.name,
-          iphlpapi.name,
-          tapi32.name,
-          setupapi.name,
-          netapi32.name,
-          glu32.name,
-          "gdiplus",
-          "bass",
-          "galaxy",
-        ].map(n => n.toLowerCase()));
+        const implemented = new Set(
+          [
+            kernel32.name,
+            ntdll.name,
+            user32.name,
+            gdi32.name,
+            d3d9.name,
+            d3dx9.name,
+            advapi32.name,
+            dsound.name,
+            winmm.name,
+            ole32.name,
+            ddraw.name,
+            dinput.name,
+            dplayx.name,
+            mss32.name,
+            wsock32.name,
+            shell32.name,
+            shlwapi.name,
+            comdlg32.name,
+            comctl32.name,
+            dwmapi.name,
+            riched32.name,
+            wtsapi32.name,
+            imm32.name,
+            msimg32.name,
+            uxtheme.name,
+            wintrust.name,
+            crypt32.name,
+            ws2_32.name,
+            psapi.name,
+            imagehlp.name,
+            iphlpapi.name,
+            tapi32.name,
+            setupapi.name,
+            netapi32.name,
+            glu32.name,
+            'gdiplus',
+            'bass',
+            'galaxy',
+          ].map((n) => n.toLowerCase()),
+        );
 
         // TODO: Re-enable stub DLL prewarming when moduleRegistry is restored
         // for (const mod of api.getModules()) {
@@ -2180,7 +2628,7 @@ const initV86 = async (canvas: OffscreenCanvas) => {
       process.dispatcher.registerModule(alut.name, alut.exports);
       process.dispatcher.registerModule(wininet.name, wininet.exports);
 
-      bootMark("modules-registered");
+      bootMark('modules-registered');
 
       // Initialize WASM hypercall infrastructure (page + managers).
       // NOTE: dispatch is NOT enabled yet (hc_enabled=0) — all thunks still go through JS.
@@ -2188,12 +2636,20 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         const cpu = v86?.cpu || v86?.v86?.cpu;
         if (cpu?.wm?.exports?.get_hypercall_page_ptr) {
           preemptionManager.initialize(cpu);
+          if (gameboxJitConfigOverrides.length) {
+            const setJitConfig = cpu.wm.exports.set_jit_config;
+            if (typeof setJitConfig !== 'function')
+              throw new Error('GameBox JIT configuration overrides are unsupported by this runtime');
+            for (const [index, value] of gameboxJitConfigOverrides) setJitConfig(index, value);
+          }
           hypercallDataManager.initialize(cpu, preemptionManager.getHypercallPageBase());
           // Report the effective FPU mode this bundle booted with (manifest fpuStrict OR a
           // persisted dbg.relaxedFpu(false)) so the dev toolbar "FPU: Strict/Relaxed" button
           // reflects reality instead of its default. Mirrors initialize()'s relaxedEffective.
-          const fpuStrictNow = EmulatorConfig.getInstance().fpuStrict === true || !preemptionManager.isRelaxedFpuEnabled();
-          self.postMessage({ type: "fpu_strict_state", strict: fpuStrictNow });
+          const fpuStrictNow =
+            EmulatorConfig.getInstance().fpuStrict === true ||
+            !preemptionManager.isRelaxedFpuEnabled();
+          self.postMessage({ type: 'fpu_strict_state', strict: fpuStrictNow });
         }
         // WASM-resident D3D9 state-mirror + command arena.
         // Dual-run/shadow only by default (see d3d9-wasm-arena.ts's kill switch) — never affects
@@ -2202,19 +2658,19 @@ const initV86 = async (canvas: OffscreenCanvas) => {
           d3d9WasmArena.initialize(cpu);
         }
       }
-      bootMark("hypercall-init-done");
+      bootMark('hypercall-init-done');
 
       // Apply pending registrations after modules are registered (JS impls) and stubs for external DLLs exist
       // (this also registers matching functions with hypercallDataManager)
       process.dispatcher.applyPendingRegistrations();
       prePopulateGetProcAddressCache(process.dispatcher);
       ensureGetProcAddressDynamicExports(process.dispatcher, [
-        { dll: "d3d9", name: "Direct3DShaderValidatorCreate9" },
-      { dll: "d3d9", name: "DebugSetMute" },
-        { dll: "w32skrnl", name: "_ImteFromHModule@4" },
-        { dll: "w32skrnl", name: "_BaseAddrFromImte@4" },
-        { dll: "kernel32", name: "GetDiskFreeSpaceExA" },
-        { dll: "kernel32", name: "GetDiskFreeSpaceExW" },
+        { dll: 'd3d9', name: 'Direct3DShaderValidatorCreate9' },
+        { dll: 'd3d9', name: 'DebugSetMute' },
+        { dll: 'w32skrnl', name: '_ImteFromHModule@4' },
+        { dll: 'w32skrnl', name: '_BaseAddrFromImte@4' },
+        { dll: 'kernel32', name: 'GetDiskFreeSpaceExA' },
+        { dll: 'kernel32', name: 'GetDiskFreeSpaceExW' },
         ...KERNEL32_VISTA_WARMUP_EXPORTS,
       ]);
 
@@ -2279,8 +2735,8 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         // visible, not an invisible freeze.
         const tickHookFailStreak: { before: number; after: number } = { before: 0, after: 0 };
         const TICK_HOOK_FAIL_LIMIT = 240; // ~>1 s of solid per-tick failures before declaring it fatal
-        const guardTickHook = (label: "before" | "after", body: () => void): void => {
-          if (label === "before") tickBeforeCount = (tickBeforeCount + 1) >>> 0; // do_tick liveness
+        const guardTickHook = (label: 'before' | 'after', body: () => void): void => {
+          if (label === 'before') tickBeforeCount = (tickBeforeCount + 1) >>> 0; // do_tick liveness
           try {
             body();
             tickHookFailStreak[label] = 0;
@@ -2288,9 +2744,11 @@ const initV86 = async (canvas: OffscreenCanvas) => {
             const n = ++tickHookFailStreak[label];
             const eip = (cpu.instruction_pointer?.[0] ?? 0) >>> 0;
             if (n <= 3 || n % 60 === 0) {
-              Logger.error(LogCategory.SYSTEM,
+              Logger.error(
+                LogCategory.SYSTEM,
                 `[TICK-HOOK] '${label}' threw (streak=${n}) at eip=0x${eip.toString(16)}: ` +
-                `${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+                  `${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+              );
             }
             if (n >= TICK_HOOK_FAIL_LIMIT) {
               tickHookFailStreak[label] = 0;
@@ -2300,118 +2758,130 @@ const initV86 = async (canvas: OffscreenCanvas) => {
                   eip,
                   threadId: system.scheduler?.getCurrentThreadId?.() ?? null,
                 });
-              } catch { /* reportGuestCrash also stops v86 */ }
+              } catch {
+                /* reportGuestCrash also stops v86 */
+              }
             }
           }
         };
 
-        v86Inner["tick_hooks_before"] = () => guardTickHook("before", () => {
-          // If the current guest thread is WAITING (async thunk parked at
-          // spinLoopAddress), don't grant a full quantum — v86 would honestly
-          // JIT-execute JMP $ for ~5 ms before tick_hooks_after can yield.
-          const curThread = system.scheduler.getCurrentThread();
-          const urgentExit = !!curThread && curThread.state === ThreadState.WAITING;
-          system.scheduler.noteRoundTripTick(urgentExit);
-          preemptionManager.prepareForExecution(cpu, urgentExit);
-          hypercallDataManager.updateTimeData();
-          // Robust unified-clock activation. The one-shot enable() gates in loadPeData
-          // (~651) and the v86-init block (~1389) race with stub registration and v86
-          // restarts (reset_cpu re-zeroes HYPERCALL_PAGE → hc_enabled=0), so enable() was
-          // observed to never fire on some titles (hc_enabled=0, vtActive=false).
-          // Re-assert every tick until it sticks — this MUST be active before the guest's
-          // one-time RDTSC↔QPC calibration (UE1 Core.dll GSecondsPerCycle), otherwise QPC
-          // falls through to the JS wall-clock thunk while RDTSC reads the instruction-
-          // interpolated page base; the two diverge within a single calibration batch
-          // (ratio ≫ 1) → GSecondsPerCycle tiny → per-frame DeltaTime ≈ 0 → intro
-          // splash countdown timers never decrement. enable() short-circuits
-          // once isEnabled() is true, so this is cheap.
-          if (!hypercallDataManager.isEnabled() &&
+        v86Inner['tick_hooks_before'] = () =>
+          guardTickHook('before', () => {
+            // If the current guest thread is WAITING (async thunk parked at
+            // spinLoopAddress), don't grant a full quantum — v86 would honestly
+            // JIT-execute JMP $ for ~5 ms before tick_hooks_after can yield.
+            const curThread = system.scheduler.getCurrentThread();
+            const urgentExit = !!curThread && curThread.state === ThreadState.WAITING;
+            system.scheduler.noteRoundTripTick(urgentExit);
+            preemptionManager.prepareForExecution(cpu, urgentExit);
+            hypercallDataManager.updateTimeData();
+            // Robust unified-clock activation. The one-shot enable() gates in loadPeData
+            // (~651) and the v86-init block (~1389) race with stub registration and v86
+            // restarts (reset_cpu re-zeroes HYPERCALL_PAGE → hc_enabled=0), so enable() was
+            // observed to never fire on some titles (hc_enabled=0, vtActive=false).
+            // Re-assert every tick until it sticks — this MUST be active before the guest's
+            // one-time RDTSC↔QPC calibration (UE1 Core.dll GSecondsPerCycle), otherwise QPC
+            // falls through to the JS wall-clock thunk while RDTSC reads the instruction-
+            // interpolated page base; the two diverge within a single calibration batch
+            // (ratio ≫ 1) → GSecondsPerCycle tiny → per-frame DeltaTime ≈ 0 → intro
+            // splash countdown timers never decrement. enable() short-circuits
+            // once isEnabled() is true, so this is cheap.
+            if (
+              !hypercallDataManager.isEnabled() &&
               hypercallDataManager.isInitialized() &&
-              hypercallDataManager.getRegisteredCount() > 0) {
-            hypercallDataManager.enable();
-          }
-          // Poll input directly from SAB — setInterval(poll, 16) macrotasks can be
-          // starved by v86's microtask-chained main loop, causing stale mouse data
-          // and missed clicks. Calling poll() here on every tick (~200/sec) ensures
-          // mouse position and button state are always fresh.
-          system.inputManager.poll();
-          const mouseState = system.inputManager.getMouseState();
-          hypercallDataManager.updateCursorData(mouseState.x, mouseState.y);
-          // Sync message queue flag for WASM PeekMessage fast path
-          hypercallDataManager.updateMessageQueueFlag(system.windowManager.hasMessages());
-        });
+              hypercallDataManager.getRegisteredCount() > 0
+            ) {
+              hypercallDataManager.enable();
+            }
+            // Poll input directly from SAB — setInterval(poll, 16) macrotasks can be
+            // starved by v86's microtask-chained main loop, causing stale mouse data
+            // and missed clicks. Calling poll() here on every tick (~200/sec) ensures
+            // mouse position and button state are always fresh.
+            system.inputManager.poll();
+            const mouseState = system.inputManager.getMouseState();
+            hypercallDataManager.updateCursorData(mouseState.x, mouseState.y);
+            // Sync message queue flag for WASM PeekMessage fast path
+            hypercallDataManager.updateMessageQueueFlag(system.windowManager.hasMessages());
+          });
         let heapSlabAllocated = false;
         let ticksSinceStart = 0;
-        v86Inner["tick_hooks_after"] = () => guardTickHook("after", () => {
-          // JIT-on guest-EIP sampler (opt-in via __eipSamp). Runs between v86 JIT
-          // batches (~1ms) so it observes real full-speed behavior with no starvation;
-          // streams the cumulative 4KB-page histogram to the main thread (the reliable
-          // channel) so a busy/exited worker never blocks readout.
-          if ((globalThis as any).__eipSampOn) {
-            const s: any = ((globalThis as any).__eipSamp ??= { hist: {}, n: 0 });
-            const eip = (cpu.instruction_pointer?.[0] ?? 0) >>> 0;
-            const page = eip & ~0xfff;
-            const tid = (system.scheduler as any).currentThreadId ?? -1;
-            const key = `t${tid}@${(page >>> 0).toString(16)}`;
-            s.hist[key] = (s.hist[key] ?? 0) + 1;
-            s.n++;
-            // postMessage every tick (run is short / few ticks); hist is small.
-            try { (self as any).postMessage({ type: "__eipHist", n: s.n, hist: s.hist }); } catch { /* */ }
-          }
-          // Tick-boundary preemptive scheduling: between ticks, CPU is at a clean
-          // instruction boundary — no JIT block mid-execution. Direct register writes
-          // work reliably without is_jumping. Handles: drain wakes, poll timeouts,
-          // process callbacks, and quantum-based thread preemption.
-          system.scheduler.preemptAtTickBoundary(cpu);
-
-          // Lazy heap slab allocation: wait until loading pressure subsides (~500 ticks ≈ 2.5s)
-          // to avoid stealing memory from MapViewOfFile during game init.
-          if (!heapSlabAllocated && ++ticksSinceStart > 500) {
-            heapSlabAllocated = true;
-            // Slab is DEFAULT-ON (D2 corruption root-caused + fixed; see pe-loader / slab-d2-handoff).
-            // __noHeapSlab forces it off (falls back to the JS process.memory + lookaside path).
-            if (!(globalThis as any).__noHeapSlab) {
-              allocateHeapSlab();
+        v86Inner['tick_hooks_after'] = () =>
+          guardTickHook('after', () => {
+            // JIT-on guest-EIP sampler (opt-in via __eipSamp). Runs between v86 JIT
+            // batches (~1ms) so it observes real full-speed behavior with no starvation;
+            // streams the cumulative 4KB-page histogram to the main thread (the reliable
+            // channel) so a busy/exited worker never blocks readout.
+            if ((globalThis as any).__eipSampOn) {
+              const s: any = ((globalThis as any).__eipSamp ??= { hist: {}, n: 0 });
+              const eip = (cpu.instruction_pointer?.[0] ?? 0) >>> 0;
+              const page = eip & ~0xfff;
+              const tid = (system.scheduler as any).currentThreadId ?? -1;
+              const key = `t${tid}@${(page >>> 0).toString(16)}`;
+              s.hist[key] = (s.hist[key] ?? 0) + 1;
+              s.n++;
+              // postMessage every tick (run is short / few ticks); hist is small.
+              try {
+                (self as any).postMessage({ type: '__eipHist', n: s.n, hist: s.hist });
+              } catch {
+                /* */
+              }
             }
-          }
-        });
+            // Tick-boundary preemptive scheduling: between ticks, CPU is at a clean
+            // instruction boundary — no JIT block mid-execution. Direct register writes
+            // work reliably without is_jumping. Handles: drain wakes, poll timeouts,
+            // process callbacks, and quantum-based thread preemption.
+            system.scheduler.preemptAtTickBoundary(cpu);
+
+            // Lazy heap slab allocation: wait until loading pressure subsides (~500 ticks ≈ 2.5s)
+            // to avoid stealing memory from MapViewOfFile during game init.
+            if (!heapSlabAllocated && ++ticksSinceStart > 500) {
+              heapSlabAllocated = true;
+              // Slab is DEFAULT-ON (D2 corruption root-caused + fixed; see pe-loader / slab-d2-handoff).
+              // __noHeapSlab forces it off (falls back to the JS process.memory + lookaside path).
+              if (!(globalThis as any).__noHeapSlab) {
+                allocateHeapSlab();
+              }
+            }
+          });
 
         // Replace yield-Worker with same-thread MessageChannel to eliminate cross-Worker
         // postMessage overhead (~14% CPU for Re-Volt at 1000 ticks/sec).
         // MessageChannel creates macrotasks (not microtasks) — rAF/setInterval work correctly.
-        if (typeof v86Inner["register_yield_direct"] === "function") {
-          v86Inner["register_yield_direct"]();
-          Logger.log(LogCategory.SYSTEM, "[HYPERCALL] yield-Worker replaced with MessageChannel");
+        if (typeof v86Inner['register_yield_direct'] === 'function') {
+          v86Inner['register_yield_direct']();
+          Logger.log(LogCategory.SYSTEM, '[HYPERCALL] yield-Worker replaced with MessageChannel');
         }
 
-        Logger.log(LogCategory.SYSTEM,
+        Logger.log(
+          LogCategory.SYSTEM,
           `[HYPERCALL] Infrastructure initialized. ` +
-          `hpBase=0x${preemptionManager.getHypercallPageBase().toString(16)}`);
+            `hpBase=0x${preemptionManager.getHypercallPageBase().toString(16)}`,
+        );
       }
 
       // Pass backend to DDraw module if it exists
-      if (canWebGpu && (system.services.render.getBackend()?.kind === "webgpu")) {
+      if (canWebGpu && system.services.render.getBackend()?.kind === 'webgpu') {
         const backend = system.services.render.getBackend() as WebGPUBackend;
-        const ddraw = process.getModule("ddraw") as DDraw | undefined;
-        if (ddraw && typeof ddraw.setBackend === "function") {
+        const ddraw = process.getModule('ddraw') as DDraw | undefined;
+        if (ddraw && typeof ddraw.setBackend === 'function') {
           ddraw.setBackend(backend);
         }
-        const glide2x = process.getModule("glide2x") as Glide2x | undefined;
-        if (glide2x && typeof glide2x.setBackend === "function") {
+        const glide2x = process.getModule('glide2x') as Glide2x | undefined;
+        if (glide2x && typeof glide2x.setBackend === 'function') {
           glide2x.setBackend(backend);
         }
-        const opengl32 = process.getModule("opengl32") as OpenGL32 | undefined;
-        if (opengl32 && typeof opengl32.setBackend === "function") {
+        const opengl32 = process.getModule('opengl32') as OpenGL32 | undefined;
+        if (opengl32 && typeof opengl32.setBackend === 'function') {
           opengl32.setBackend(backend);
         }
       }
 
       // Connect input if buffer is available
       if (state.inputBuffer) {
-        Logger.log(LogCategory.SYSTEM, "Connecting input buffer");
+        Logger.log(LogCategory.SYSTEM, 'Connecting input buffer');
         system.connectInput(state.inputBuffer);
       } else {
-        Logger.warn(LogCategory.SYSTEM, "No input buffer available!");
+        Logger.warn(LogCategory.SYSTEM, 'No input buffer available!');
       }
 
       // Clear verbose logs from IndexedDB on startup
@@ -2419,24 +2889,27 @@ const initV86 = async (canvas: OffscreenCanvas) => {
         Logger.warn(LogCategory.SYSTEM, `Failed to clear verbose logs on startup: ${err}`);
       });
 
-      bootMark("emulator-ready-sent");
-      self.postMessage({ type: "ready" });
+      bootMark('emulator-ready-sent');
+      self.postMessage({ type: 'ready' });
 
       // Dev-mode only: load debug-config.json if present and enabled
       if (import.meta.env.DEV) {
         fetch('/debug-config.json')
-          .then(r => r.ok ? r.json() : null)
+          .then((r) => (r.ok ? r.json() : null))
           .catch(() => null)
           .then((cfg) => {
             if (cfg?.enabled) {
               const mem8 = v86.mem8 || (v86.v86 && v86.v86.cpu.mem8);
               if (mem8) {
-                debugSession.setMemoryGetter(() =>
-                  v86.mem8 || (v86.v86 && v86.v86.cpu.mem8) || null
+                debugSession.setMemoryGetter(
+                  () => v86.mem8 || (v86.v86 && v86.v86.cpu.mem8) || null,
                 );
               }
               debugSession.start(cfg);
-              Logger.log(LogCategory.SYSTEM, `[DebugSession] Auto-started from debug-config.json (preset=${cfg.preset ?? "custom"})`);
+              Logger.log(
+                LogCategory.SYSTEM,
+                `[DebugSession] Auto-started from debug-config.json (preset=${cfg.preset ?? 'custom'})`,
+              );
             }
           });
       }
@@ -2453,20 +2926,61 @@ const initV86 = async (canvas: OffscreenCanvas) => {
       if (pendingPeData) {
         const buffered = pendingPeData;
         pendingPeData = null;
-        loadPeData(buffered);
+        loadPeData(buffered).catch((err) =>
+          Logger.error(LogCategory.SYSTEM, `Queued PE load failed: ${err}`),
+        );
       }
       if (pendingBundle) {
         const buffered = pendingBundle;
         pendingBundle = null;
+        for (const request of pendingGameboxAot.splice(0)) {
+          try {
+            const result = await gameboxAot(request as any);
+            self.postMessage({ type: 'gamebox_aot_result', id: request.id, result });
+          } catch (error) {
+            self.postMessage({ type: 'gamebox_aot_result', id: request.id, error: String(error) });
+          }
+        }
         loadBundle(buffered);
       }
     });
-
   } catch (err) {
     Logger.error(LogCategory.SYSTEM, `Failed to init v86: ${err}`);
-    self.postMessage({ type: "error", message: "v86 init failed: " + (err as Error).message });
+    self.postMessage({ type: 'error', message: 'v86 init failed: ' + (err as Error).message });
   }
 };
+
+/**
+ * Embedded GameBox startup path: inspect only manifest.json first, then create
+ * v86 with the manifest's validated RAM size. The pending bundle remains a
+ * range/disk-backed payload and is drained by initV86 after the process is
+ * ready; no archive bytes are buffered for this preflight.
+ */
+async function initDeferredV86(): Promise<void> {
+  if (deferredV86InitPromise || System.getInstance().process || !state.canvas || !pendingBundle) return;
+  const payload = pendingBundle;
+  deferredV86InitPromise = (async () => {
+    let manifest: WgbManifest;
+    if (payload.url) manifest = await WgbLoader.readManifestFromUrl(payload.url);
+    else if (payload.blob) manifest = await WgbLoader.readManifestFromBlob(payload.blob);
+    else if (payload.data) manifest = await WgbLoader.readManifestFromBuffer(payload.data);
+    else throw new Error('Deferred GameBox load has no bundle source');
+
+    const emulatorConfig = EmulatorConfig.getInstance();
+    emulatorConfig.reset();
+    emulatorConfig.applyFromManifest(manifest);
+    const ramSize = emulatorConfig.memory.ram;
+    Logger.log(
+      LogCategory.SYSTEM,
+      `EmulatorConfig: RAM from deferred GameBox manifest applied before v86 initialization: ${(ramSize / 1024 / 1024).toFixed(0)} MB`,
+    );
+    await initV86(state.canvas!, ramSize);
+  })().catch((error) => {
+    deferredV86InitPromise = null;
+    self.postMessage({ type: 'error', message: `GameBox preflight failed: ${String(error)}` });
+  });
+  await deferredV86InitPromise;
+}
 
 /**
  * Canonical pause/resume — the ONLY correct way to stop/start the guest loop.
@@ -2476,16 +2990,31 @@ const initV86 = async (canvas: OffscreenCanvas) => {
  * breakpoint hits) routes through these via globalThis so a park/break actually holds.
  */
 function pauseEmulator(): void {
+  // Keep the legacy fire-and-forget harness/message API, while making sure a
+  // rejected native stop cannot become an unhandled worker rejection.
+  void pauseEmulatorAndWait().catch(() => {});
+}
+
+/** Pause the native loop and resolve only after v86 has acknowledged the stop. */
+async function pauseEmulatorAndWait(): Promise<void> {
   const system = System.getInstance();
   if (!system.process?.v86) return;
   isPaused = true;
   system.isPaused = true;
-  if (gdiPresentRafId !== null) { cancelAnimationFrame(gdiPresentRafId); gdiPresentRafId = null; }
+  if (gdiPresentRafId !== null) {
+    cancelAnimationFrame(gdiPresentRafId);
+    gdiPresentRafId = null;
+  }
   system.windowManager.wakeWaiters();
   const v86 = system.process.v86;
   if (v86.is_running?.() ?? false) {
-    v86.stop().then(() => Logger.log(LogCategory.SYSTEM, "[PAUSE] Emulator paused"))
-      .catch((err: unknown) => Logger.error(LogCategory.SYSTEM, `[PAUSE] Error pausing emulator: ${err}`));
+    try {
+      await v86.stop();
+      Logger.log(LogCategory.SYSTEM, '[PAUSE] Emulator paused');
+    } catch (err) {
+      Logger.error(LogCategory.SYSTEM, `[PAUSE] Error pausing emulator: ${err}`);
+      throw err;
+    }
   }
 }
 function resumeEmulator(): void {
@@ -2497,20 +3026,29 @@ function resumeEmulator(): void {
   TimeService.getInstance().notifyPauseResume();
   hypercallDataManager.resetInsnBaseline();
   const v86 = system.process.v86;
-  if (!(v86.is_running?.() ?? false)) { v86.run(); Logger.log(LogCategory.SYSTEM, "[RESUME] Emulator resumed"); }
+  if (!(v86.is_running?.() ?? false)) {
+    v86.run();
+    Logger.log(LogCategory.SYSTEM, '[RESUME] Emulator resumed');
+  }
 }
 // Harness hooks (cmds/time.ts park, cmds/breakpoints.ts pause/resume, eip-breaks).
 (globalThis as any).__harnessPause = pauseEmulator;
+(globalThis as any).__harnessPauseAndWait = pauseEmulatorAndWait;
 (globalThis as any).__harnessResume = resumeEmulator;
 
 // GameBox lifecycle: pause the CPU before committing its writable filesystem and registry.
 let gameboxGameId = '';
 let gameboxStorageError = '';
+let gameboxJitConfigOverrides: Array<[number, number]> = [];
 Logger.addLogTap((entry) => {
   // Upstream reports some disk-write failures through logging instead of rejection.
   // Remember these failures: never acknowledge a save whose buffered data may be lost.
-  if (entry.level <= LogLevel.WARN && /OPFS|registry|overlay/i.test(entry.message) &&
-      /fail|error|quota/i.test(entry.message)) gameboxStorageError = entry.message;
+  if (
+    entry.level <= LogLevel.WARN &&
+    /OPFS|registry|overlay/i.test(entry.message) &&
+    /fail|error|quota/i.test(entry.message)
+  )
+    gameboxStorageError = entry.message;
 });
 async function gameboxStop(id: string) {
   try {
@@ -2521,12 +3059,28 @@ async function gameboxStop(id: string) {
     system.isPaused = true;
     // Pending scheduler yields must not restart the CPU while saves are committing.
     system.isExiting = true;
-    if (gdiPresentRafId !== null) { cancelAnimationFrame(gdiPresentRafId); gdiPresentRafId = null; }
+    if (gdiPresentRafId !== null) {
+      cancelAnimationFrame(gdiPresentRafId);
+      gdiPresentRafId = null;
+    }
     framePacer.stop();
     system.windowManager.wakeWaiters();
+    cancelGameBoxProfile();
+    graphicsProfile.cancel();
+    delete (globalThis as any).__gameboxCpuProfile;
+    delete (globalThis as any).__gameboxContentHash;
+    delete (globalThis as any).__gameboxGraphicsRuntime;
+    delete (globalThis as any).__gameboxGraphicsScenario;
+    delete (globalThis as any).__gameboxGraphicsGpu;
+    delete (globalThis as any).__gameboxGraphicsProfile;
+    delete (globalThis as any).__gameboxGraphicsPreparedStats;
+    delete (globalThis as any).__GAMEBOX_TRUST_STORE;
     await system.process?.v86?.stop();
-    await finishPersistentTranslationCache().catch(error => {
-      Logger.warn(LogCategory.SYSTEM, `Persistent translation cache flush failed: ${String(error)}`);
+    await finishPersistentTranslationCache().catch((error) => {
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `Persistent translation cache flush failed: ${String(error)}`,
+      );
     });
     cancelRegistryAutosave();
     await system.fileSystem.flushAll();
@@ -2535,51 +3089,182 @@ async function gameboxStop(id: string) {
       const root = await navigator.storage.getDirectory();
       const bs = await root.getDirectoryHandle('bottleship', { create: true });
       const games = await bs.getDirectoryHandle('games', { create: true });
-      const dir = await games.getDirectoryHandle(gameIdToContainerDir(state.gameId), { create: true });
+      const dir = await games.getDirectoryHandle(gameIdToContainerDir(state.gameId), {
+        create: true,
+      });
       const file = await dir.getFileHandle('registry.json', { create: true });
       const writer = await file.createWritable();
-      try { await writer.write(JSON.stringify(state)); await writer.close(); }
-      catch (error) { await writer.abort().catch(() => {}); throw error; }
+      try {
+        await writer.write(JSON.stringify(state));
+        await writer.close();
+      } catch (error) {
+        await writer.abort().catch(() => {});
+        throw error;
+      }
     }
     if (gameboxStorageError) throw new Error(gameboxStorageError);
     system.fileSystem.reset();
+    preparedCatalog?.dispose();
+    preparedCatalog = null;
+    system.process?.loader.setPreparedSourceResolver(null);
     WgbCache.releaseMountedSource();
     (globalThis as unknown as { __wgbSabIo?: unknown }).__wgbSabIo = undefined;
     self.postMessage({ type: 'gamebox_stopped', id });
   } catch (error) {
-    self.postMessage({ type: 'gamebox_stopped', id, error: `BottleShip could not confirm its saves: ${String(error)}` });
+    self.postMessage({
+      type: 'gamebox_stopped',
+      id,
+      error: `BottleShip could not confirm its saves: ${String(error)}`,
+    });
   }
 }
 
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
+  if (message?.type === 'gamebox_profile') {
+    const id = typeof message.id === 'string' && message.id.length <= 128 ? message.id : '';
+    const reply = (result?: unknown, error?: unknown) =>
+      self.postMessage({
+        type: 'gamebox_profile_result',
+        id,
+        ...(error === undefined ? { result } : { error: String(error) }),
+      });
+    void (async () => {
+      if (!id) throw new Error('Invalid GameBox profile request');
+      const system = System.getInstance();
+      const owner = system.process;
+      const wasPaused = system.isPaused;
+      if (message.mode === 'cancel') {
+        // Resetting native trace/watch state while v86 is still executing can
+        // race the JIT hooks. Preserve the public cancel operation even when
+        // the process has already gone away, but use the same safe boundary as
+        // start/finish whenever a live process exists.
+        try {
+          if (owner && !wasPaused) await pauseEmulatorAndWait();
+          cancelGameBoxProfile();
+          graphicsProfile.cancel();
+          return { cancelled: true };
+        } finally {
+          if (owner && !wasPaused && system.process === owner) resumeEmulator();
+        }
+      }
+      const engine = owner?.v86 as any;
+      const cpu = engine?.cpu ?? engine?.v86?.cpu;
+      if (!cpu || !owner) throw new Error('No CPU is available for profiling');
+      try {
+        if (!wasPaused) await pauseEmulatorAndWait();
+        if (message.mode === 'start') {
+          if (!message.options || typeof message.options !== 'object')
+            throw new Error('GameBox CPU profile options are required');
+          await startGameBoxProfile(cpu, {
+            ...message.options,
+            isPaused: () => system.isPaused && system.process === owner,
+          });
+          try {
+            if (message.graphics) graphicsProfile.start(message.graphics);
+          } catch (error) {
+            cancelGameBoxProfile();
+            graphicsProfile.cancel();
+            throw error;
+          }
+          return { started: true, graphics: graphicsProfile.isActive() };
+        }
+        if (message.mode === 'finish') {
+          try {
+            const cpuProfile = await finishGameBoxProfile();
+            const gpuProfile = graphicsProfile.isActive() ? await graphicsProfile.finish() : null;
+            return { cpu: cpuProfile, gpu: gpuProfile };
+          } catch (error) {
+            // If either half fails, leave no capture armed for a subsequent
+            // request. The CPU session helper already cleans its own state;
+            // graphics profiling needs the matching explicit cleanup here.
+            graphicsProfile.cancel();
+            throw error;
+          }
+        }
+        throw new Error('Unknown GameBox profile operation');
+      } finally {
+        if (!wasPaused && system.process === owner) resumeEmulator();
+      }
+    })().then(
+      (result) => reply(result),
+      (error) => reply(undefined, error),
+    );
+    return;
+  }
   if (message?.type === 'gamebox_aot') {
-    void gameboxAot(message).then(result => self.postMessage({type: 'gamebox_aot_result', id: message.id, result}),
-      error => self.postMessage({type: 'gamebox_aot_result', id: message.id, error: String(error)}));
+    if (!System.getInstance().process && deferV86Init) {
+      // GameBoxBridge intentionally starts the bundle load before awaiting an
+      // external legacy AOT request when v86 construction is deferred. Keep the
+      // request ordered ahead of pendingBundle's PE load once the manifest-sized
+      // emulator is ready.
+      pendingGameboxAot.push(message as Record<string, unknown>);
+      return;
+    }
+    void gameboxAot(message).then(
+      (result) => self.postMessage({ type: 'gamebox_aot_result', id: message.id, result }),
+      (error) =>
+        self.postMessage({ type: 'gamebox_aot_result', id: message.id, error: String(error) }),
+    );
     return;
   }
   if (message?.type === 'gamebox_configure') {
-    if (!gameboxGameId && /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) && /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)) {
+    if (
+      !gameboxGameId &&
+      /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) &&
+      /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)
+    ) {
+      if (message.jitConfigOverrides !== undefined) {
+        const overrides = message.jitConfigOverrides;
+        if (
+          !Array.isArray(overrides) ||
+          overrides.length > 22 ||
+          overrides.some(
+            (pair: unknown) =>
+              !Array.isArray(pair) ||
+              pair.length !== 2 ||
+              !Number.isSafeInteger(pair[0]) ||
+              !Number.isSafeInteger(pair[1]) ||
+              pair[0] < 0 ||
+              pair[0] >= 22 ||
+              pair[1] < 0 ||
+              pair[1] > 0xffffffff,
+          )
+        ) {
+          self.postMessage({ type: 'error', message: 'Invalid GameBox JIT configuration overrides' });
+          return;
+        }
+        gameboxJitConfigOverrides = overrides.map(
+          (pair: [number, number]) => [pair[0], pair[1] >>> 0],
+        );
+      }
       gameboxGameId = message.gameId;
       (globalThis as any).__gameboxGameId = message.gameId;
       (globalThis as any).__gameboxCacheKey = message.cacheKey;
+      // Public keys are supplied explicitly by the embedding page. The
+      // catalog validates the bounded map and never fetches keys remotely.
+      if (message.preparedTrustStore !== undefined)
+        (globalThis as any).__GAMEBOX_TRUST_STORE = message.preparedTrustStore;
       EmulatorConfig.getInstance().setLowestGraphics(message.lowestGraphics === true);
     }
     return;
   }
-  if (message?.type === 'gamebox_stop') { void gameboxStop(message.id); return; }
+  if (message?.type === 'gamebox_stop') {
+    void gameboxStop(message.id);
+    return;
+  }
 
-  if (message?.type === "dbg") {
+  if (message?.type === 'dbg') {
     // Guest debugger bridge: window.dbg.<cmd>(...args) on the page -> here.
     handleDbgCommand(message.cmd, message.args);
     return;
   }
 
-  if (message?.type === "set_debug_flag") {
+  if (message?.type === 'set_debug_flag') {
     // Persisted debug toggles seeded from the host (localStorage) BEFORE a game loads —
     // e.g. __noHeapSlab to A/B the WASM heap slab. Survives page F5 because the host
     // replays it on every worker init. Must arrive before load_bundle (PE-load reads it).
-    if (typeof message.key === "string") (globalThis as any)[message.key] = message.value;
+    if (typeof message.key === 'string') (globalThis as any)[message.key] = message.value;
     return;
   }
 
@@ -2594,29 +3279,39 @@ self.onmessage = (event: MessageEvent) => {
     return;
   }
 
-  if (message?.type === "peek_mem") {
+  if (message?.type === 'peek_mem') {
     // Diagnostic: read raw guest memory from the canonical process buffer back to
     // the page (worker console is invisible to the page). Reads up to 4096 bytes.
     const { addr, len = 256, id } = message;
     try {
       const mem = System.getInstance().process?.getCurrentMemory?.();
-      if (!mem) { self.postMessage({ type: "peek_mem", ok: false, id, error: "no memory" }); return; }
-      const a = (addr >>> 0);
+      if (!mem) {
+        self.postMessage({ type: 'peek_mem', ok: false, id, error: 'no memory' });
+        return;
+      }
+      const a = addr >>> 0;
       const n = Math.max(0, Math.min(4096, len | 0));
       if (a < 0 || a + n > mem.length) {
-        self.postMessage({ type: "peek_mem", ok: false, id, error: `oob (a=0x${a.toString(16)} len=${n} memLen=0x${mem.length.toString(16)})`, memLen: mem.length });
+        self.postMessage({
+          type: 'peek_mem',
+          ok: false,
+          id,
+          error: `oob (a=0x${a.toString(16)} len=${n} memLen=0x${mem.length.toString(16)})`,
+          memLen: mem.length,
+        });
         return;
       }
       const bytes = Array.from(mem.subarray(a, a + n));
-      let nonZero = 0; for (const b of bytes) if (b !== 0) nonZero++;
-      self.postMessage({ type: "peek_mem", ok: true, id, addr: a, len: n, nonZero, bytes });
+      let nonZero = 0;
+      for (const b of bytes) if (b !== 0) nonZero++;
+      self.postMessage({ type: 'peek_mem', ok: true, id, addr: a, len: n, nonZero, bytes });
     } catch (e) {
-      self.postMessage({ type: "peek_mem", ok: false, id, error: String(e) });
+      self.postMessage({ type: 'peek_mem', ok: false, id, error: String(e) });
     }
     return;
   }
 
-  if (message?.type === "__eipSampleOn") {
+  if (message?.type === '__eipSampleOn') {
     // JIT-on guest-EIP sampler toggle (diagnostic): streams a per-tick EIP page
     // histogram to the main thread via {type:'__eipHist'}. Set from the same realm
     // as tick_hooks_after so the flag is visible there.
@@ -2625,41 +3320,46 @@ self.onmessage = (event: MessageEvent) => {
     return;
   }
 
-  if (message?.type === "set_present_mode") {
+  if (message?.type === 'set_present_mode') {
     // Display pacing policy from the Settings UI: off | vsync | smooth | blend.
     // setPresentMode is registered on globalThis by diagnostics-commands. The host re-sends
     // this after each game load (present mode resets with the presenter), so it may arrive
     // before the ddraw presenter exists — setPresentMode no-ops/warns gracefully in that case.
-    const mode = String(message.mode || "off");
+    const mode = String(message.mode || 'off');
     (globalThis as any).setPresentMode?.(mode);
     return;
   }
 
-  if (message?.type === "set_quality") {
+  if (message?.type === 'set_quality') {
     // Graphics quality settings from the Settings UI / dbg.quality(). Validated + merged
     // onto the live config; the present chain + samplers read it on the next frame.
     const q = EmulatorConfig.getInstance().applyQuality(message.quality);
-    Logger.log(LogCategory.SYSTEM,
-      `[QUALITY] applied (aniso=${q.anisotropy} bright=${q.brightness} contrast=${q.contrast} sat=${q.saturation} aspect=${q.aspectMode} postAA=${q.postAA})`);
-    self.postMessage({ type: "set_quality", ok: true, quality: q });
+    Logger.log(
+      LogCategory.SYSTEM,
+      `[QUALITY] applied (aniso=${q.anisotropy} bright=${q.brightness} contrast=${q.contrast} sat=${q.saturation} aspect=${q.aspectMode} postAA=${q.postAA})`,
+    );
+    self.postMessage({ type: 'set_quality', ok: true, quality: q });
     return;
   }
 
-  if (message?.type === "init") {
+  if (message?.type === 'init') {
     // Check if system is already initialized
     if (System.getInstance().process) {
-      Logger.log(LogCategory.SYSTEM, "System already initialized, resending ready");
-      self.postMessage({ type: "ready" });
+      Logger.log(LogCategory.SYSTEM, 'System already initialized, resending ready');
+      self.postMessage({ type: 'ready' });
       return;
     }
 
     if (!message.canvas) {
       if (state.canvas) {
-        Logger.log(LogCategory.SYSTEM, "init message missing canvas, but we already have one. Resending ready");
-        self.postMessage({ type: "ready" });
+        Logger.log(
+          LogCategory.SYSTEM,
+          'init message missing canvas, but we already have one. Resending ready',
+        );
+        self.postMessage({ type: 'ready' });
         return;
       }
-      Logger.warn(LogCategory.SYSTEM, "init message missing canvas and no existing canvas found");
+      Logger.warn(LogCategory.SYSTEM, 'init message missing canvas and no existing canvas found');
       return;
     }
 
@@ -2673,25 +3373,36 @@ self.onmessage = (event: MessageEvent) => {
     if (canvas) {
       canvas.width = state.width;
       canvas.height = state.height;
-      const canWebGpu = typeof navigator !== "undefined" && "gpu" in navigator;
+      const canWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
       if (!canWebGpu) {
-        state.ctx = canvas.getContext("2d");
+        state.ctx = canvas.getContext('2d');
         // Start drawing loop for placeholder/debug
         requestAnimationFrame(drawPlaceholder);
       }
 
-      // Init emulator
-      initV86(canvas);
+      // Embedded GameBox callers send the bundle URL only after the bridge is
+      // ready. Keep the canvas/input setup, but defer v86 construction until
+      // load_bundle has manifest-preflighted the RAM size.
+      deferV86Init = message.deferV86 === true;
+      if (deferV86Init) {
+        self.postMessage({ type: 'ready' });
+      } else {
+        // Init emulator
+        initV86(canvas);
+      }
     }
   }
 
-  if (message?.type === "resize") {
+  if (message?.type === 'resize') {
     state.width = message.width ?? state.width;
     state.height = message.height ?? state.height;
     // NOTE: Do NOT reconfigure WebGPU here. The worker's hostResize callback is the
     // authoritative source — it already called reconfigure(). Re-doing it from the
     // main-thread round-trip clears the canvas AFTER frames have been rendered → black screen.
-    if (state.canvas && (state.canvas.width !== state.width || state.canvas.height !== state.height)) {
+    if (
+      state.canvas &&
+      (state.canvas.width !== state.width || state.canvas.height !== state.height)
+    ) {
       state.canvas.width = state.width;
       state.canvas.height = state.height;
     }
@@ -2700,7 +3411,7 @@ self.onmessage = (event: MessageEvent) => {
 
     // Trigger repaint for all windows on resize
     const system = System.getInstance();
-    const WM_PAINT = 0x000F;
+    const WM_PAINT = 0x000f;
     for (const window of system.windowManager.getAllWindows()) {
       if (window.visible) {
         system.windowManager.postMessage(window.hwnd, WM_PAINT, 0, 0);
@@ -2708,23 +3419,35 @@ self.onmessage = (event: MessageEvent) => {
     }
   }
 
-  if (message?.type === "load_pe") {
+  if (message?.type === 'load_pe') {
     const peData = message.data as Uint8Array;
-    loadPeData(peData).catch(err => Logger.error(LogCategory.SYSTEM, `load_pe failed: ${err}`));
+    if (!System.getInstance().process && deferV86Init) {
+      // Preserve manual/raw dev launches on the deferred embedded entry. A raw
+      // PE has no manifest to size v86, so use the ordinary default RAM path.
+      deferV86Init = false;
+      pendingPeData = peData;
+      if (!deferredV86InitPromise && state.canvas)
+        void initV86(state.canvas);
+    } else {
+      loadPeData(peData).catch((err) => Logger.error(LogCategory.SYSTEM, `load_pe failed: ${err}`));
+    }
   }
 
-  if (message?.type === "hle_enable") {
+  if (message?.type === 'hle_enable') {
     const cfg = EmulatorConfig.getInstance().hleLibs;
     cfg.enable = true;
     cfg.logOnly = !!message.logOnly;
-    Logger.log(LogCategory.SYSTEM, `[HLE-lib] enabled via hle_enable message (logOnly=${cfg.logOnly})`);
+    Logger.log(
+      LogCategory.SYSTEM,
+      `[HLE-lib] enabled via hle_enable message (logOnly=${cfg.logOnly})`,
+    );
     return;
   }
 
-  if (message?.type === "hle_status") {
+  if (message?.type === 'hle_status') {
     const cfg = EmulatorConfig.getInstance().hleLibs;
     self.postMessage({
-      type: "hle_status",
+      type: 'hle_status',
       enable: cfg.enable,
       logOnly: cfg.logOnly,
       report: libHleManager.getReport(),
@@ -2732,7 +3455,7 @@ self.onmessage = (event: MessageEvent) => {
     return;
   }
 
-  if (message?.type === "load_bundle") {
+  if (message?.type === 'load_bundle') {
     const cfg = EmulatorConfig.getInstance().hleLibs as {
       enable: boolean;
       logOnly: boolean;
@@ -2746,30 +3469,43 @@ self.onmessage = (event: MessageEvent) => {
     // native path. Flip enable back on when the glxSample bring-up is done.
     cfg.galaxy = { enable: false, hleAudio: false, hleMixer: false };
     if (message.galaxyHle === true) {
-      Logger.log(LogCategory.SYSTEM, `[Galaxy] HLE module parked — native audio path (galaxyHle ignored)`);
+      Logger.log(
+        LogCategory.SYSTEM,
+        `[Galaxy] HLE module parked — native audio path (galaxyHle ignored)`,
+      );
     }
     if (message.hleEnable) {
       cfg.enable = true;
       cfg.logOnly = !!message.hleLogOnly;
       Logger.log(LogCategory.SYSTEM, `[HLE-lib] enabled via load_bundle (logOnly=${cfg.logOnly})`);
     }
-    loadBundle({ data: message.data, url: message.url, blob: message.blob, blobs: message.blobs });
+    const payload = { data: message.data, url: message.url, blob: message.blob, blobs: message.blobs };
+    if (!System.getInstance().process && deferV86Init) {
+      if (pendingBundle) {
+        self.postMessage({ type: 'error', message: 'A GameBox bundle load is already pending' });
+        return;
+      }
+      pendingBundle = payload;
+      void initDeferredV86();
+    } else {
+      loadBundle(payload);
+    }
   }
 
   // --- WGB wizard build service (Stage 1) — additive, separate from the boot path above. -----
-  if (message?.type === "wgb_build_start") {
+  if (message?.type === 'wgb_build_start') {
     const source = (message.source ?? {}) as BuildSource;
     let last = 0;
     buildStagedBundle(source, (phase, percent, label) => {
       const now = performance.now();
       // Throttle to ~10 Hz like install_progress, but always emit terminal phases.
-      if (phase !== "done" && now - last < 100) return;
+      if (phase !== 'done' && now - last < 100) return;
       last = now;
-      self.postMessage({ type: "wgb_build_progress", phase, percent, label });
+      self.postMessage({ type: 'wgb_build_progress', phase, percent, label });
     })
       .then((result) => {
         self.postMessage({
-          type: "wgb_build_done",
+          type: 'wgb_build_done',
           stagedPath: result.stagedPath,
           manifest: result.manifest,
           entries: result.entries,
@@ -2779,40 +3515,54 @@ self.onmessage = (event: MessageEvent) => {
       })
       .catch((err) => {
         Logger.error(LogCategory.SYSTEM, `wgb_build_start failed: ${err}`);
-        self.postMessage({ type: "wgb_build_error", message: String((err as Error)?.message ?? err) });
+        self.postMessage({
+          type: 'wgb_build_error',
+          message: String((err as Error)?.message ?? err),
+        });
       });
     return;
   }
 
-  if (message?.type === "wgb_inspect") {
+  if (message?.type === 'wgb_inspect') {
     const source = (message.source ?? {}) as BuildSource;
     inspectBundle(source)
       .then((result) => {
-        self.postMessage({ type: "wgb_inspect_done", manifest: result.manifest, entries: result.entries });
+        self.postMessage({
+          type: 'wgb_inspect_done',
+          manifest: result.manifest,
+          entries: result.entries,
+        });
       })
       .catch((err) => {
         Logger.error(LogCategory.SYSTEM, `wgb_inspect failed: ${err}`);
-        self.postMessage({ type: "wgb_inspect_error", message: String((err as Error)?.message ?? err) });
+        self.postMessage({
+          type: 'wgb_inspect_error',
+          message: String((err as Error)?.message ?? err),
+        });
       });
     return;
   }
 
-  if (message?.type === "wgb_read_entry") {
-    const stagedPath = String(message.stagedPath ?? "");
-    const name = String(message.name ?? "");
+  if (message?.type === 'wgb_read_entry') {
+    const stagedPath = String(message.stagedPath ?? '');
+    const name = String(message.name ?? '');
     readStagedEntry(stagedPath, name)
       .then((bytes) => {
-        const text = new TextDecoder("utf-8").decode(bytes);
-        self.postMessage({ type: "wgb_read_entry_done", name, text });
+        const text = new TextDecoder('utf-8').decode(bytes);
+        self.postMessage({ type: 'wgb_read_entry_done', name, text });
       })
       .catch((err) => {
         Logger.error(LogCategory.SYSTEM, `wgb_read_entry failed: ${err}`);
-        self.postMessage({ type: "wgb_read_entry_error", name, message: String((err as Error)?.message ?? err) });
+        self.postMessage({
+          type: 'wgb_read_entry_error',
+          name,
+          message: String((err as Error)?.message ?? err),
+        });
       });
     return;
   }
 
-  if (message?.type === "wgb_finalize") {
+  if (message?.type === 'wgb_finalize') {
     const destination = message.destination as FinalizeDestination;
     finalizeBundle({
       stagedPath: message.stagedPath,
@@ -2821,76 +3571,99 @@ self.onmessage = (event: MessageEvent) => {
       editedFiles: message.editedFiles,
       destination,
       onProgress: (percent, label) => {
-        self.postMessage({ type: "wgb_finalize_progress", percent, label });
+        self.postMessage({ type: 'wgb_finalize_progress', percent, label });
       },
     })
       .then((result) => {
-        if (result.destination === "play") {
+        if (result.destination === 'play') {
           // Hand the freshly-built bytes straight to the existing boot path.
-          self.postMessage({ type: "wgb_finalize_done", destination, gameId: result.gameId, suggestedFilename: result.suggestedFilename });
+          self.postMessage({
+            type: 'wgb_finalize_done',
+            destination,
+            gameId: result.gameId,
+            suggestedFilename: result.suggestedFilename,
+          });
           loadBundle({ data: result.bytes });
           return;
         }
-        if (result.destination === "download" && result.bytes) {
+        if (result.destination === 'download' && result.bytes) {
           // Transfer the buffer so the host can save it (showSaveFilePicker / anchor download).
           const buf = result.bytes.buffer;
           (self as any).postMessage(
-            { type: "wgb_finalize_done", destination, gameId: result.gameId, suggestedFilename: result.suggestedFilename, bytes: result.bytes },
+            {
+              type: 'wgb_finalize_done',
+              destination,
+              gameId: result.gameId,
+              suggestedFilename: result.suggestedFilename,
+              bytes: result.bytes,
+            },
             [buf],
           );
           return;
         }
         // library
-        self.postMessage({ type: "wgb_finalize_done", destination, gameId: result.gameId, cacheKey: result.cacheKey, suggestedFilename: result.suggestedFilename });
+        self.postMessage({
+          type: 'wgb_finalize_done',
+          destination,
+          gameId: result.gameId,
+          cacheKey: result.cacheKey,
+          suggestedFilename: result.suggestedFilename,
+        });
       })
       .catch((err) => {
         Logger.error(LogCategory.SYSTEM, `wgb_finalize failed: ${err}`);
-        self.postMessage({ type: "wgb_finalize_error", message: String((err as Error)?.message ?? err) });
+        self.postMessage({
+          type: 'wgb_finalize_error',
+          message: String((err as Error)?.message ?? err),
+        });
       });
     return;
   }
 
-  if (message?.type === "capture_frame") {
+  if (message?.type === 'capture_frame') {
     const active = System.getInstance().services.render.getActive();
     if (!active) {
-      self.postMessage({ type: "capture_frame", ok: false, error: "No active renderer." });
+      self.postMessage({ type: 'capture_frame', ok: false, error: 'No active renderer.' });
       return;
     }
-    active.captureFrame()
+    active
+      .captureFrame()
       .then(async (blob) => {
         const buffer = await blob.arrayBuffer();
-        (self as any).postMessage({ type: "capture_frame", ok: true, buffer }, [buffer]);
+        (self as any).postMessage({ type: 'capture_frame', ok: true, buffer }, [buffer]);
       })
       .catch((err) => {
-        self.postMessage({ type: "capture_frame", ok: false, error: String(err) });
+        self.postMessage({ type: 'capture_frame', ok: false, error: String(err) });
       });
   }
 
-  if (message?.type === "toggle_stats_overlay") {
+  if (message?.type === 'toggle_stats_overlay') {
     statsOverlay.setEnabled(!!message.enabled);
   }
 
   // Dev-mode strict-FPU toggle: strict=true → relaxed-FPU OFF (full 80-bit x87), strict=false → relaxed ON.
   // Routes through the PreemptionManager (single source of truth; applies live + clears JIT cache).
-  if (message?.type === "set_fpu_strict") {
+  if (message?.type === 'set_fpu_strict') {
     const strict = !!message.strict;
     const pm = (globalThis as any).preemption;
     if (pm?.setRelaxedFpu) {
       pm.setRelaxedFpu(!strict);
-      console.log(`[PERF] dev toggle: strict-FPU ${strict ? "ON (relaxed DISABLED)" : "OFF (relaxed enabled)"}`);
+      console.log(
+        `[PERF] dev toggle: strict-FPU ${strict ? 'ON (relaxed DISABLED)' : 'OFF (relaxed enabled)'}`,
+      );
     }
-    self.postMessage({ type: "fpu_strict_state", strict });
+    self.postMessage({ type: 'fpu_strict_state', strict });
   }
 
-  if (message?.type === "render_stats") {
+  if (message?.type === 'render_stats') {
     const active = System.getInstance().services.render.getActive();
     if (!active) {
-      self.postMessage({ type: "render_stats", ok: false, error: "No active renderer." });
+      self.postMessage({ type: 'render_stats', ok: false, error: 'No active renderer.' });
       return;
     }
     const idle = frameVarianceDiagnostics.getIdleSummary();
     self.postMessage({
-      type: "render_stats",
+      type: 'render_stats',
       ok: true,
       stats: {
         ...active.getCounters(),
@@ -2899,47 +3672,47 @@ self.onmessage = (event: MessageEvent) => {
         idleYieldMs: idle.yieldMs,
         idleHltMs: idle.hltMs,
         idleUnknownMs: idle.unknownMs,
-      }
+      },
     });
   }
 
   // Get GetPixel statistics - shows which HDCs are being queried pixel-by-pixel
-  if (message?.type === "get_pixel_stats") {
+  if (message?.type === 'get_pixel_stats') {
     const stats = profiler.getGetPixelStats();
-    self.postMessage({ type: "get_pixel_stats", ok: true, stats });
+    self.postMessage({ type: 'get_pixel_stats', ok: true, stats });
   }
 
   // Host audio bridge (audio_ended/started/error/position) — worker-handlers/audio-bridge.ts
   if (handleAudioBridgeMessage(message)) return;
 
-  if (message?.type === "message_box_result") {
+  if (message?.type === 'message_box_result') {
     resolveMessageBox(Number(message.id) || 0, Number(message.result) ?? 1);
   }
 
-  if (message?.type === "time_mode") {
-    const mode = message.mode === "manual" ? "manual" : "realtime";
+  if (message?.type === 'time_mode') {
+    const mode = message.mode === 'manual' ? 'manual' : 'realtime';
     TimeService.getInstance().setMode(mode, message.nowMs, message.unixMs);
   }
 
-  if (message?.type === "time_set") {
-    if (typeof message.nowMs === "number") {
+  if (message?.type === 'time_set') {
+    if (typeof message.nowMs === 'number') {
       TimeService.getInstance().setManualTime(message.nowMs, message.unixMs);
     }
   }
 
-  if (message?.type === "time_advance") {
-    if (typeof message.deltaMs === "number") {
+  if (message?.type === 'time_advance') {
+    if (typeof message.deltaMs === 'number') {
       TimeService.getInstance().advanceByMs(message.deltaMs);
     }
   }
 
-  if (message?.type === "replay_mode") {
+  if (message?.type === 'replay_mode') {
     const system = System.getInstance();
     const enabled = Boolean(message.enabled);
     system.inputManager.setDeterministicMode(enabled);
   }
 
-  if (message?.type === "input_tick") {
+  if (message?.type === 'input_tick') {
     const system = System.getInstance();
     system.inputManager.poll();
   }
@@ -2949,8 +3722,8 @@ self.onmessage = (event: MessageEvent) => {
   if (handleLoggingMessage(message)) return;
 
   // Bridge for message-pump WM_TIMER diagnostics from main-thread console helpers.
-  if (message?.type === "msg_timer_diag" || message?.type === "h3_timer_diag") {
-    const replyType = message.type === "h3_timer_diag" ? "h3_timer_diag" : "msg_timer_diag";
+  if (message?.type === 'msg_timer_diag' || message?.type === 'h3_timer_diag') {
+    const replyType = message.type === 'h3_timer_diag' ? 'h3_timer_diag' : 'msg_timer_diag';
     const g = globalThis as Record<string, any>;
     try {
       const setEnabled = g.msgTimerDiagSetEnabled ?? g.h3TimerDiagSetEnabled;
@@ -2960,66 +3733,81 @@ self.onmessage = (event: MessageEvent) => {
       const logNow = g.msgTimerDiagLogNow ?? g.h3TimerDiagLogNow;
       const getConfig = g.msgTimerDiagGetConfig ?? g.h3TimerDiagGetConfig;
 
-      if (typeof message.enabled === "boolean" && typeof setEnabled === "function") {
+      if (typeof message.enabled === 'boolean' && typeof setEnabled === 'function') {
         setEnabled(message.enabled);
       }
-      if (typeof message.logIntervalMs === "number" && typeof setInterval === "function") {
+      if (typeof message.logIntervalMs === 'number' && typeof setInterval === 'function') {
         setInterval(message.logIntervalMs);
       }
-      if (typeof message.queueSkipped === "boolean" && typeof setQueueSkipped === "function") {
+      if (typeof message.queueSkipped === 'boolean' && typeof setQueueSkipped === 'function') {
         setQueueSkipped(message.queueSkipped);
       }
-      if (typeof message.flushMax === "number" && typeof setFlushMax === "function") {
+      if (typeof message.flushMax === 'number' && typeof setFlushMax === 'function') {
         setFlushMax(message.flushMax);
       }
-      if (message.logNow === true && typeof logNow === "function") {
+      if (message.logNow === true && typeof logNow === 'function') {
         logNow();
       }
 
-      const config = typeof getConfig === "function" ? getConfig() : null;
+      const config = typeof getConfig === 'function' ? getConfig() : null;
       self.postMessage({ type: replyType, ok: true, config });
     } catch (error) {
       self.postMessage({ type: replyType, ok: false, error: String(error) });
     }
   }
 
-  if (message?.type === "ui_gate_diag" || message?.type === "h3_gate_diag") {
-    const replyType = message.type === "h3_gate_diag" ? "h3_gate_diag" : "ui_gate_diag";
+  if (message?.type === 'ui_gate_diag' || message?.type === 'h3_gate_diag') {
+    const replyType = message.type === 'h3_gate_diag' ? 'h3_gate_diag' : 'ui_gate_diag';
     const g = globalThis as Record<string, any>;
     try {
       const setScreen = g.uiGateDiagSetForceScreenObj ?? g.h3GateDiagSetForceScreenObj;
       const setAdvMap = g.uiGateDiagSetForceAdvMap ?? g.h3GateDiagSetForceAdvMap;
-      const setChildList = g.uiGateDiagSetForceGameScreenChildList ?? g.h3GateDiagSetForceGameScreenChildList;
+      const setChildList =
+        g.uiGateDiagSetForceGameScreenChildList ?? g.h3GateDiagSetForceGameScreenChildList;
       const getConfig = g.uiGateDiagGetConfig ?? g.h3GateDiagGetConfig;
 
-      if (typeof message.forceScreenObjFallback === "boolean" && typeof setScreen === "function") {
+      if (typeof message.forceScreenObjFallback === 'boolean' && typeof setScreen === 'function') {
         setScreen(message.forceScreenObjFallback);
       }
-      if (typeof message.forceAdvMapFallback === "boolean" && typeof setAdvMap === "function") {
+      if (typeof message.forceAdvMapFallback === 'boolean' && typeof setAdvMap === 'function') {
         setAdvMap(message.forceAdvMapFallback);
       }
       if (
-        typeof message.forceGameScreenChildListFallback === "boolean" &&
-        typeof setChildList === "function"
+        typeof message.forceGameScreenChildListFallback === 'boolean' &&
+        typeof setChildList === 'function'
       ) {
         setChildList(message.forceGameScreenChildListFallback);
       }
 
-      const config = typeof getConfig === "function" ? getConfig() : null;
+      const config = typeof getConfig === 'function' ? getConfig() : null;
       self.postMessage({ type: replyType, ok: true, config });
     } catch (error) {
       self.postMessage({ type: replyType, ok: false, error: String(error) });
     }
   }
 
-  if (message?.type === "pause") {
-    if (!System.getInstance().process?.v86) { Logger.warn(LogCategory.SYSTEM, "Cannot pause - process not initialized"); return; }
-    try { pauseEmulator(); } catch (err) { Logger.error(LogCategory.SYSTEM, `[PAUSE] Error: ${err}`); }
+  if (message?.type === 'pause') {
+    if (!System.getInstance().process?.v86) {
+      Logger.warn(LogCategory.SYSTEM, 'Cannot pause - process not initialized');
+      return;
+    }
+    try {
+      pauseEmulator();
+    } catch (err) {
+      Logger.error(LogCategory.SYSTEM, `[PAUSE] Error: ${err}`);
+    }
   }
 
-  if (message?.type === "resume") {
-    if (!System.getInstance().process?.v86) { Logger.warn(LogCategory.SYSTEM, "Cannot resume - process not initialized"); return; }
-    try { resumeEmulator(); } catch (err) { Logger.error(LogCategory.SYSTEM, `[RESUME] Error: ${err}`); }
+  if (message?.type === 'resume') {
+    if (!System.getInstance().process?.v86) {
+      Logger.warn(LogCategory.SYSTEM, 'Cannot resume - process not initialized');
+      return;
+    }
+    try {
+      resumeEmulator();
+    } catch (err) {
+      Logger.error(LogCategory.SYSTEM, `[RESUME] Error: ${err}`);
+    }
   }
 
   // Debug/monitoring panels (memwatch_*, profiler_* / frame_pacer_enable, memory_*,

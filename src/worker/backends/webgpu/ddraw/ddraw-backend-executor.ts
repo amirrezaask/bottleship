@@ -779,6 +779,11 @@ export class DDrawWebGPUExecutor {
         return this.pipelineFactory.getCacheSize();
     }
 
+    /** Prepared graphics descriptor candidates and their bounded hit/miss diagnostics. */
+    getPreparedGraphicsStats(): { hits: number; misses: number; candidates: number } {
+        return this.pipelineFactory.getPreparedDescriptorStats();
+    }
+
     setDebugToggle(toggle: string, enabled: boolean, value?: number): void {
         switch (toggle) {
             case "forceMissingTextureMagenta":

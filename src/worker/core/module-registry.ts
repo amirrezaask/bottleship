@@ -17,6 +17,8 @@ export interface LoadedPEModule {
     size: number;
     /** On-disk PE file size (optional; used for Galaxy version profiles). */
     fileSize?: number;
+    /** Hash of the exact catalog source object when loaded through prepared metadata. */
+    sourceHash?: string;
     /** Entry point RVA (DllMain for DLLs, 0 if none) */
     entryPoint: number;
     /** Export table: function name -> absolute address */

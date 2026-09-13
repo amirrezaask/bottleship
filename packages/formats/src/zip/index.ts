@@ -283,9 +283,20 @@ export class ZipArchive {
      * truth — the CD always sits immediately before the EOCD — and adds it to every offset.
      */
     private prefixDelta = 0;
+    private readonly maxCentralDirectoryBytes: number | undefined;
+    private readonly rejectDuplicateNames: boolean;
 
-    constructor(source: ZipSource) {
+    constructor(source: ZipSource, options: {
+        maxCentralDirectoryBytes?: number;
+        rejectDuplicateNames?: boolean;
+    } = {}) {
         this.source = source;
+        if (options.maxCentralDirectoryBytes !== undefined &&
+            (!Number.isSafeInteger(options.maxCentralDirectoryBytes) || options.maxCentralDirectoryBytes < 0)) {
+            throw new Error("Invalid central-directory byte limit");
+        }
+        this.maxCentralDirectoryBytes = options.maxCentralDirectoryBytes;
+        this.rejectDuplicateNames = options.rejectDuplicateNames === true;
     }
 
     close(): void {
@@ -321,6 +332,9 @@ export class ZipArchive {
 
         const cdSize = view.getUint32(eocdOffset + 12, true);
         const cdOffset = view.getUint32(eocdOffset + 16, true);
+        if (this.maxCentralDirectoryBytes !== undefined && cdSize > this.maxCentralDirectoryBytes) {
+            throw new Error("ZIP central directory exceeds configured byte limit");
+        }
 
         // Recover the SFX prefix: the central directory always ends right where the EOCD
         // begins, so its true file offset is `eocdFileOffset - cdSize`. For a plain zip that
@@ -331,6 +345,9 @@ export class ZipArchive {
         this.prefixDelta = delta > 0 ? delta : 0;
 
         const cdStart = cdOffset + this.prefixDelta;
+        if (!Number.isSafeInteger(cdStart) || cdStart < 0 || cdStart > size || cdSize > size - cdStart) {
+            throw new Error("ZIP central directory is outside the source");
+        }
         const cd = await this.source.readRange(cdStart, cdStart + cdSize);
         this.parseCentralDirectory(cd);
     }
@@ -358,6 +375,10 @@ export class ZipArchive {
             const nameBytes = cd.slice(offset + 46, offset + 46 + nameLen);
             const name = (flags & 0x0800) ? decoderUtf8.decode(nameBytes) : decoderUtf8.decode(nameBytes);
             const isDirectory = name.endsWith("/");
+
+            if (this.rejectDuplicateNames && this.entries.has(name)) {
+                throw new Error(`Duplicate ZIP entry: ${name}`);
+            }
 
             this.entries.set(name, {
                 name,

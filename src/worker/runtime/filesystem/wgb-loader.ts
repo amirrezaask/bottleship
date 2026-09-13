@@ -4,6 +4,16 @@ import { CachedSource, computeAdaptiveMaxBytes } from "./cached-source";
 import { SabIoSource } from "./sab-io-source";
 import { Logger, LogCategory } from "../../core/logger";
 import { WgbCache } from "./wgb-cache";
+import { GameboxCatalog, type GameboxMarker, type GameboxTrustStore } from "./gamebox-catalog";
+
+export interface GameboxLoadOptions {
+    /** Bounded local public-key map for authenticating signed prepared catalogs. */
+    trustStore?: GameboxTrustStore;
+}
+
+function configuredTrustStore(): GameboxTrustStore | undefined {
+    return (globalThis as unknown as { __GAMEBOX_TRUST_STORE?: GameboxTrustStore }).__GAMEBOX_TRUST_STORE;
+}
 
 /**
  * Wrap a source in an LRU block-cache where that makes the guest's SYNCHRONOUS
@@ -76,6 +86,7 @@ export interface WgbMeta {
 }
 
 export interface WgbManifest {
+    gamebox?: GameboxMarker;
     /** 1 = legacy (no gameId); 2 = namespaced gameId + meta + persist/ephemeral policy. */
     formatVersion: number;
     /**
@@ -240,22 +251,26 @@ export interface RegistrySeed {
 export interface WgbBundle {
     manifest: WgbManifest;
     archive: ZipArchive;
-    entrypointBytes: Uint8Array;
+    entrypointBytes?: Uint8Array;
+    gamebox?: GameboxCatalog;
     registry?: RegistrySeed | RegistrySeed[];
 }
 
 export class WgbLoader {
     /** Build a bundle from any ZipSource (sync OPFS handle, in-memory buffer, blob, or HTTP range). */
-    static async fromSource(source: ZipSource, onStage?: (label: string) => void): Promise<WgbBundle> {
+    static async fromSource(source: ZipSource, onStage?: (label: string) => void, options?: GameboxLoadOptions): Promise<WgbBundle> {
         onStage?.("Reading index");
-        const archive = new ZipArchive(withBlockCache(source));
+        const archive = new ZipArchive(withBlockCache(source), {
+            maxCentralDirectoryBytes: 64 * 1024 * 1024,
+            rejectDuplicateNames: true,
+        });
         try {
             await archive.init();
-            return await this.loadFromArchive(archive, onStage);
+            return await this.loadFromArchive(archive, onStage, options?.trustStore ?? configuredTrustStore());
         } catch (error) { archive.close(); throw error; }
     }
 
-    static async fromUrl(url: string): Promise<WgbBundle> {
+    static async fromUrl(url: string, options?: GameboxLoadOptions): Promise<WgbBundle> {
         // DEV: stream on-demand straight from the dev server via synchronous XHR range
         // reads — instant start, NO blocking OPFS full-copy (the slow part of opening a
         // fresh multi-GB bundle). Gated on the server honoring Range: create() probes
@@ -265,12 +280,12 @@ export class WgbLoader {
             const staged = await WgbCache.openSyncSourceForUrl(url);
             if (staged) {
                 Logger.log(LogCategory.SYSTEM, `WGB: dev cache hit for "${url}" — OPFS sync handle`);
-                return this.fromSource(staged);
+                return this.fromSource(staged, undefined, options);
             }
             try {
                 const sync = await SyncHttpRangeSource.create(url);
                 Logger.log(LogCategory.SYSTEM, `WGB: dev-streaming "${url}" via sync-XHR range (no OPFS copy)`);
-                return await this.fromSource(sync);
+                return await this.fromSource(sync, undefined, options);
             } catch (e) {
                 Logger.log(LogCategory.SYSTEM, `WGB: dev sync-stream unavailable (${(e as Error).message}) — staging to OPFS`);
             }
@@ -278,24 +293,59 @@ export class WgbLoader {
 
         // Fastest path: a cached bundle read SYNCHRONOUSLY off disk (no RAM copy).
         const syncSource = await WgbCache.openSyncSourceForUrl(url);
-        if (syncSource) return this.fromSource(syncSource);
+        if (syncSource) return this.fromSource(syncSource, undefined, options);
 
-        // Fallback: cached but no sync-access handle → in-memory buffer.
-        const cached = await WgbCache.get(url);
-        if (cached) return this.fromSource(new BufferSource(cached));
+        // Fallback: cached but no sync-access handle → keep the cached file
+        // disk-backed and let fromBlob's bounded BlobSource path serve ranges.
+        const cached = await WgbCache.getBlob(url);
+        if (cached) return this.fromBlob(cached, undefined, options);
 
         // Cache miss: start immediately via HTTP range requests, then cache full file in background.
         Logger.log(LogCategory.SYSTEM, `WGB: range-loading "${url}" (first run, caching in background)`);
-        return this.fromSource(await HttpRangeSource.create(url));
+        return this.fromSource(await HttpRangeSource.create(url), undefined, options);
     }
 
-    static async fromBuffer(data: Uint8Array): Promise<WgbBundle> {
-        return this.fromSource(new BufferSource(data));
+    /**
+     * Read only manifest.json through bounded ZIP ranges. This is used before
+     * v86 construction when a GameBox launch is deferred: RAM is a v86 init
+     * parameter, so inspecting the manifest must not load the entrypoint,
+     * catalog, or stage the full WGB into memory.
+     */
+    static async readManifestFromUrl(url: string): Promise<WgbManifest> {
+        let source: ZipSource | null = await WgbCache.openSyncSourceForUrl(url);
+        if (!source) {
+            try {
+                source = await HttpRangeSource.create(url);
+            } catch (rangeError) {
+                // A previously staged Blob remains a bounded slice source when
+                // the server no longer supports ranges. Do not download/stage a
+                // cache miss here; this path is strictly manifest-only.
+                const cached = await WgbCache.getBlob(url);
+                if (!cached) throw rangeError;
+                source = new BlobSource(cached);
+            }
+        }
+        return readManifestFromSource(source);
+    }
+
+    /** Read only manifest.json from a dropped Blob without materializing the WGB. */
+    static async readManifestFromBlob(blob: Blob): Promise<WgbManifest> {
+        return readManifestFromSource(new BlobSource(blob));
+    }
+
+    /** Read only manifest.json from an already-buffered WGB payload. */
+    static async readManifestFromBuffer(data: Uint8Array): Promise<WgbManifest> {
+        return readManifestFromSource(new BufferSource(data));
+    }
+
+    static async fromBuffer(data: Uint8Array, options?: GameboxLoadOptions): Promise<WgbBundle> {
+        return this.fromSource(new BufferSource(data), undefined, options);
     }
 
     static async fromBlob(
         blob: Blob,
         onCacheProgress?: (done: number, total: number) => void,
+        options?: GameboxLoadOptions,
     ): Promise<WgbBundle> {
         // Staged path (preferred): materialize the File into OPFS wgb-cache once
         // (streamed, progress-reported) and read via FileSystemSyncAccessHandle
@@ -306,7 +356,7 @@ export class WgbLoader {
         // WgbCache's LRU eviction of other cache entries (never saves).
         try {
             const syncSource = await WgbCache.mountBlobSync(blob, onCacheProgress);
-            if (syncSource) return await this.fromSource(syncSource);
+            if (syncSource) return await this.fromSource(syncSource, undefined, options);
         } catch (err) {
             Logger.warn(LogCategory.SYSTEM, `WGB: OPFS staging failed (${(err as Error).message}) — falling back to no-copy blob`);
         }
@@ -318,35 +368,17 @@ export class WgbLoader {
         // machinery — measured ~25% of worker CPU on a 2.5GB bundle whose working
         // set outgrows the block cache. Correctness fallback, not a fast path.
         Logger.warn(LogCategory.SYSTEM, `WGB: no OPFS sync mount — using no-copy CachedSource(BlobSource) (${blob.size} bytes)`);
-        return this.fromSource(new BlobSource(blob));
+        return this.fromSource(new BlobSource(blob), undefined, options);
     }
 
-    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void): Promise<WgbBundle> {
-        const manifestEntry = findEntry(archive, "manifest.json");
-        if (!manifestEntry) {
-            throw new Error("manifest.json not found");
-        }
-        const manifestBytes = await archive.readEntry(manifestEntry);
-        const manifestText = new TextDecoder("utf-8").decode(manifestBytes);
-        let manifest: WgbManifest;
-        try {
-            manifest = JSON.parse(manifestText) as WgbManifest;
-        } catch (err) {
-            const error = err as Error;
-            const preview = manifestText.substring(0, Math.min(200, manifestText.length));
-            const lines = manifestText.split('\n');
-            const errorLine = error.message.match(/line (\d+)/)?.[1];
-            const context = errorLine ? lines[parseInt(errorLine) - 1] : 'N/A';
-            throw new Error(
-                `Failed to parse manifest.json: ${error.message}\n` +
-                `File: manifest.json\n` +
-                `Preview (first 200 chars): ${preview}\n` +
-                `Error line context: ${context}`
-            );
-        }
+    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void, trustStore?: GameboxTrustStore): Promise<WgbBundle> {
+        const manifest = await readManifest(archive);
 
         onStage?.(`Loading ${manifest.entrypoint.split(/[\\/]/).pop() ?? "game"}`);
-        const entrypointBytes = await readEntrypointBytes(archive, manifest.entrypoint);
+        const gamebox = manifest.gamebox === undefined ? undefined :
+            await GameboxCatalog.open(archive, manifest.gamebox, manifest.rom ?? "assets", trustStore);
+        if (gamebox && manifest.entrypoint !== `assets/${gamebox.entrypoint}`) throw new Error("GameBox entrypoint binding mismatch");
+        const entrypointBytes = gamebox ? undefined : await readEntrypointBytes(archive, manifest.entrypoint);
 
         let registry: RegistrySeed | RegistrySeed[] | undefined;
         if (manifest.registry) {
@@ -373,7 +405,45 @@ export class WgbLoader {
             }
         }
 
-        return { manifest, archive, entrypointBytes, registry };
+        return { manifest, archive, entrypointBytes, gamebox, registry };
+    }
+}
+
+async function readManifestFromSource(source: ZipSource): Promise<WgbManifest> {
+    const archive = new ZipArchive(source, {
+        maxCentralDirectoryBytes: 64 * 1024 * 1024,
+        rejectDuplicateNames: true,
+    });
+    try {
+        await archive.init();
+        return await readManifest(archive);
+    } finally {
+        archive.close();
+    }
+}
+
+async function readManifest(archive: ZipArchive): Promise<WgbManifest> {
+    const manifestEntry = findEntry(archive, "manifest.json");
+    if (!manifestEntry) throw new Error("manifest.json not found");
+    if (manifestEntry.compression !== 0) throw new Error("WGB manifest must use STORE compression");
+    if (manifestEntry.uncompressedSize > 1024 * 1024 || manifestEntry.compressedSize > 1024 * 1024)
+        throw new Error("WGB manifest exceeds the 1 MiB metadata budget");
+    const manifestBytes = await archive.readEntry(manifestEntry);
+    const manifestText = new TextDecoder("utf-8").decode(manifestBytes);
+    try {
+        return JSON.parse(manifestText) as WgbManifest;
+    } catch (err) {
+        const error = err as Error;
+        const preview = manifestText.substring(0, Math.min(200, manifestText.length));
+        const lines = manifestText.split('\n');
+        const errorLine = error.message.match(/line (\d+)/)?.[1];
+        const context = errorLine ? lines[parseInt(errorLine) - 1] : 'N/A';
+        throw new Error(
+            `Failed to parse manifest.json: ${error.message}\n` +
+            `File: manifest.json\n` +
+            `Preview (first 200 chars): ${preview}\n` +
+            `Error line context: ${context}`
+        );
     }
 }
 
@@ -393,7 +463,7 @@ export async function readEntrypointBytes(archive: ZipArchive, entrypoint: strin
     return archive.readEntry(entry);
 }
 
-export function buildRomIndex(archive: ZipArchive, romRoot: string): Map<string, ZipEntry> {
+export function buildRomIndex(archive: ZipArchive, romRoot: string, includeDirectories = false): Map<string, ZipEntry> {
     const normalized = normalizeZipPath(romRoot);
     const prefix = normalized.endsWith("/") ? normalized : `${normalized}/`;
     const index = new Map<string, ZipEntry>();
@@ -404,7 +474,7 @@ export function buildRomIndex(archive: ZipArchive, romRoot: string): Map<string,
 
     for (const entry of archive.listEntries()) {
         const entryName = normalizeZipPath(entry.name);
-        if (!entryName.startsWith(prefix) || entry.isDirectory) continue;
+        if (!entryName.startsWith(prefix) || (!includeDirectories && entry.isDirectory)) continue;
         const rel = entryName.slice(prefix.length);
         index.set(rel, entry);
     }

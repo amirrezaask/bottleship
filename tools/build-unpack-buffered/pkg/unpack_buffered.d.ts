@@ -13,9 +13,11 @@ export function extract_7z(bytes: Uint8Array): Array<any>;
 /**
  * Inflate a raw DEFLATE stream (no zlib/gzip header).
  *
- * `expected_size`, when provided, pre-sizes the output buffer for speed and is
- * used as the bound for the fixed-output path. When omitted, output grows
- * dynamically.
+ * `expected_size` is the exact uncompressed size from a trusted container
+ * directory. The value is also a hard upper bound and is checked against the
+ * fixed API limit before `miniz_oxide` allocates or grows its output vector.
+ * The optional wasm-bindgen shape is retained for ABI compatibility, but an
+ * omitted value fails explicitly; there is no unbounded fallback.
  */
 export function inflate_raw(bytes: Uint8Array, expected_size?: number | null): Uint8Array;
 

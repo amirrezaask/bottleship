@@ -9,7 +9,8 @@
 //!
 //! ## Exposed (wasm-bindgen) API
 //! - `extract_7z(bytes) -> Array<{ name: string, data: Uint8Array }>`
-//! - `inflate_raw(bytes, expected_size?) -> Uint8Array`
+//! - `inflate_raw(bytes, expected_size?) -> Uint8Array` (the size is required;
+//!   omitting it fails closed)
 //! - `lzma_decode(props, dict_size, data, out_size) -> Uint8Array`
 
 use std::io::Cursor;
@@ -40,8 +41,8 @@ pub fn extract_7z(bytes: &[u8]) -> Result<js_sys::Array, JsValue> {
     // its backing store (the &[u8] is only borrowed for this call).
     let cursor = Cursor::new(bytes.to_vec());
 
-    let mut reader = ArchiveReader::new(cursor, sevenz_rust2::Password::empty())
-        .map_err(map_7z_err)?;
+    let mut reader =
+        ArchiveReader::new(cursor, sevenz_rust2::Password::empty()).map_err(map_7z_err)?;
 
     // Collect inside the closure using only sevenz errors (the closure must
     // return Result<bool, sevenz_rust2::Error>), then marshal to JS afterward.
@@ -101,19 +102,100 @@ fn map_7z_err(e: sevenz_rust2::Error) -> JsValue {
 // raw DEFLATE
 // ---------------------------------------------------------------------------
 
+/// Maximum output admitted by the buffered raw-DEFLATE API.
+///
+/// This is deliberately independent of the caller-provided size. A forged
+/// archive metadata value must not be able to make `miniz_oxide` reserve a
+/// multi-gigabyte vector before it has decoded anything.
+const MAX_INFLATE_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+
+fn inflate_raw_bounded(
+    bytes: &[u8],
+    expected_size: u32,
+    max_output_size: usize,
+) -> Result<Vec<u8>, String> {
+    let expected_size = expected_size as usize;
+    if expected_size > max_output_size {
+        return Err(format!(
+            "expected output size {expected_size} exceeds the {max_output_size}-byte limit"
+        ));
+    }
+
+    let output = miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, expected_size)
+        .map_err(|error| format!("bounded decode failed: {error}"))?;
+    if output.len() != expected_size {
+        return Err(format!(
+            "decoded output size {} does not match expected size {expected_size}",
+            output.len()
+        ));
+    }
+    Ok(output)
+}
+
 /// Inflate a raw DEFLATE stream (no zlib/gzip header).
 ///
-/// `expected_size`, when provided, pre-sizes the output buffer for speed and is
-/// used as the bound for the fixed-output path. When omitted, output grows
-/// dynamically.
+/// `expected_size` is the exact uncompressed size from a trusted container
+/// directory. The value is also a hard upper bound and is checked against the
+/// fixed API limit before `miniz_oxide` allocates or grows its output vector.
+/// The optional wasm-bindgen shape is retained for ABI compatibility, but an
+/// omitted value fails explicitly; there is no unbounded fallback.
 #[wasm_bindgen]
 pub fn inflate_raw(bytes: &[u8], expected_size: Option<u32>) -> Result<Vec<u8>, JsValue> {
-    match expected_size {
-        Some(n) => miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, n as usize)
-            .or_else(|_| miniz_oxide::inflate::decompress_to_vec(bytes))
-            .map_err(|e| JsValue::from_str(&format!("inflate_raw failed: {e:?}"))),
-        None => miniz_oxide::inflate::decompress_to_vec(bytes)
-            .map_err(|e| JsValue::from_str(&format!("inflate_raw failed: {e:?}"))),
+    let expected_size = expected_size
+        .ok_or_else(|| JsValue::from_str("inflate_raw requires an exact expected output size"))?;
+    inflate_raw_bounded(bytes, expected_size, MAX_INFLATE_OUTPUT_BYTES)
+        .map_err(|error| JsValue::from_str(&format!("inflate_raw failed: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inflate_raw_bounded;
+
+    fn encoded(input: &[u8]) -> Vec<u8> {
+        miniz_oxide::deflate::compress_to_vec(input, 6)
+    }
+
+    #[test]
+    fn valid_stream_is_byte_equivalent_at_the_declared_size() {
+        let input = b"stable decompressor output";
+        let output = inflate_raw_bounded(&encoded(input), input.len() as u32, 128).unwrap();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn valid_empty_stream_is_accepted_at_zero_size() {
+        let output = inflate_raw_bounded(&encoded(b""), 0, 128).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn forged_larger_expected_size_is_rejected() {
+        let input = b"actual output";
+        let error =
+            inflate_raw_bounded(&encoded(input), (input.len() + 1) as u32, 128).unwrap_err();
+        assert!(error.contains("does not match expected size"), "{error}");
+    }
+
+    #[test]
+    fn expansion_beyond_configured_cap_is_rejected_before_decode() {
+        let error = inflate_raw_bounded(&encoded(b"too large"), 9, 8).unwrap_err();
+        assert!(error.contains("exceeds the 8-byte limit"), "{error}");
+    }
+
+    #[test]
+    fn truncated_stream_is_rejected() {
+        let input = b"truncated compressed stream";
+        let mut compressed = encoded(input);
+        compressed.pop();
+        let error = inflate_raw_bounded(&compressed, input.len() as u32, 128).unwrap_err();
+        assert!(error.contains("decode failed"), "{error}");
+    }
+
+    #[test]
+    fn trailing_output_is_rejected_by_the_exact_bound() {
+        let input = b"prefix plus trailing output";
+        let error = inflate_raw_bounded(&encoded(input), 6, 128).unwrap_err();
+        assert!(error.contains("decode failed"), "{error}");
     }
 }
 

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "recipe": "v86-profile-regions-1-25665d64cd6145db7c1987003c9368484c5c349017addce6ef092bf0355973d2",
+  "sourceBundleHash": "3975d4f9ea1838632ec33ce130c8adedd83ccf71330e52fc74524b28cce4de1b",
+  "profileSha256": "0f65a865fe6528990237f99ac711aae9352a6c0b0cf1a5c6aed5add4e53a4eac",
+  "hotTracesSha256": "a1b8c711f39536dbb648b5b47c37108180918771346035d47b8a7262ba472fb8",
+  "runtimeWasmSha256": "ff0658491ce28e19ab086accab748d783eb91ef856f21e849b54fec81fe28d34",
+  "runtimeJavascriptSha256": "11fea956967fd2056de39e2aee2d694735cdd5f20d15c0d609ff4de851d31b8b",
+  "memoryBytes": 16777216,
+  "artifacts": [
+    {
+      "moduleHash": "20f6346b6f3a01be7afdb988df379ad09fea421197a2d68008fbd3cb24d98567",
+      "sha256": "23ca6511f4ae6d57b677cbfd73366fe375ed8dc828d64d57134352850c0611c7",
+      "bytes": 5157,
+      "summary": {
+        "units": 1,
+        "pages": 1,
+        "entries": 2,
+        "wasm_bytes": 881
+      }
+    }
+  ]
+}

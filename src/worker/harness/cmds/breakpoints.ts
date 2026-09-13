@@ -185,11 +185,11 @@ export function registerBreakpointCommands(svc: HarnessService): void {
 
     /** pause() / resume() — stop/run the guest loop via the canonical path (sets the
      *  module-level isPaused; a bare v86.stop() is undone by the 1ms scheduler). */
-    svc.register("pause", () => {
+    svc.register("pause", async () => {
         if (!proc()?.v86) throw new HarnessError("no v86 instance", HarnessErrorCode.NO_PROCESS);
-        const fn = (globalThis as any).__harnessPause;
+        const fn = (globalThis as any).__harnessPauseAndWait ?? (globalThis as any).__harnessPause;
         if (!fn) throw new HarnessError("pause hook not installed", HarnessErrorCode.UNSUPPORTED);
-        fn();
+        await fn();
         return { paused: true };
     });
     svc.register("resume", () => {

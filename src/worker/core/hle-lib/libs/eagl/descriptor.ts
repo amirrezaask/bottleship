@@ -31,7 +31,7 @@ import {
     HANDLER_EAGL_APPLY_REG_INT,
     HANDLER_EAGL_SHADER_CONVERT,
     HANDLER_EAGL_TOKEN_DISPATCH,
-} from '../../../cpu/hypercall-data';
+} from '../../../cpu/hypercall-ids';
 import { convertKernel } from './kernel';
 import { applyRegisterIntKernel } from './apply-kernels';
 import {

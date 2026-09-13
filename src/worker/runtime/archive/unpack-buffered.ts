@@ -3,7 +3,8 @@
  *
  * Consolidates archive/codec decompression for the game-ingestion pipeline:
  *   - extract7z   — full 7z extraction (LZMA/LZMA2/BCJ-x86/Copy/Delta, solid blocks)
- *   - inflateRaw  — raw DEFLATE (zip / InstallShield cabinet codecs)
+ *   - inflateRaw  — raw DEFLATE (zip / InstallShield cabinet codecs), with a
+ *                   required exact output size and a 64 MiB hard limit
  *   - lzmaDecode  — raw LZMA1 with explicit props/dict/size
  *
  * The wasm is built by tools/build-unpack-buffered/build-wasm.sh, which emits the
@@ -23,6 +24,9 @@ interface RawArchiveEntry {
     name: string;
     data: Uint8Array;
 }
+
+/** Must stay in sync with the Rust decoder's pre-allocation bound. */
+export const MAX_INFLATE_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 let initPromise: Promise<InitOutput> | null = null;
 
@@ -59,14 +63,25 @@ export async function extract7z(bytes: Uint8Array): Promise<Map<string, Uint8Arr
 /**
  * Inflate a raw DEFLATE stream (no zlib/gzip header).
  *
- * @param expectedSize optional uncompressed size hint (pre-sizes the buffer).
+ * @param expectedSize exact uncompressed size from the container directory.
+ * The Rust decoder rejects missing, forged, truncated, and over-limit output;
+ * it never falls back to an unbounded growing decode.
  */
 export async function inflateRaw(
     bytes: Uint8Array,
-    expectedSize?: number,
+    expectedSize: number,
 ): Promise<Uint8Array> {
+    if (
+        !Number.isSafeInteger(expectedSize) ||
+        expectedSize < 0 ||
+        expectedSize > MAX_INFLATE_OUTPUT_BYTES
+    ) {
+        throw new RangeError(
+            `inflateRaw expectedSize must be an integer between 0 and ${MAX_INFLATE_OUTPUT_BYTES}`,
+        );
+    }
     await init7z();
-    return inflate_raw(bytes, expectedSize ?? undefined);
+    return inflate_raw(bytes, expectedSize);
 }
 
 /**

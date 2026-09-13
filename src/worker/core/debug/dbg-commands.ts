@@ -23,6 +23,8 @@
  */
 
 import { System } from '../system';
+import { startGameBoxProfile, finishGameBoxProfile, cancelGameBoxProfile } from '../gamebox-profile-session';
+import type { ProfileOptions } from '../gamebox-cpu-profile.mjs';
 import { Galaxy } from '../../modules/galaxy';
 import { libHleManager } from '../hle-lib/lib-hle-manager';
 import { TimeService } from '../../runtime/time';
@@ -41,6 +43,8 @@ import { hpFreezeWatchdog } from './hp-freeze-watchdog';
 import { setGuestMemoryStaleGuard, isGuestMemoryStaleGuardEnabled } from '../memory/guest-memory';
 import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getTextureKernelCopyStats, isTextureDirectUploadEnabled, setTextureDirectUploadEnabled } from '../../backends/webgpu/shared/dxt-kernel';
+import { graphicsProfile, type GraphicsProfileStartOptions } from '../graphics-profile';
+import { resolveProfilePlanRuntime } from './profile-plan-runtime';
 
 interface DbgConfig {
     enabled: boolean;
@@ -76,6 +80,75 @@ function toAddr(x: number | string): number {
     return (s.startsWith("0x") || s.startsWith("0X") ? parseInt(s.slice(2), 16) : parseInt(s, 16)) >>> 0;
 }
 
+const PROFILE_PLAN_SHA256 = /^[a-f0-9]{64}$/i;
+const PROFILE_PLAN_MAX_PAGES = 64;
+const PROFILE_PLAN_MAX_MODULES = 4096;
+const PROFILE_PLAN_MAX_PROBES = 131072;
+
+function profilePlanRead32(memory: Uint8Array, address: number): number | null {
+    const physical = address >>> 0;
+    if (physical > memory.length - 4) return null;
+    return new DataView(memory.buffer, memory.byteOffset + physical, 4).getUint32(0, true);
+}
+
+/** Resolve a 32-bit non-PAE guest VA to its physical page without touching v86
+ * translation state. Unsupported paging modes fail closed instead of silently
+ * producing compiler-invalid identities. */
+function profilePlanTranslatePage(cpu: any, memory: Uint8Array, virtual: number): number | null {
+    const va = virtual >>> 0;
+    if (!(cpu.cr?.[0] & 0x80000000)) return va & 0xfffff000;
+    if (cpu.cr?.[4] & 0x20) throw new Error('Profile plan does not support PAE paging');
+    const cr3 = (cpu.cr?.[3] ?? 0) >>> 0;
+    const directory = cr3 & 0xfffff000;
+    const pde = profilePlanRead32(memory, directory + ((va >>> 22) * 4));
+    if (pde === null || !(pde & 1)) return null;
+    if (pde & 0x80) return ((pde & 0xffc00000) | (va & 0x003ff000)) >>> 0;
+    const table = pde & 0xfffff000;
+    const pte = profilePlanRead32(memory, table + (((va >>> 12) & 0x3ff) * 4));
+    if (pte === null || !(pte & 1)) return null;
+    return pte & 0xfffff000;
+}
+
+function profilePlanModules(process: any): any[] {
+    const map: Map<string, any> | undefined = process?.moduleRegistry?.modules;
+    if (!map) throw new Error('Profile plan module registry is unavailable');
+    const modules = Array.from(map.values())
+        .filter((module: any) => module?.isExecutable || module?.isRealDll)
+        .map((module: any) => ({
+            sourceSha256: String(module.sourceHash ?? '').toLowerCase(),
+            base: Number(module.baseAddress) >>> 0,
+            size: Number(module.size),
+            sections: Array.isArray(module.sections) ? module.sections : [],
+            name: String(module.name ?? ''),
+        }));
+    if (!modules.length) throw new Error('Profile plan found no loaded executable modules');
+    if (modules.length > PROFILE_PLAN_MAX_MODULES) throw new Error('Profile plan module table exceeds budget');
+    for (const module of modules) {
+        if (!PROFILE_PLAN_SHA256.test(module.sourceSha256))
+            throw new Error(`Profile plan source hash missing for ${module.name || 'module'}`);
+        if (!Number.isSafeInteger(module.size) || module.size < 1 || module.size > 0xffffffff ||
+            module.base + module.size > 0x100000000)
+            throw new Error(`Profile plan module range is invalid for ${module.name || 'module'}`);
+    }
+    modules.sort((a, b) => a.base - b.base);
+    for (let i = 1; i < modules.length; i++)
+        if (modules[i - 1].base + modules[i - 1].size > modules[i].base)
+            throw new Error('Profile plan modules overlap');
+    return modules;
+}
+
+function profilePlanExecutableRanges(module: any): Array<[number, number]> {
+    const executable = module.sections
+        .filter((section: any) => (Number(section?.characteristics) & 0x20000000) !== 0)
+        .map((section: any) => {
+            const start = module.base + (Number(section.virtualAddress) >>> 0);
+            const length = Math.max(Number(section.virtualSize) || 0, Number(section.rawSize) || 0);
+            return [start >>> 0, Math.min(length, 0xffffffff)] as [number, number];
+        })
+        .filter(([start, length]: [number, number]) => length > 0 && start + length <= 0x100000000);
+    return executable.length ? executable : ([[module.base, module.size]] as Array<[number, number]>);
+}
+
 function addBreakpoint(addr: number): boolean {
     const a = addr >>> 0;
     if (!cfg.bps.includes(a)) {
@@ -102,6 +175,49 @@ export function applyDbgConfig(w: any): void {
 }
 
 export const dbg = {
+    /** Pause first; identities and loaded module bases come from the trusted preparation host. */
+    async cpuProfileStart(options: Omit<ProfileOptions, 'calls' | 'isPaused'>): Promise<void> {
+        const system = System.getInstance();
+        const owner = system.process;
+        const engine = owner?.v86 as any;
+        const cpu = engine?.cpu ?? engine?.v86?.cpu;
+        if (!cpu) throw new Error('No CPU is available for profiling');
+        await startGameBoxProfile(cpu, { ...options,
+            isPaused: () => system.isPaused && system.process === owner });
+        console.log('[dbg][cpu-profile] started');
+    },
+    async cpuProfileFinish(): Promise<Record<string, unknown>> {
+        const profile = await finishGameBoxProfile();
+        // Keep bounded structured data available to worker tooling for JSON export.
+        (globalThis as any).__gameboxCpuProfile = profile;
+        console.log(`[dbg][cpu-profile][JSON] ${JSON.stringify(profile)}`);
+        return profile as unknown as Record<string, unknown>;
+    },
+    cpuProfileCancel(): void { cancelGameBoxProfile(); },
+
+    /** Capture bounded state-derived DDraw FFP shader/pipeline observations until finish/cancel. */
+    graphicsProfileStart(options?: GraphicsProfileStartOptions): void {
+        const globals = globalThis as any;
+        const identity = options ?? {
+            gameContentHash: globals.__gameboxContentHash,
+            runtime: globals.__gameboxGraphicsRuntime,
+            scenario: globals.__gameboxGraphicsScenario ?? "gamebox-live",
+            gpu: globals.__gameboxGraphicsGpu,
+        };
+        graphicsProfile.start(identity);
+        console.log('[dbg][graphics-profile] started');
+    },
+    async graphicsProfileFinish(): Promise<Record<string, unknown>> {
+        const profile = await graphicsProfile.finish();
+        (globalThis as any).__gameboxGraphicsProfile = profile;
+        console.log(`[dbg][graphics-profile][JSON] ${JSON.stringify(profile)}`);
+        return profile as unknown as Record<string, unknown>;
+    },
+    graphicsProfileCancel(): void {
+        graphicsProfile.cancel();
+        delete (globalThis as any).__gameboxGraphicsProfile;
+    },
+
     /** Enable the debugger. Turns JIT OFF (required) and clears the JIT cache. */
     enable(): void {
         cfg.enabled = true;
@@ -1812,6 +1928,98 @@ export const dbg = {
             console.log(`[dbg][mods][JSON] ${JSON.stringify({ count: list.length, resolve: hit, modules: list })}`);
         } catch (e) { console.warn('[dbg] mods err', e); }
     },
+    /**
+     * Return a bounded compiler-ready page plan from the live prepared process.
+     * Tier-2 entries are physical pages; the plan walks the current guest page
+     * tables to recover their unique executable virtual aliases. It is read-only
+     * and intentionally fails closed on unsupported/ambiguous mappings.
+     */
+    profilePlan(maxPages = PROFILE_PLAN_MAX_PAGES): Record<string, unknown> {
+        if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > PROFILE_PLAN_MAX_PAGES)
+            throw new Error(`Profile plan page limit must be 1..${PROFILE_PLAN_MAX_PAGES}`);
+        const system = System.getInstance();
+        const process: any = system.process;
+        if (!system.isPaused || !process) throw new Error('Pause the CPU before discovering a profile plan');
+        const { cpu, memory } = resolveProfilePlanRuntime(process);
+        const modules = profilePlanModules(process);
+        const pagingEnabled = Boolean(cpu.cr?.[0] & 0x80000000);
+        if (!pagingEnabled && modules.some((module) => module.base + module.size > memory.length))
+            throw new Error('Profile plan module range exceeds physical guest memory');
+        const exports = wasm();
+        if (!exports?.jit_get_tier2_page_count || !exports?.jit_get_tier2_page_at)
+            throw new Error('Profile plan tier-2 page exports are unavailable');
+        const tier2Count = Number(exports.jit_get_tier2_page_count());
+        if (!Number.isSafeInteger(tier2Count) || tier2Count < 1 || tier2Count > 8192)
+            throw new Error('Profile plan has no bounded tier-2 pages');
+        const tier2PhysicalPages = new Set<number>();
+        for (let i = 0; i < tier2Count; i++) {
+            const page = Number(exports.jit_get_tier2_page_at(i)) >>> 0;
+            if (page % 4096 || page > memory.length - 4096)
+                throw new Error('Profile plan returned an invalid tier-2 physical page');
+            tier2PhysicalPages.add(page);
+        }
+        if (tier2PhysicalPages.size !== tier2Count)
+            throw new Error('Profile plan tier-2 page list contains duplicates');
+        if (!tier2PhysicalPages.size) throw new Error('Profile plan has no tier-2 pages');
+        const candidates = new Map<number, number>();
+        let probes = 0;
+        for (const module of modules) {
+            for (const [rangeStart, rangeLength] of profilePlanExecutableRanges(module)) {
+                const first = rangeStart & 0xfffff000;
+                const last = Math.min(0x100000000, rangeStart + rangeLength);
+                for (let virtual = first; virtual < last; virtual += 4096) {
+                    if (++probes > PROFILE_PLAN_MAX_PROBES)
+                        throw new Error('Profile plan page walk exceeded probe budget');
+                    const physical = profilePlanTranslatePage(cpu, memory, virtual);
+                    if (physical === null || !tier2PhysicalPages.has(physical)) continue;
+                    const previous = candidates.get(physical);
+                    if (previous !== undefined && previous !== virtual)
+                        throw new Error(`Profile plan physical page 0x${physical.toString(16)} has ambiguous virtual aliases`);
+                    candidates.set(physical, virtual);
+                }
+            }
+        }
+        if (!candidates.size)
+            throw new Error('Profile plan tier-2 pages do not map to loaded executable modules');
+        const allPairs = [...candidates.entries()].sort((a, b) => a[1] - b[1]);
+        const pagePairs = allPairs.slice(0, maxPages);
+        const unmappedTier2PhysicalPages = [...tier2PhysicalPages]
+            .filter((physical) => !candidates.has(physical))
+            .sort((a, b) => a - b);
+        const omittedTier2PhysicalPages = allPairs
+            .slice(maxPages)
+            .map(([physical]) => physical)
+            .sort((a, b) => a - b);
+        const caveats = [];
+        if (unmappedTier2PhysicalPages.length)
+            caveats.push('Some Tier-2 pages were not mapped to loaded prepared executable modules');
+        if (omittedTier2PhysicalPages.length)
+            caveats.push('The deterministic page bound omitted additional mapped Tier-2 pages');
+        return {
+            version: 1,
+            source: 'tier2-executable-pages',
+            memoryBytes: String(memory.length),
+            pagingEnabled,
+            jitConfig: Array.from({ length: 22 }, (_, index) => {
+                const value = exports.get_jit_config?.(index);
+                if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)
+                    throw new Error('Profile plan JIT configuration is unavailable');
+                return value >>> 0;
+            }),
+            modules: modules.map(({ sourceSha256, base, size }) => ({ sourceSha256, base, size })),
+            pages: pagePairs.map(([, virtual]) => virtual >>> 0),
+            mappings: pagePairs.map(([physical, virtual]) => ({
+                virtualAddress: virtual >>> 0,
+                physicalAddress: physical >>> 0,
+            })),
+            tier2PhysicalPages: [...tier2PhysicalPages].sort((a, b) => a - b),
+            mappedTier2PhysicalPages: [...candidates.keys()].sort((a, b) => a - b),
+            unmappedTier2PhysicalPages,
+            omittedTier2PhysicalPages,
+            caveats,
+            probes,
+        };
+    },
     /** Dump a guest memory range as base64 (one console line) so a packed/unparseable
      *  module's RUNTIME (unpacked) image can be reconstructed offline and fed to Ghidra
      *  at its load base. len capped at 256 KB. */
@@ -2054,7 +2262,7 @@ export const dbg = {
 export function handleDbgCommand(cmd: string, args: any[]): void {
     const fn = (dbg as any)[cmd];
     if (typeof fn === "function") {
-        try { fn(...(args || [])); } catch (e) { console.warn(`[dbg] error in ${cmd}:`, e); }
+        try { Promise.resolve(fn(...(args || []))).catch(e => console.warn(`[dbg] error in ${cmd}:`, e)); } catch (e) { console.warn(`[dbg] error in ${cmd}:`, e); }
     } else {
         console.warn(`[dbg] unknown command: ${cmd}`);
     }

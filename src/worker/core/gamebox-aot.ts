@@ -1,5 +1,6 @@
 import { System } from './system';
 import {
+  clearTranslationCacheStore,
   PersistentTranslationCache,
   TRANSLATION_ABI_VERSION,
   mergeTranslationProfiles,
@@ -113,6 +114,13 @@ function loadPackage(e: AotExports, bytes: Uint8Array<ArrayBuffer>): void {
   if (!e.aot_buffer_commit()) throw new Error('Invalid AOT artifact');
 }
 
+/** Install a caller-preflighted local package before guest execution. */
+export function installPreparedTranslationPackage(bytes: Uint8Array): void {
+  const e = exports();
+  if (!e) throw new Error('Native AOT exports unavailable');
+  loadPackage(e, bytes as Uint8Array<ArrayBuffer>);
+}
+
 function readProfiles(e: AotExports): TranslationProfileRow[] {
   const count = e.aot_profile_snapshot?.(Date.now()) ?? 0;
   const rows: TranslationProfileRow[] = [];
@@ -130,6 +138,54 @@ function readProfiles(e: AotExports): TranslationProfileRow[] {
       lastExecutionAt: Number(e.aot_profile_last_execution_at(i)),
     });
   return rows;
+}
+
+export function summarizeAotExecution(
+  profiles: readonly Pick<TranslationProfileRow, 'executions' | 'cacheHits'>[],
+  trace2Enabled: boolean | null,
+): {
+  trace2Enabled: boolean | null;
+  profileRows: number;
+  profileExecutions: number;
+  replayedProfileRows: number;
+  replayedProfileExecutions: number;
+  executedRegions: number;
+} {
+  let profileExecutions = 0;
+  let replayedProfileRows = 0;
+  let replayedProfileExecutions = 0;
+  let executedRegions = 0;
+  for (const profile of profiles) {
+    profileExecutions += profile.executions;
+    if (profile.cacheHits > 0) {
+      replayedProfileRows++;
+      replayedProfileExecutions += profile.executions;
+    }
+    if (profile.executions > 0) executedRegions++;
+  }
+  return {
+    trace2Enabled,
+    profileRows: profiles.length,
+    profileExecutions,
+    replayedProfileRows,
+    replayedProfileExecutions,
+    executedRegions,
+  };
+}
+
+function executionSummary(e: AotExports): ReturnType<typeof summarizeAotExecution> {
+  const trace2Enabled =
+    typeof (e as WebAssembly.Exports & { trace2_enabled?: () => number }).trace2_enabled ===
+    'function'
+      ? Boolean(
+          (
+            e as unknown as WebAssembly.Exports & { trace2_enabled: () => number }
+          ).trace2_enabled() >>> 0,
+        )
+      : null;
+  if (!e.aot_profile_snapshot) return summarizeAotExecution([], trace2Enabled);
+  const profiles = readProfiles(e);
+  return summarizeAotExecution(profiles, trace2Enabled);
 }
 
 async function persistentStart(e: AotExports) {
@@ -263,8 +319,7 @@ async function persistentOperation(
   }
   if (mode === 'persistent-clear-all') {
     const store = persistentCache?.store ?? (await openTranslationCacheStore());
-    const count = (await store.list()).length;
-    await store.clear();
+    const count = await clearTranslationCacheStore(store);
     persistentWriteDisabled = true;
     previousPersistentEntry = null;
     return { cleared: count };
@@ -352,6 +407,7 @@ export async function gameboxAot(message: {
         'guestCodeInvalidations',
       ].map((name, i) => [name, Number(e.aot_stat(i))]),
     ),
+    execution: executionSummary(e),
     persistent: persistentCache
       ? { ...(await persistentCache.statistics()), ...persistentMetrics }
       : null,

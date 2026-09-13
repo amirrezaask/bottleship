@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "runtime": {
+    "wasmSha256": "eaeb2adc5140d603d4d58317db89762e12b0ce74bbc4c083a501f6edd0615aee",
+    "javascriptSha256": "11fea956967fd2056de39e2aee2d694735cdd5f20d15c0d609ff4de851d31b8b",
+    "recipe": "v86-offline-1-6464f90350f4db047ef718d67f4a5093ef354cfc07271fd484ba6c6101229740",
+    "memoryBytes": 16777216
+  },
+  "modules": [
+    {
+      "sourceHash": "be2396944b15b32054f6d889b9b29481b111e55b3b52d75bf3263291e8c0c24c",
+      "compilation": {
+        "sourceHash": "be2396944b15b32054f6d889b9b29481b111e55b3b52d75bf3263291e8c0c24c",
+        "attemptedEntries": 3,
+        "selectedPages": 1,
+        "omittedEntries": 0,
+        "summary": {
+          "units": 1,
+          "pages": 1,
+          "entries": 3,
+          "wasm_bytes": 823
+        },
+        "reason": null
+      },
+      "fallback": null
+    }
+  ]
+}

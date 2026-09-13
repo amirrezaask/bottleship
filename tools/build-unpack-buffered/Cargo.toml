@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "BottleShip archive/codec decompression for game ingestion (7z/deflate/LZMA1) → wasm"
 
+# Keep this vendored wasm crate independently testable when the GameBox
+# workspace manifest exists above it. It is intentionally not a GameBox
+# workspace member.
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 

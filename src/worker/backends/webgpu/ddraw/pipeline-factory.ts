@@ -59,10 +59,11 @@ import {
     D3DTFG_POINT,
 } from "../../../modules/ddraw/constants";
 import { DebugFlags, generatePipelineKey, generateMegaBatchPipelineKey, PipelineKeyConfig, pipelineKeyConfigsEqual, megaBatchPipelineKeyConfigsEqual } from "./types";
-import { ShaderGenerator, ShaderConfig } from "./shader-generator";
+import { ShaderGenerator, ShaderConfig, shaderConfigKey } from "./shader-generator";
 import { BindGroupManager } from "./bind-group-manager";
 import { DirectDrawSurfaceState } from "../../../modules/ddraw/com-objects";
 import { FfpStagesState, MAX_FFP_SAMPLED_STAGES } from "./ffp-stages";
+import { graphicsProfile } from "../../../core/graphics-profile";
 
 /**
  * Maps D3D blend factor to WebGPU blend factor
@@ -181,6 +182,13 @@ export class PipelineFactory {
 
     // Pipeline cache
     private pipelineCache = new Map<string, GPURenderPipeline>();
+    /** Bounded, authenticated logical descriptors from the prepared profile. */
+    private preparedPipelineDescriptors = new Map<string, {
+        keyConfig: string;
+        targetFormat: string;
+        depthFormat: string;
+        sampleCount: number;
+    }>();
 
     // Last-config fast path: avoids string allocation + Map lookup on consecutive same-state draws.
     private lastGetPipelineConfig: PipelineKeyConfig | null = null;
@@ -205,6 +213,56 @@ export class PipelineFactory {
         this.bindGroupManager = bindGroupManager;
         this.debugFlags = debugFlags;
         this.swapChainFormat = swapChainFormat;
+        const prepared = (globalThis as any).__gameboxGraphicsProfile?.pipelineDescriptors;
+        if (prepared instanceof Map) {
+            for (const [key, descriptor] of prepared) {
+                if (
+                    typeof key !== "string" || key.length > 4096 ||
+                    !descriptor || typeof descriptor !== "object" ||
+                    typeof descriptor.keyConfig !== "string" ||
+                    typeof descriptor.targetFormat !== "string" ||
+                    typeof descriptor.depthFormat !== "string" ||
+                    !Number.isSafeInteger(descriptor.sampleCount) ||
+                    this.preparedPipelineDescriptors.size >= 16384
+                ) continue;
+                this.preparedPipelineDescriptors.set(key, {
+                    keyConfig: descriptor.keyConfig,
+                    targetFormat: descriptor.targetFormat,
+                    depthFormat: descriptor.depthFormat,
+                    sampleCount: descriptor.sampleCount,
+                });
+            }
+        }
+    }
+
+    /** Diagnostic counts for prepared logical-descriptor candidates. */
+    getPreparedDescriptorStats(): { hits: number; misses: number; candidates: number } {
+        const stats = (globalThis as any).__gameboxGraphicsPreparedStats;
+        return {
+            hits: typeof stats?.pipelineDescriptorHits === "number" ? stats.pipelineDescriptorHits : 0,
+            misses: typeof stats?.pipelineDescriptorMisses === "number" ? stats.pipelineDescriptorMisses : 0,
+            candidates: this.preparedPipelineDescriptors.size,
+        };
+    }
+
+    private preparedDescriptorMatches(key: string, keyConfig?: PipelineKeyConfig): boolean {
+        const descriptor = this.preparedPipelineDescriptors.get(key);
+        const currentKeyConfig = keyConfig === undefined ? undefined : canonicalPipelineValue(keyConfig);
+        const matches = descriptor !== undefined &&
+            currentKeyConfig === descriptor.keyConfig &&
+            descriptor.targetFormat === this.swapChainFormat &&
+            descriptor.depthFormat === "depth24plus-stencil8" &&
+            descriptor.sampleCount === this.sampleCount;
+        const stats = (globalThis as any).__gameboxGraphicsPreparedStats ?? {
+            pipelineDescriptorHits: 0,
+            pipelineDescriptorMisses: 0,
+        };
+        if (descriptor !== undefined) {
+            if (matches) stats.pipelineDescriptorHits++;
+            else stats.pipelineDescriptorMisses++;
+        }
+        (globalThis as any).__gameboxGraphicsPreparedStats = stats;
+        return matches;
     }
 
     /**
@@ -241,6 +299,20 @@ export class PipelineFactory {
     /** Cached pipeline count (debug GPU panel). */
     getCacheSize(): number {
         return this.pipelineCache.size + this.megaBatchPipelineCache.size;
+    }
+
+    private profilePipeline(key: string, config: PipelineKeyConfig, texture: DirectDrawSurfaceState | null | undefined, prepareMs: number, cacheHit: boolean, megaBatch: boolean): void {
+        if (!graphicsProfile.isActive()) return;
+        const needsUVFlip = texture && isBitmapTexture(texture) ? (texture.needsUVFlip ?? false) : false;
+        const shaderKey = shaderConfigKey({
+            sampledMask: config.sampledMask, stageCount: config.stageCount, pointSampleMask: config.pointSampleMask,
+            flatShading: config.flatShading, alphaTestEnabled: config.alphaTest !== 0 && !this.debugFlags.forceDisableAlphaTest,
+            alphaFunc: config.alphaFunc, shouldEnableBlending: config.alphaBlend !== 0, missingTexture: config.missingTexture,
+            colorKeyEnabled: config.colorKeyEnabled !== 0, colorKey: null, debugFlags: this.debugFlags, needsUVFlip,
+            ...(megaBatch ? { useMegaBatch: true } : {}),
+        });
+        graphicsProfile.setGpu({ backend: "webgpu", colorFormat: this.swapChainFormat, depthFormat: "depth24plus-stencil8", sampleCount: this.sampleCount });
+        graphicsProfile.recordPipeline(key, { mode: megaBatch ? "ffp-megabatch" : "ffp", shaderConfigKey: shaderKey, keyConfig: config, targetFormat: this.swapChainFormat, depthFormat: "depth24plus-stencil8", sampleCount: this.sampleCount }, shaderKey, prepareMs, 1, cacheHit);
     }
 
     /**
@@ -350,6 +422,10 @@ export class PipelineFactory {
         if (this.lastGetPipelineConfig !== null &&
             this.lastGetPipelinePipeline !== null &&
             pipelineKeyConfigsEqual(keyConfig, this.lastGetPipelineConfig)) {
+            if (graphicsProfile.isActive()) {
+                const key = this.sampleCount + "|" + generatePipelineKey(keyConfig);
+                this.profilePipeline(key, keyConfig, texture, 0, true, false);
+            }
             return this.lastGetPipelinePipeline;
         }
 
@@ -369,6 +445,9 @@ export class PipelineFactory {
             }
             this.lastGetPipelineConfig = keyConfig;
             this.lastGetPipelinePipeline = pipeline;
+            if (graphicsProfile.isActive()) {
+                this.profilePipeline(key, keyConfig, texture, 0, true, false);
+            }
             return pipeline;
         }
 
@@ -376,9 +455,17 @@ export class PipelineFactory {
             ddraw.incrementFrameCounter("cacheMisses");
         }
 
+        // The authenticated profile's descriptor is an exact state candidate.
+        // A format/sample mismatch falls through to ordinary generation; the
+        // browser still compiles the selected WGSL through WebGPU.
+        const preparedDescriptor = this.preparedDescriptorMatches(key, keyConfig)
+            ? this.preparedPipelineDescriptors.get(key)
+            : undefined;
+
         // needsUVFlip only exists on BitmapTextureSurface
         const needsUVFlip = (texture && isBitmapTexture(texture)) ? (texture.needsUVFlip ?? false) : false;
 
+        const profileStarted = graphicsProfile.isActive() ? performance.now() : 0;
         pipeline = this.createPipeline(
             vertexType,
             primitiveType,
@@ -406,10 +493,14 @@ export class PipelineFactory {
             stencilMask,
             stencilWriteMask,
             needsUVFlip,
-            keyConfig.flatShading
+            keyConfig.flatShading,
+            preparedDescriptor
         );
 
         this.pipelineCache.set(key, pipeline);
+        if (graphicsProfile.isActive()) {
+            this.profilePipeline(key, keyConfig, texture, performance.now() - profileStarted, false, false);
+        }
         this.lastGetPipelineConfig = keyConfig;
         this.lastGetPipelinePipeline = pipeline;
         Logger.verbose(LogCategory.SYSTEM, `PipelineFactory: Created new pipeline with key: ${key}`);
@@ -513,6 +604,10 @@ export class PipelineFactory {
         if (this.lastMegaBatchConfig !== null &&
             this.lastMegaBatchPipeline !== null &&
             megaBatchPipelineKeyConfigsEqual(keyConfig, this.lastMegaBatchConfig)) {
+            if (graphicsProfile.isActive()) {
+                const key = "mb_" + this.sampleCount + "|" + generateMegaBatchPipelineKey(keyConfig);
+                this.profilePipeline(key, keyConfig, texture, 0, true, true);
+            }
             return this.lastMegaBatchPipeline;
         }
 
@@ -525,12 +620,16 @@ export class PipelineFactory {
         if (pipeline) {
             this.lastMegaBatchConfig = keyConfig;
             this.lastMegaBatchPipeline = pipeline;
+            if (graphicsProfile.isActive()) {
+                this.profilePipeline(key, keyConfig, texture, 0, true, true);
+            }
             return pipeline;
         }
 
         // needsUVFlip only exists on BitmapTextureSurface
         const needsUVFlip = (texture && isBitmapTexture(texture)) ? (texture.needsUVFlip ?? false) : false;
 
+        const profileStarted = graphicsProfile.isActive() ? performance.now() : 0;
         pipeline = this.createMegaBatchPipeline(
             vertexType,
             primitiveType,
@@ -562,6 +661,9 @@ export class PipelineFactory {
         );
 
         this.megaBatchPipelineCache.set(key, pipeline);
+        if (graphicsProfile.isActive()) {
+            this.profilePipeline(key, keyConfig, texture, performance.now() - profileStarted, false, true);
+        }
         this.lastMegaBatchConfig = keyConfig;
         this.lastMegaBatchPipeline = pipeline;
         Logger.verbose(LogCategory.SYSTEM, `PipelineFactory: Created MegaBatch pipeline with key: ${key}`);
@@ -771,8 +873,19 @@ export class PipelineFactory {
         stencilMask: number,
         stencilWriteMask: number,
         needsUVFlip: boolean,
-        flatShading: boolean
+        flatShading: boolean,
+        preparedDescriptor?: {
+            targetFormat: string;
+            depthFormat: string;
+            sampleCount: number;
+        }
     ): GPURenderPipeline {
+        // This candidate has already passed the complete state-key and live
+        // attachment checks. It lets the prepared profile supply the stable
+        // attachment identity while the browser owns GPU object creation.
+        const targetFormat = (preparedDescriptor?.targetFormat ?? this.swapChainFormat) as GPUTextureFormat;
+        const depthFormat = (preparedDescriptor?.depthFormat ?? "depth24plus-stencil8") as GPUTextureFormat;
+        const sampleCount = preparedDescriptor?.sampleCount ?? this.sampleCount;
         const useTexture = (sampledMask & 1) !== 0;
         const isRHWVertex = (vertexType & D3DFVF_XYZRHW) !== 0;
         const hasDiffuse = (vertexType & D3DFVF_DIFFUSE) !== 0;
@@ -871,7 +984,7 @@ export class PipelineFactory {
         // Create pipeline
         return this.device.createRenderPipeline({
             layout: pipelineLayout,
-            multisample: { count: this.sampleCount },
+            multisample: { count: sampleCount },
             vertex: {
                 module: shader,
                 entryPoint: "vs_main",
@@ -895,7 +1008,7 @@ export class PipelineFactory {
                 entryPoint: "fs_main",
                 targets: [
                     {
-                        format: this.swapChainFormat, // Use actual swapchain format (bgra8unorm on Windows, rgba8unorm on others)
+                        format: targetFormat, // Use actual swapchain format (bgra8unorm on Windows, rgba8unorm on others)
                         blend: blendState,
                     },
                 ],
@@ -910,7 +1023,7 @@ export class PipelineFactory {
                     : {}),
             },
             depthStencil: {
-                format: "depth24plus-stencil8",
+                format: depthFormat,
                 // Enable depth test/write for both XYZ and XYZRHW when app sets Z (RHW vertices pass depth 0..1 in pos.z)
                 depthWriteEnabled: (zEnable !== 0 && !this.debugFlags.forceDisableZTest) && (zWrite !== 0),
                 depthCompare:
@@ -941,4 +1054,13 @@ export class PipelineFactory {
             },
         });
     }
+}
+
+function canonicalPipelineValue(value: unknown): string {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+    if (typeof value === "number") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(canonicalPipelineValue).join(",")}]`;
+    if (!value || typeof value !== "object") return "null";
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalPipelineValue(record[key])}`).join(",")}}`;
 }

@@ -28,6 +28,63 @@ export interface LoadedModule {
     sizeOfStackReserve: number;
 }
 
+export interface PeImageSource {
+  readonly size: number;
+  readRange(offset: number, length: number): Promise<Uint8Array>;
+}
+
+export interface PreparedPeSection {
+  name: string;
+  virtualAddress: number;
+  virtualSize: number;
+  rawOffset: number;
+  rawSize: number;
+  characteristics: number;
+}
+
+export interface PreparedPeDataDirectory {
+  virtualAddress: number;
+  size: number;
+}
+
+/** Minimal, host-verified metadata needed to stream a PE image into guest memory. */
+export interface PreparedPeDescriptor {
+  sourceHash: string;
+  sourceBytes: number;
+  preferredBase: number;
+  entrypointRva: number;
+  imageSize: number;
+  headerSize: number;
+  sections: PreparedPeSection[];
+  dataDirectories: PreparedPeDataDirectory[];
+}
+
+export interface PreparedPeSourceResolution {
+  source: PeImageSource;
+  descriptor?: PreparedPeDescriptor;
+}
+
+const MAX_PREPARED_READ = 256 * 1024;
+const MAX_PREPARED_HEADER = 1 * 1024 * 1024;
+const MAX_PREPARED_SECTIONS = 96;
+const MAX_PREPARED_DIRECTORIES = 16;
+const MAX_RAW_VFS_DLL_BYTES = 64 * 1024 * 1024;
+
+interface PreparedPeHeader {
+  bytes: Uint8Array;
+  view: DataView;
+  e_lfanew: number;
+  optHeaderPtr: number;
+  numberOfSections: number;
+  sizeOfOptionalHeader: number;
+  imageBase: number;
+  sizeOfImage: number;
+  entryPointRva: number;
+  sizeOfHeaders: number;
+  sections: PreparedPeSection[];
+  dataDirectories: PreparedPeDataDirectory[];
+}
+
 /**
  * Entry for a DLL whose DllMain needs to be called at boot time.
  * Collected during PE loading, emitted as x86 PUSH/CALL in the bootloader trampoline.
@@ -55,6 +112,7 @@ export class PELoader {
     private apiRegistry: APIRegistry;
     private moduleRegistry: ModuleRegistry | null = null;
     private vfs: VirtualFileSystem | null = null;
+    private preparedSourceResolver: ((path: string) => Promise<PreparedPeSourceResolution | null>) | null = null;
 
     /**
      * DLLs that must NOT be loaded as real x86 code. Their native code uses OS features
@@ -240,6 +298,17 @@ export class PELoader {
         this.vfs = vfs;
     }
 
+  /**
+   * Resolve a verified, unchanged PE object after normal VFS path selection.
+   * Returning null preserves the existing VFS loader.  The resolver owns
+   * overlay/source-hash checks; this class only validates PE header metadata.
+   */
+  setPreparedSourceResolver(
+    resolver: ((path: string) => Promise<PreparedPeSourceResolution | null>) | null,
+  ): void {
+    this.preparedSourceResolver = resolver;
+  }
+
     private get memory(): Uint8Array {
         return this.getMemory();
     }
@@ -304,76 +373,474 @@ export class PELoader {
             this.applyRelocations(peData, baseAddress);
         }
 
-        // Process Imports (now async to support real DLL loading)
-        const importDirRVA = peView.getUint32(optHeaderPtr + 104, true);
-        if (importDirRVA !== 0) {
-            await this.processImports(baseAddress, importDirRVA);
-        }
-
-        // Process TLS directory (implicit __declspec(thread) variables)
-        // Must be after sections+relocations so guest memory has correct VAs.
-        {
-            const exeName = system.executableName.toLowerCase().replace(/\.exe$/, '');
-            this.processTlsDirectory(peView, optHeaderPtr, baseAddress, exeName);
-        }
-
-        // Register main executable in module registry.
-        // Parse the EXE's export table too: engine-style games (e.g. Blade of Darkness)
-        // export an API from the main EXE that their own DLLs import back
-        // (Bladex.dll/netgame.dll import Blade.exe!GetStringValue etc.). Without these,
-        // processImports patches those IAT slots with the missing-import trap.
-        let exeModuleForHle: LoadedPEModule | null = null;
-        if (this.moduleRegistry) {
-            const exeName = system.executableName.toLowerCase().replace(/\.exe$/, '');
-            const { exports: exeExports, ordinals: exeOrdinals } = this.parseExportTable(peData, baseAddress);
-            if (exeExports.size > 0 || exeOrdinals.size > 0) {
-                Logger.log(LogCategory.SYSTEM,
-                    `[PE] Main EXE exports parsed: ${exeExports.size} named, ${exeOrdinals.size} ordinals`);
-            }
-            const exeModule: LoadedPEModule = {
-                name: exeName,
-                path: system.executablePath || `C:\\${system.executableName}`,
-                baseAddress,
-                size: sizeOfImage,
-                entryPoint: entryPointRVA,
-                exports: exeExports,
-                ordinalExports: exeOrdinals,
-                isRealDll: false,
-                isExecutable: true,
-                initialized: true,
-                sections
-            };
-            this.moduleRegistry.register(exeModule);
-            exeModuleForHle = exeModule;
-        }
-
-        // Static Library HLE detection: scan the freshly-loaded image for
-        // signatures of zlib/libpng/etc and hook any matches. Must run AFTER
-        // applyRelocations + processImports so signatures see their final
-        // post-relocation bytes. No-op when hleLibs.enable=false.
-        if (exeModuleForHle) {
-            try {
-                libHleManager.onModuleLoaded(exeModuleForHle);
-            } catch (e) {
-                Logger.warn(LogCategory.SYSTEM, `[HLE-lib] onModuleLoaded threw on EXE: ${e}`);
-            }
-            try {
-                hookRegistry.onModuleLoaded(exeModuleForHle);
-            } catch (e) {
-                Logger.warn(LogCategory.SYSTEM, `[hooks] onModuleLoaded threw on EXE: ${e}`);
-            }
-        }
-
-        // PE32 optional header offset 72 = SizeOfStackReserve
-        const sizeOfStackReserve = peView.getUint32(optHeaderPtr + 72, true);
-
-        return {
+        const { exports, ordinals } = this.parseExportTable(peData, baseAddress);
+        return this.finishExecutableLoad(
             baseAddress,
-            entryPoint: baseAddress + entryPointRVA,
-            size: sizeOfImage,
-            sizeOfStackReserve,
-        };
+            sizeOfImage,
+            entryPointRVA,
+            peView.getUint32(optHeaderPtr + 72, true),
+            peView,
+            optHeaderPtr,
+            peView.getUint32(optHeaderPtr + 104, true),
+            sections,
+            exports,
+            ordinals,
+        );
     }
+
+  /**
+   * Load a PE32 executable from a bounded source using trusted prepared
+   * metadata.  The source is never assembled into one file-sized buffer.
+   */
+  async loadPreparedExecutable(
+    source: PeImageSource,
+    descriptor: PreparedPeDescriptor,
+  ): Promise<LoadedModule> {
+    const header = await this.readPreparedHeader(source);
+    this.validatePreparedDescriptor(source, descriptor, header, true);
+    const mapped = await this.mapPreparedImage(source, descriptor, header, 'image');
+    return this.finishPreparedExecutable(descriptor, header, mapped.baseAddress, mapped.sections);
+  }
+
+  /**
+   * Load a PE32 executable from a bounded source when no prepared metadata is
+   * available.  This is the explicit bounded raw fallback for GameBox
+   * objects; it still reads only headers and section ranges.
+   */
+  async loadSourceExecutable(source: PeImageSource): Promise<LoadedModule> {
+    const header = await this.readPreparedHeader(source);
+    const descriptor = this.descriptorFromHeader(source, header);
+    this.validatePreparedDescriptor(source, descriptor, header, true);
+    const mapped = await this.mapPreparedImage(source, descriptor, header, 'image');
+    return this.finishPreparedExecutable(descriptor, header, mapped.baseAddress, mapped.sections);
+  }
+
+  private async readExactSource(
+    source: PeImageSource,
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size > 0xffffffff) {
+      throw new Error(`Invalid PE source size: ${source.size}`);
+    }
+    if (
+      !Number.isSafeInteger(offset) ||
+      !Number.isSafeInteger(length) ||
+      offset < 0 ||
+      length < 0 ||
+      offset > source.size ||
+      length > source.size - offset
+    ) {
+      throw new Error(
+        `PE source range out of bounds: offset=${offset}, length=${length}, size=${source.size}`,
+      );
+    }
+    const bytes = await source.readRange(offset, length);
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) {
+      throw new Error(
+        `PE source returned ${bytes?.byteLength ?? 'non-bytes'} bytes for requested range ${length}`,
+      );
+    }
+    return bytes;
+  }
+
+  private async readSourceBytes(
+    source: PeImageSource,
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array> {
+    const result = new Uint8Array(length);
+    for (let position = 0; position < length;) {
+      const chunkLength = Math.min(MAX_PREPARED_READ, length - position);
+      const chunk = await this.readExactSource(source, offset + position, chunkLength);
+      result.set(chunk, position);
+      position += chunkLength;
+    }
+    return result;
+  }
+
+  private async readPreparedHeader(source: PeImageSource): Promise<PreparedPeHeader> {
+    if (source.size < 64) throw new Error('Prepared PE source is too small for a DOS header');
+    const dos = await this.readExactSource(source, 0, 64);
+    const dosView = new DataView(dos.buffer, dos.byteOffset, dos.byteLength);
+    if (dosView.getUint16(0, true) !== 0x5a4d)
+      throw new Error('Prepared source is not a DOS executable');
+    const e_lfanew = dosView.getUint32(0x3c, true);
+    if (e_lfanew > MAX_PREPARED_HEADER - 24 || e_lfanew + 24 > source.size) {
+      throw new Error(`Prepared PE header offset is invalid: 0x${e_lfanew.toString(16)}`);
+    }
+
+    const ntPrefix = await this.readSourceBytes(source, 0, e_lfanew + 24);
+    const ntView = new DataView(ntPrefix.buffer, ntPrefix.byteOffset, ntPrefix.byteLength);
+    if (ntView.getUint32(e_lfanew, true) !== 0x00004550)
+      throw new Error('Prepared source is not a PE executable');
+
+    const numberOfSections = ntView.getUint16(e_lfanew + 6, true);
+    const sizeOfOptionalHeader = ntView.getUint16(e_lfanew + 20, true);
+    if (numberOfSections === 0 || numberOfSections > MAX_PREPARED_SECTIONS) {
+      throw new Error(`Prepared PE section count is invalid: ${numberOfSections}`);
+    }
+    const optHeaderPtr = e_lfanew + 24;
+    if (sizeOfOptionalHeader < 96 || optHeaderPtr + sizeOfOptionalHeader > MAX_PREPARED_HEADER) {
+      throw new Error(`Prepared PE optional header size is invalid: ${sizeOfOptionalHeader}`);
+    }
+    const sectionTableEnd = optHeaderPtr + sizeOfOptionalHeader + numberOfSections * 40;
+    if (sectionTableEnd > MAX_PREPARED_HEADER || sectionTableEnd > source.size) {
+      throw new Error('Prepared PE section table is out of bounds');
+    }
+
+    const sectionTable = await this.readSourceBytes(source, 0, sectionTableEnd);
+    const sectionTableView = new DataView(
+      sectionTable.buffer,
+      sectionTable.byteOffset,
+      sectionTable.byteLength,
+    );
+    if (sectionTableView.getUint16(e_lfanew + 4, true) !== 0x14c) {
+      throw new Error('Only i386 prepared PE images are supported');
+    }
+    if (sectionTableView.getUint16(optHeaderPtr, true) !== 0x10b) {
+      throw new Error('Only 32-bit prepared PE images are supported');
+    }
+    const sizeOfHeaders = sectionTableView.getUint32(optHeaderPtr + 60, true);
+    if (
+      sizeOfHeaders < sectionTableEnd ||
+      sizeOfHeaders > MAX_PREPARED_HEADER ||
+      sizeOfHeaders > source.size
+    ) {
+      throw new Error(`Prepared PE header size is invalid: ${sizeOfHeaders}`);
+    }
+
+    const bytes = await this.readSourceBytes(source, 0, sizeOfHeaders);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const imageBase = view.getUint32(optHeaderPtr + 28, true);
+    const sizeOfImage = view.getUint32(optHeaderPtr + 56, true);
+    const entryPointRva = view.getUint32(optHeaderPtr + 16, true);
+    if (
+      sizeOfImage === 0 ||
+      sizeOfHeaders > sizeOfImage ||
+      sizeOfImage > this.memory.length
+    ) {
+      throw new Error(
+        `Prepared PE image size does not fit guest memory: size=0x${sizeOfImage.toString(16)}`,
+      );
+    }
+
+    const directoryCount = view.getUint32(optHeaderPtr + 92, true);
+    if (
+      directoryCount > MAX_PREPARED_DIRECTORIES ||
+      96 + directoryCount * 8 > sizeOfOptionalHeader ||
+      optHeaderPtr + 96 + directoryCount * 8 > bytes.length
+    ) {
+      throw new Error(`Prepared PE directory count is invalid: ${directoryCount}`);
+    }
+    const dataDirectories: PreparedPeDataDirectory[] = [];
+    for (let i = 0; i < directoryCount; i++) {
+      dataDirectories.push({
+        virtualAddress: view.getUint32(optHeaderPtr + 96 + i * 8, true),
+        size: view.getUint32(optHeaderPtr + 100 + i * 8, true),
+      });
+    }
+
+    const sections: PreparedPeSection[] = [];
+    const sectionHeaderPtr = optHeaderPtr + sizeOfOptionalHeader;
+    for (let i = 0; i < numberOfSections; i++) {
+      const ptr = sectionHeaderPtr + i * 40;
+      let name = '';
+      for (let j = 0; j < 8 && bytes[ptr + j] !== 0; j++)
+        name += String.fromCharCode(bytes[ptr + j]);
+      const virtualAddress = view.getUint32(ptr + 12, true);
+      const virtualSize = view.getUint32(ptr + 8, true);
+      const rawSize = view.getUint32(ptr + 16, true);
+      const rawOffset = view.getUint32(ptr + 20, true);
+      if (rawSize > 0 && (rawOffset > source.size || rawSize > source.size - rawOffset)) {
+        throw new Error(`Prepared PE section ${name} raw range is outside the source`);
+      }
+      const mappedSize = Math.max(virtualSize, rawSize);
+      if (mappedSize > 0 && virtualAddress < sizeOfHeaders) {
+        throw new Error(`Prepared PE section ${name} overlaps the mapped headers`);
+      }
+      if (virtualAddress > sizeOfImage || mappedSize > sizeOfImage - virtualAddress) {
+        throw new Error(`Prepared PE section ${name} is outside SizeOfImage`);
+      }
+      sections.push({
+        name,
+        virtualAddress,
+        virtualSize,
+        rawOffset,
+        rawSize,
+        characteristics: view.getUint32(ptr + 36, true),
+      });
+    }
+
+    const ranges = sections
+      .filter(section => Math.max(section.virtualSize, section.rawSize) > 0)
+      .map(section => ({
+        start: section.virtualAddress,
+        end: section.virtualAddress + Math.max(section.virtualSize, section.rawSize),
+        name: section.name,
+      }))
+      .sort((a, b) => a.start - b.start);
+    for (let i = 1; i < ranges.length; i++) {
+      if (ranges[i].start < ranges[i - 1].end) {
+        throw new Error(`Prepared PE sections overlap: ${ranges[i - 1].name} and ${ranges[i].name}`);
+      }
+    }
+    for (let i = 0; i < dataDirectories.length; i++) {
+      const directory = dataDirectories[i];
+      if (i === 4 || (directory.virtualAddress === 0 && directory.size === 0)) continue;
+      if (directory.virtualAddress === 0 || directory.size === 0) {
+        throw new Error(`Prepared PE data directory ${i} has an invalid empty range`);
+      }
+      if (directory.virtualAddress > sizeOfImage || directory.size > sizeOfImage - directory.virtualAddress) {
+        throw new Error(`Prepared PE data directory ${i} is outside SizeOfImage`);
+      }
+    }
+
+    return {
+      bytes,
+      view,
+      e_lfanew,
+      optHeaderPtr,
+      numberOfSections,
+      sizeOfOptionalHeader,
+      imageBase,
+      sizeOfImage,
+      entryPointRva,
+      sizeOfHeaders,
+      sections,
+      dataDirectories,
+    };
+  }
+
+  private descriptorFromHeader(
+    source: PeImageSource,
+    header: PreparedPeHeader,
+  ): PreparedPeDescriptor {
+    return {
+      sourceHash: '',
+      sourceBytes: source.size,
+      preferredBase: header.imageBase,
+      entrypointRva: header.entryPointRva,
+      imageSize: header.sizeOfImage,
+      headerSize: header.sizeOfHeaders,
+      sections: header.sections,
+      dataDirectories: header.dataDirectories,
+    };
+  }
+
+  private validatePreparedDescriptor(
+    source: PeImageSource,
+    descriptor: PreparedPeDescriptor,
+    header: PreparedPeHeader,
+    requireEntrypoint = false,
+  ): void {
+    if (!Number.isSafeInteger(descriptor.sourceBytes) || descriptor.sourceBytes !== source.size) {
+      throw new Error(
+        `Prepared PE source size mismatch: metadata=${descriptor.sourceBytes}, source=${source.size}`,
+      );
+    }
+    const equal = (a: number, b: number, label: string): void => {
+      if (a !== b) throw new Error(`Prepared PE ${label} mismatch: metadata=${a}, header=${b}`);
+    };
+    equal(descriptor.preferredBase, header.imageBase, 'preferred base');
+    equal(descriptor.entrypointRva, header.entryPointRva, 'entrypoint RVA');
+    equal(descriptor.imageSize, header.sizeOfImage, 'image size');
+    equal(descriptor.headerSize, header.sizeOfHeaders, 'header size');
+    if (descriptor.entrypointRva >= descriptor.imageSize ||
+        (requireEntrypoint && descriptor.entrypointRva === 0)) {
+      throw new Error(`Prepared PE entrypoint RVA is outside the image: 0x${descriptor.entrypointRva.toString(16)}`);
+    }
+    if (descriptor.sections.length !== header.sections.length) {
+      throw new Error(
+        `Prepared PE section count mismatch: metadata=${descriptor.sections.length}, header=${header.sections.length}`,
+      );
+    }
+    for (let i = 0; i < header.sections.length; i++) {
+      const expected = header.sections[i];
+      const actual = descriptor.sections[i];
+      if (
+        actual.name !== expected.name ||
+        actual.virtualAddress !== expected.virtualAddress ||
+        actual.virtualSize !== expected.virtualSize ||
+        actual.rawOffset !== expected.rawOffset ||
+        actual.rawSize !== expected.rawSize ||
+        actual.characteristics !== expected.characteristics
+      ) {
+        throw new Error(`Prepared PE section ${i} metadata does not match the source header`);
+      }
+    }
+    if (descriptor.dataDirectories.length !== header.dataDirectories.length) {
+      throw new Error(
+        `Prepared PE directory count mismatch: metadata=${descriptor.dataDirectories.length}, header=${header.dataDirectories.length}`,
+      );
+    }
+    for (let i = 0; i < header.dataDirectories.length; i++) {
+      const expected = header.dataDirectories[i];
+      const actual = descriptor.dataDirectories[i];
+      if (actual.virtualAddress !== expected.virtualAddress || actual.size !== expected.size) {
+        throw new Error(
+          `Prepared PE data directory ${i} metadata does not match the source header`,
+        );
+      }
+    }
+  }
+
+  private async mapPreparedImage(
+    source: PeImageSource,
+    descriptor: PreparedPeDescriptor,
+    header: PreparedPeHeader,
+    tag: 'image' | 'dll',
+  ): Promise<{ baseAddress: number; sections: import('./module-registry').PESection[] }> {
+    const baseAddress =
+      tag === 'image'
+        ? descriptor.preferredBase
+        : this.moduleRegistry?.allocateBase(descriptor.imageSize);
+    if (baseAddress === undefined) throw new Error('Cannot allocate prepared PE DLL base address');
+    if (
+      baseAddress > this.memory.length ||
+      descriptor.imageSize > this.memory.length - baseAddress
+    ) {
+      throw new Error(
+        `Prepared PE image does not fit guest memory at 0x${baseAddress.toString(16)}`,
+      );
+    }
+
+    const system = System.getInstance();
+    const addressSpace = system.process?.addressSpace;
+    if (addressSpace) {
+      if (tag === 'image') addressSpace.releaseRegion(baseAddress);
+      addressSpace.mapRegion(baseAddress, descriptor.imageSize, 'rwx', 'ROM', 'PELoader', tag);
+    }
+    try {
+      this.memory.fill(0, baseAddress, baseAddress + descriptor.imageSize);
+
+      for (let offset = 0; offset < header.bytes.length;) {
+        const length = Math.min(MAX_PREPARED_READ, header.bytes.length - offset);
+        this.memory.set(header.bytes.subarray(offset, offset + length), baseAddress + offset);
+        offset += length;
+      }
+
+      const sections: import('./module-registry').PESection[] = [];
+      for (const section of descriptor.sections) {
+        const target = baseAddress + section.virtualAddress;
+        for (let offset = 0; offset < section.rawSize;) {
+          const length = Math.min(MAX_PREPARED_READ, section.rawSize - offset);
+          const bytes = await this.readExactSource(source, section.rawOffset + offset, length);
+          this.memory.set(bytes, target + offset);
+          offset += length;
+        }
+        if (section.virtualSize > section.rawSize) {
+          this.memory.fill(0, target + section.rawSize, target + section.virtualSize);
+        }
+        sections.push({
+          name: section.name,
+          virtualAddress: section.virtualAddress,
+          virtualSize: section.virtualSize,
+          rawSize: section.rawSize,
+          characteristics: section.characteristics,
+        });
+      }
+      return { baseAddress, sections };
+    } catch (error) {
+      this.memory.fill(0, baseAddress, baseAddress + descriptor.imageSize);
+      if (addressSpace) addressSpace.releaseRegion(baseAddress);
+      throw error;
+    }
+  }
+
+  private async finishPreparedExecutable(
+    descriptor: PreparedPeDescriptor,
+    header: PreparedPeHeader,
+    baseAddress: number,
+    sections: import('./module-registry').PESection[],
+  ): Promise<LoadedModule> {
+    if (baseAddress !== header.imageBase) this.applyRelocations(header.bytes, baseAddress);
+    const { exports, ordinals } = this.parseExportTableFromMemory(
+        baseAddress,
+        descriptor.dataDirectories[0]?.virtualAddress ?? 0,
+        descriptor.dataDirectories[0]?.size ?? 0,
+        descriptor.imageSize,
+    );
+    return this.finishExecutableLoad(
+      baseAddress,
+      descriptor.imageSize,
+      descriptor.entrypointRva,
+      header.view.getUint32(header.optHeaderPtr + 72, true),
+      header.view,
+      header.optHeaderPtr,
+      descriptor.dataDirectories[1]?.virtualAddress ?? 0,
+      sections,
+      exports,
+      ordinals,
+      descriptor.sourceHash,
+    );
+  }
+
+  private async finishExecutableLoad(
+    baseAddress: number,
+    sizeOfImage: number,
+    entryPointRVA: number,
+    sizeOfStackReserve: number,
+    peView: DataView,
+    optHeaderPtr: number,
+    importDirRVA: number,
+    sections: import('./module-registry').PESection[],
+    exeExports: Map<string, number>,
+    exeOrdinals: Map<number, number>,
+    sourceHash?: string,
+  ): Promise<LoadedModule> {
+    const system = System.getInstance();
+    if (importDirRVA !== 0) await this.processImports(baseAddress, importDirRVA);
+    const exeName = system.executableName.toLowerCase().replace(/\.exe$/, '');
+    this.processTlsDirectory(peView, optHeaderPtr, baseAddress, exeName);
+
+    let exeModuleForHle: LoadedPEModule | null = null;
+    if (this.moduleRegistry) {
+      if (exeExports.size > 0 || exeOrdinals.size > 0) {
+        Logger.log(
+          LogCategory.SYSTEM,
+          `[PE] Main EXE exports parsed: ${exeExports.size} named, ${exeOrdinals.size} ordinals`,
+        );
+      }
+      const exeModule: LoadedPEModule = {
+        name: exeName,
+        path: system.executablePath || `C:\\${system.executableName}`,
+        baseAddress,
+        size: sizeOfImage,
+        entryPoint: entryPointRVA,
+        exports: exeExports,
+        ordinalExports: exeOrdinals,
+        isRealDll: false,
+        isExecutable: true,
+        initialized: true,
+        sections,
+        ...(sourceHash ? { sourceHash } : {}),
+      };
+      this.moduleRegistry.register(exeModule);
+      exeModuleForHle = exeModule;
+    }
+    this.runModuleHooks(exeModuleForHle, 'EXE');
+    return {
+      baseAddress,
+      entryPoint: baseAddress + entryPointRVA,
+      size: sizeOfImage,
+      sizeOfStackReserve,
+    };
+  }
+
+  private runModuleHooks(module: LoadedPEModule | null, label: string): void {
+    if (!module) return;
+    try {
+      libHleManager.onModuleLoaded(module);
+    } catch (e) {
+      Logger.warn(LogCategory.SYSTEM, `[HLE-lib] onModuleLoaded threw on ${label}: ${e}`);
+    }
+    try {
+      hookRegistry.onModuleLoaded(module);
+    } catch (e) {
+      Logger.warn(LogCategory.SYSTEM, `[hooks] onModuleLoaded threw on ${label}: ${e}`);
+    }
+  }
 
     /**
      * Load sections from PE data into memory at given base address
@@ -438,6 +905,82 @@ export class PELoader {
         return sections;
     }
 
+  private async loadPreparedDll(
+    dllNameLower: string,
+    dllPath: string,
+    invokeDllMain: boolean,
+    source: PeImageSource,
+    descriptor?: PreparedPeDescriptor,
+  ): Promise<LoadedPEModule> {
+    const header = await this.readPreparedHeader(source);
+    const effectiveDescriptor = descriptor ?? this.descriptorFromHeader(source, header);
+    this.validatePreparedDescriptor(source, effectiveDescriptor, header);
+    const mapped = await this.mapPreparedImage(source, effectiveDescriptor, header, 'dll');
+    const baseAddress = mapped.baseAddress;
+
+    if (baseAddress !== header.imageBase) this.applyRelocations(header.bytes, baseAddress);
+    this.processTlsDirectory(header.view, header.optHeaderPtr, baseAddress, dllNameLower);
+
+    const { exports, ordinals } = this.parseExportTableFromMemory(
+        baseAddress,
+        effectiveDescriptor.dataDirectories[0]?.virtualAddress ?? 0,
+        effectiveDescriptor.dataDirectories[0]?.size ?? 0,
+        effectiveDescriptor.imageSize,
+    );
+    const module: LoadedPEModule = {
+      name: dllNameLower,
+      path: dllPath,
+      baseAddress,
+      size: effectiveDescriptor.imageSize,
+      fileSize: source.size,
+      sourceHash: effectiveDescriptor.sourceHash || undefined,
+      entryPoint: effectiveDescriptor.entrypointRva,
+      exports,
+      ordinalExports: ordinals,
+      isRealDll: true,
+      initialized: false,
+      sections: mapped.sections,
+    };
+    this.moduleRegistry!.register(module);
+    this.runModuleHooks(module, `DLL ${dllNameLower}`);
+
+    const importDirRVA = effectiveDescriptor.dataDirectories[1]?.virtualAddress ?? 0;
+    if (importDirRVA !== 0) {
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `[PE] === Processing imports for PREPARED NATIVE DLL "${dllNameLower}" (base=0x${baseAddress.toString(16)}) ===`,
+      );
+      await this.processImports(baseAddress, importDirRVA);
+    }
+    try {
+      const system = System.getInstance();
+      if (system.process) Galaxy.onNativeModuleLoaded(system.process, module);
+    } catch (e) {
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `[Galaxy] onNativeModuleLoaded threw on prepared DLL ${dllNameLower}: ${e}`,
+      );
+    }
+
+    Logger.warn(
+      LogCategory.SYSTEM,
+      `[PE] Loaded prepared DLL "${dllNameLower}" at 0x${baseAddress.toString(16)}, ` +
+        `exports: ${exports.size} by name, ${ordinals.size} by ordinal, entryPointRVA=0x${effectiveDescriptor.entrypointRva.toString(16)}`,
+    );
+    if (invokeDllMain && effectiveDescriptor.entrypointRva !== 0) {
+      this.pendingDllInits.push({
+        baseAddress,
+        entryPoint: baseAddress + effectiveDescriptor.entrypointRva,
+        name: dllNameLower,
+      });
+      Logger.warn(
+        LogCategory.SYSTEM,
+        `[PE] Queued DllMain for prepared "${dllNameLower}" at 0x${(baseAddress + effectiveDescriptor.entrypointRva).toString(16)}`,
+      );
+    }
+    return module;
+  }
+
     /**
      * Load a real DLL from VFS
      * Returns the module or null if DLL not found in VFS
@@ -487,15 +1030,33 @@ export class PELoader {
         this.loadingDlls.add(dllNameLower);
 
         try {
+            if (this.preparedSourceResolver) {
+              const prepared = await this.preparedSourceResolver(dllPath);
+              if (prepared) {
+                return await this.loadPreparedDll(
+                        dllNameLower,
+                        dllPath,
+                        invokeDllMain,
+                        prepared.source,
+                        prepared.descriptor,
+                );
+              }
+            }
+
             // Open and read DLL from VFS
             const handle = await this.vfs.open(dllPath, 0x80000000, 3); // GENERIC_READ, OPEN_EXISTING
             if (!handle) {
                 Logger.warn(LogCategory.SYSTEM, `[PE] Failed to open DLL: ${dllPath}`);
                 return null;
-            }
+      }
 
-            const fileSize = this.vfs.getFileSize(dllPath);
-            const peData = await this.vfs.read(handle, fileSize);
+      const fileSize = this.vfs.getFileSize(dllPath);
+      if (fileSize > MAX_RAW_VFS_DLL_BYTES) {
+        throw new Error(
+          `[PE] Raw VFS DLL exceeds bounded fallback limit (${fileSize} > ${MAX_RAW_VFS_DLL_BYTES}): ${dllPath}`,
+        );
+      }
+      const peData = await this.vfs.read(handle, fileSize);
 
             if (peData.length === 0) {
                 Logger.warn(LogCategory.SYSTEM, `[PE] Empty DLL file: ${dllPath}`);
@@ -784,6 +1345,87 @@ export class PELoader {
             `[PE] TLS: "${moduleName}" index=${tlsIndex} template=0x${startOfRawData.toString(16)} (${totalTlsSize} bytes) ` +
             `index@0x${addressOfIndex.toString(16)}=${tlsIndex}`);
     }
+
+  /** Parse exports after a prepared image has been mapped into guest memory. */
+  private parseExportTableFromMemory(
+    baseAddress: number,
+    exportDirRVA: number,
+    exportDirSize: number,
+    imageSize: number,
+  ): { exports: Map<string, number>; ordinals: Map<number, number> } {
+    const exports = new Map<string, number>();
+    const ordinals = new Map<number, number>();
+    if (exportDirRVA === 0 || exportDirSize === 0) return { exports, ordinals };
+    if (exportDirRVA > imageSize || exportDirSize > imageSize - exportDirRVA) {
+      throw new Error('Prepared PE export directory exceeds the mapped image');
+    }
+
+    const memory = this.memory;
+    const view = this.view;
+    const addressOf = (rva: number, length: number): number | null => {
+      if (
+        !Number.isSafeInteger(rva) ||
+        rva < 0 ||
+        rva > imageSize ||
+        length > imageSize - rva
+      )
+        return null;
+      const address = baseAddress + rva;
+      if (address < 0 || address > memory.length || length > memory.length - address) return null;
+      return address;
+    };
+    const directoryAddress = addressOf(exportDirRVA, 40);
+    if (directoryAddress === null) {
+      Logger.warn(LogCategory.SYSTEM, '[PE] Prepared export directory is outside mapped memory');
+      return { exports, ordinals };
+    }
+    const numberOfFunctions = view.getUint32(directoryAddress + 20, true);
+    const numberOfNames = view.getUint32(directoryAddress + 24, true);
+    const addressOfFunctionsRVA = view.getUint32(directoryAddress + 28, true);
+    const addressOfNamesRVA = view.getUint32(directoryAddress + 32, true);
+    const addressOfNameOrdinalsRVA = view.getUint32(directoryAddress + 36, true);
+    const ordinalBase = view.getUint32(directoryAddress + 16, true);
+    if (numberOfFunctions > 1_000_000 || numberOfNames > 1_000_000) {
+      throw new Error('Prepared PE export table exceeds bounded limits');
+    }
+
+    const functionsAddress = addressOf(addressOfFunctionsRVA, numberOfFunctions * 4);
+    if (functionsAddress === null) return { exports, ordinals };
+    const namesAddress = addressOf(addressOfNamesRVA, numberOfNames * 4);
+    const nameOrdinalsAddress = addressOf(addressOfNameOrdinalsRVA, numberOfNames * 2);
+    const readName = (rva: number): string | null => {
+      const address = addressOf(rva, 1);
+      if (address === null) return null;
+      let name = '';
+      for (let i = 0; i < 4096 && address + i < baseAddress + imageSize; i++) {
+        const value = memory[address + i];
+        if (value === 0) return name;
+        name += String.fromCharCode(value);
+      }
+      return null;
+    };
+    const isForwarder = (rva: number): boolean =>
+      rva >= exportDirRVA && rva < exportDirRVA + exportDirSize;
+
+    for (let i = 0; i < numberOfFunctions; i++) {
+      const funcRVA = view.getUint32(functionsAddress + i * 4, true);
+      if (funcRVA !== 0 && funcRVA < imageSize && !isForwarder(funcRVA))
+        ordinals.set(ordinalBase + i, baseAddress + funcRVA);
+    }
+    if (namesAddress !== null && nameOrdinalsAddress !== null) {
+      for (let i = 0; i < numberOfNames; i++) {
+        const nameRVA = view.getUint32(namesAddress + i * 4, true);
+        const ordinalIndex = view.getUint16(nameOrdinalsAddress + i * 2, true);
+        if (ordinalIndex >= numberOfFunctions) continue;
+        const name = readName(nameRVA);
+        if (name === null) continue;
+        const funcRVA = view.getUint32(functionsAddress + ordinalIndex * 4, true);
+        if (funcRVA !== 0 && funcRVA < imageSize && !isForwarder(funcRVA))
+          exports.set(name.toLowerCase(), baseAddress + funcRVA);
+      }
+    }
+    return { exports, ordinals };
+  }
 
     /**
      * Parse PE Export Directory to get exports

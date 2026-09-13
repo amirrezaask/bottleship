@@ -37,6 +37,7 @@ import {
     FFP_SELECT_COLOR_WGSL,
     emitFfpComputeLighting,
 } from "../d3d9/ffp-lighting";
+import { graphicsProfile } from "../../../core/graphics-profile";
 
 /**
  * Per-sampled-stage GPU bind slots: [sampler, texture] for stages 0..3.
@@ -87,6 +88,24 @@ export interface ShaderConfig {
      * Uses instance_index to index into the draws array.
      */
     useMegaBatch?: boolean;
+}
+
+/** Stable key for the compile-time portion of an FFP shader configuration. */
+export function shaderConfigKey(config: ShaderConfig): string {
+    const flags = config.debugFlags;
+    return JSON.stringify({
+        sampledMask: config.sampledMask,
+        stageCount: config.stageCount,
+        pointSampleMask: config.pointSampleMask,
+        flatShading: config.flatShading,
+        alphaTestEnabled: config.alphaTestEnabled,
+        alphaFunc: config.alphaFunc,
+        shouldEnableBlending: config.shouldEnableBlending,
+        missingTexture: config.missingTexture,
+        forceZMidpoint: flags.forceZMidpoint,
+        needsUVFlip: config.needsUVFlip === true,
+        useMegaBatch: config.useMegaBatch === true,
+    });
 }
 
 /**
@@ -1060,22 +1079,61 @@ export class ShaderGenerator {
 
     // Cache of shader modules by shader code hash
     private shaderCache = new Map<string, GPUShaderModule>();
+    // Validated prepared GameBox WGSL. These are source-only records; GPU modules are still
+    // created by this generator on first use and are never serialized or retained globally.
+    private preparedShaderSources = new Map<string, string>();
 
     // Separate cache for MegaBatch shaders
     private megaBatchShaderCache = new Map<string, GPUShaderModule>();
 
     constructor(device: GPUDevice) {
         this.device = device;
+        const profile = (globalThis as any).__gameboxGraphicsProfile;
+        if (
+            profile?.prepared === true &&
+            profile.status === "loaded" &&
+            profile.gameContentHash === (globalThis as any).__gameboxContentHash &&
+            profile.runtime?.wasmSha256 === (globalThis as any).__gameboxGraphicsRuntime?.wasmSha256 &&
+            profile.runtime?.javascriptSha256 === (globalThis as any).__gameboxGraphicsRuntime?.javascriptSha256 &&
+            profile.runtime?.graphicsRecipe === (globalThis as any).__gameboxGraphicsRuntime?.graphicsRecipe &&
+            profile.runtime?.abiVersion === (globalThis as any).__gameboxGraphicsRuntime?.abiVersion &&
+            profile.shaderSources instanceof Map
+        ) {
+            let sourceBytes = 0;
+            for (const [key, source] of profile.shaderSources) {
+                if (typeof key !== "string" || typeof source !== "string" || key.length > 4096) {
+                    this.preparedShaderSources.clear();
+                    break;
+                }
+                const encodedBytes = new TextEncoder().encode(source).byteLength;
+                if (encodedBytes > 1024 * 1024) {
+                    this.preparedShaderSources.clear();
+                    break;
+                }
+                sourceBytes += encodedBytes;
+                if (this.preparedShaderSources.size >= 8192 || sourceBytes > 8 * 1024 * 1024) {
+                    this.preparedShaderSources.clear();
+                    break;
+                }
+                this.preparedShaderSources.set(key, source);
+            }
+        }
     }
 
     /**
      * Get or create a shader module for the given configuration
      */
     getOrCreateShader(config: ShaderConfig): GPUShaderModule {
-        const code = generateShaderCode(config);
+        const profiling = graphicsProfile.isActive();
+        const started = profiling ? performance.now() : 0;
+        const key = shaderConfigKey(config);
+        const prepared = this.preparedShaderSources.get(key);
+        const code = prepared ?? generateShaderCode(config);
+        const generationMs = profiling ? performance.now() - started : 0;
 
         // Use code as cache key (could use hash for better performance)
         let shader = this.shaderCache.get(code);
+        if (profiling) graphicsProfile.recordShader(shaderConfigKey(config), code, generationMs, !!shader);
         if (shader) return shader;
 
         shader = this.device.createShaderModule({ code });
@@ -1088,9 +1146,15 @@ export class ShaderGenerator {
      * MegaBatch shaders use storage buffers for per-draw uniforms.
      */
     getOrCreateMegaBatchShader(config: ShaderConfig): GPUShaderModule {
-        const code = generateMegaBatchShaderCode(config);
+        const profiling = graphicsProfile.isActive();
+        const started = profiling ? performance.now() : 0;
+        const key = shaderConfigKey(config);
+        const prepared = this.preparedShaderSources.get(key);
+        const code = prepared ?? generateMegaBatchShaderCode(config);
+        const generationMs = profiling ? performance.now() - started : 0;
 
         let shader = this.megaBatchShaderCache.get(code);
+        if (profiling) graphicsProfile.recordShader(shaderConfigKey(config), code, generationMs, !!shader);
         if (shader) return shader;
 
         shader = this.device.createShaderModule({ code });

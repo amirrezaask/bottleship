@@ -29,6 +29,24 @@ import {
     unpackMutexMirrorWord,
     eventSlotForKernelHandle,
 } from './hypercall-event-mirror';
+import {
+    HANDLER_EAGL_APPLY_REG_FLOAT,
+    HANDLER_EAGL_APPLY_PACKED,
+    HANDLER_EAGL_APPLY_REG_INT,
+    HANDLER_EAGL_COMMIT_CLUSTER,
+    HANDLER_EAGL_PASS_DRIVER,
+    HANDLER_EAGL_SHADER_CONVERT,
+    HANDLER_EAGL_TOKEN_DISPATCH,
+} from './hypercall-ids';
+export {
+    HANDLER_EAGL_APPLY_REG_FLOAT,
+    HANDLER_EAGL_APPLY_PACKED,
+    HANDLER_EAGL_APPLY_REG_INT,
+    HANDLER_EAGL_COMMIT_CLUSTER,
+    HANDLER_EAGL_PASS_DRIVER,
+    HANDLER_EAGL_SHADER_CONVERT,
+    HANDLER_EAGL_TOKEN_DISPATCH,
+} from './hypercall-ids';
 
 // Offsets within HYPERCALL_PAGE (must match hypercall.rs)
 const OFF_CYCLE_LIMIT = 0x000;
@@ -44,7 +62,11 @@ const OFF_HC_TEB_BASE = 0x028;
 const OFF_HC_INSN_AT_TIME_UPDATE = 0x02C;
 const OFF_HC_MIPS_ESTIMATE = 0x030;
 const OFF_HC_CURRENT_THREAD_ID = 0x034;
-const OFF_HC_FALLBACK_COUNTS = 0x0C0; // 68 bytes: per-handler fallback counters (must match hypercall.rs)
+const OFF_HC_PROFILE_ENABLED = 0x038;
+const OFF_HC_PROFILE_CALL_COUNT_LO = 0x03C;
+const OFF_HC_PROFILE_CALL_COUNT_HI = 0x040;
+const NATIVE_HYPERCALL_HANDLER_SLOTS = 256;
+const NATIVE_HYPERCALL_HANDLER_SLOT_BYTES = 8;
 const OFF_HC_CURSOR_X = 0x080;
 const OFF_HC_CURSOR_Y = 0x084;
 const OFF_HC_WINDOW_X = 0x088;
@@ -153,17 +175,14 @@ const HANDLER_WAIT_FOR_SINGLE_OBJECT = 81;
  * distinct from the WinAPI/CRT tiers (1..=127) so the dispatch byte names the
  * category. Keep in lockstep with the Rust match in `cpu/hypercall.rs`.
  */
-export const HANDLER_EAGL_SHADER_CONVERT = 128;
 // EAGL shader-parameter APPLY converter family (libs/eagl/apply-kernels.ts):
-export const HANDLER_EAGL_APPLY_REG_INT = 129;   // FUN_005c85c1 int→float, register layout
-export const HANDLER_EAGL_APPLY_REG_FLOAT = 130; // FUN_005c8303 float/copy+ftol, register layout
-export const HANDLER_EAGL_APPLY_PACKED = 131;    // FUN_005cad01 float/copy+ftol, packed layout
+// FUN_005c85c1 int→float, register layout; FUN_005c8303 float/copy+ftol;
+// FUN_005cad01 float/copy+ftol packed layout.
 // EAGL→D3D9 state-token dispatcher, hot classes 1/2/8 (libs/eagl/token-dispatch.ts).
 // Config block pointer at OFF_HC_EAGL_TOKEN_CFG_PTR.
-export const HANDLER_EAGL_TOKEN_DISPATCH = 132;
+// IDs live in hypercall-ids.ts so descriptor registration cannot observe a
+// partially initialized hypercall-data module.
 // Batch boundaries (same cfg block, version 3):
-export const HANDLER_EAGL_COMMIT_CLUSTER = 133; // FUN_005d02d7 → FUN_005cf304 dirty-list walk
-export const HANDLER_EAGL_PASS_DRIVER = 134;    // FUN_005d01ec pass-commit element loop
 
 // Arena slab control offsets (must match hypercall.rs)
 export const OFF_HC_SLAB_BASE = 0x1400;
@@ -398,6 +417,12 @@ export class HypercallDataManager {
     private initialized = false;
     private enabled = false;
     private enablePending = false;  // retry flag if enable() fails due to detached buffer
+    // Native crossing counters live in the WASM static page. A memory-buffer
+    // replacement invalidates that page; remember it so a profile cannot
+    // silently publish a partial count as complete.
+    private nativeProfileActive = false;
+    private nativeProfileInvalidated = false;
+    private nativeProfileCountsBase = 0;
 
     // Instruction counter baseline (set when virtual time is enabled)
     private lastInsnSnapshot = 0;
@@ -428,6 +453,10 @@ export class HypercallDataManager {
 
         // Set guest memory size for bounds-checking in WASM hypercall handlers
         const wasmExports = cpu?.wm?.exports;
+        this.nativeProfileCountsBase =
+            typeof wasmExports?.get_hypercall_profile_counts_ptr === 'function'
+                ? wasmExports.get_hypercall_profile_counts_ptr() >>> 0
+                : 0;
         if (wasmExports?.set_guest_mem_size) {
             wasmExports.set_guest_mem_size(EMU_MEMORY_SIZE);
         }
@@ -488,6 +517,12 @@ export class HypercallDataManager {
     /** Re-write all JS-owned state into HYPERCALL_PAGE after buffer change. */
     private rewriteState(): void {
         if (!this.view) return;
+
+        if (this.nativeProfileActive) {
+            this.view.setUint32(this.hpBase + OFF_HC_PROFILE_ENABLED, 0, true);
+            this.nativeProfileActive = false;
+            this.nativeProfileInvalidated = true;
+        }
 
         // QPF constant
         this.view.setUint32(this.hpBase + OFF_HC_PERF_FREQ_LO, PERF_FREQ & 0xFFFFFFFF, true);
@@ -1142,6 +1177,87 @@ export class HypercallDataManager {
         return this.view.getUint32(this.hpBase + OFF_HC_CALL_COUNT, true);
     }
 
+    /** Start bounded native hypercall crossing accounting. The native counter is
+     * reset only at an explicit profile boundary and saturates at u64::MAX. */
+    startNativeProfile(): boolean {
+        if (!this.initialized || !this.view) return false;
+        this.refreshViews();
+        if (!this.view) return false;
+        this.view.setUint32(this.hpBase + OFF_HC_PROFILE_CALL_COUNT_LO, 0, true);
+        this.view.setUint32(this.hpBase + OFF_HC_PROFILE_CALL_COUNT_HI, 0, true);
+        if (this.nativeProfileCountsBase !== 0) {
+            for (let i = 0; i < NATIVE_HYPERCALL_HANDLER_SLOTS; i++) {
+                const offset = this.nativeProfileCountsBase + i * NATIVE_HYPERCALL_HANDLER_SLOT_BYTES;
+                this.view.setUint32(offset, 0, true);
+                this.view.setUint32(offset + 4, 0, true);
+            }
+        }
+        this.view.setUint32(this.hpBase + OFF_HC_PROFILE_ENABLED, 1, true);
+        this.nativeProfileActive = true;
+        this.nativeProfileInvalidated = false;
+        return true;
+    }
+
+    /** Stop and read the exact native hypercall crossing counter. */
+    stopNativeProfile(): {
+        calls: string;
+        counterOverflow: boolean;
+        observed: boolean;
+        handlerAttributionObserved: boolean;
+        handlers: Array<{ handlerId: number; calls: string; counterOverflow: boolean }>;
+    } {
+        if (!this.initialized || !this.view)
+            return {
+                calls: '0',
+                counterOverflow: false,
+                observed: false,
+                handlerAttributionObserved: false,
+                handlers: [],
+            };
+        this.refreshViews();
+        if (!this.view)
+            return {
+                calls: '0',
+                counterOverflow: false,
+                observed: false,
+                handlerAttributionObserved: false,
+                handlers: [],
+            };
+        this.view.setUint32(this.hpBase + OFF_HC_PROFILE_ENABLED, 0, true);
+        const low = this.view.getUint32(this.hpBase + OFF_HC_PROFILE_CALL_COUNT_LO, true);
+        const high = this.view.getUint32(this.hpBase + OFF_HC_PROFILE_CALL_COUNT_HI, true);
+        const handlers: Array<{ handlerId: number; calls: string; counterOverflow: boolean }> = [];
+        let handlersOverflow = false;
+        if (this.nativeProfileCountsBase !== 0) {
+            for (let handlerId = 0; handlerId < NATIVE_HYPERCALL_HANDLER_SLOTS; handlerId++) {
+                const offset = this.nativeProfileCountsBase + handlerId * NATIVE_HYPERCALL_HANDLER_SLOT_BYTES;
+                const countLow = this.view.getUint32(offset, true);
+                const countHigh = this.view.getUint32(offset + 4, true);
+                if (countLow === 0 && countHigh === 0) continue;
+                const counterOverflow = countLow === 0xffffffff && countHigh === 0xffffffff;
+                handlersOverflow ||= counterOverflow;
+                handlers.push({
+                    handlerId,
+                    calls: (BigInt(countHigh) << 32n | BigInt(countLow)).toString(10),
+                    counterOverflow,
+                });
+            }
+        }
+        const result = {
+            calls: (BigInt(high) << 32n | BigInt(low)).toString(10),
+            counterOverflow:
+                this.nativeProfileInvalidated ||
+                handlersOverflow ||
+                (high === 0xffffffff && low === 0xffffffff),
+            observed: true,
+            handlerAttributionObserved: this.nativeProfileCountsBase !== 0,
+            handlers,
+        };
+        this.nativeProfileActive = false;
+        this.nativeProfileInvalidated = false;
+        return result;
+    }
+
     getRegisteredCount(): number {
         return this.registeredEntries.size;
     }
@@ -1386,25 +1502,6 @@ export class HypercallDataManager {
         return this.view.getUint32(this.hpBase + OFF_HC_RAND_SEED, true);
     }
 
-    /**
-     * Read per-handler fallback counters from HYPERCALL_PAGE.
-     * Returns a Map from handler ID to fallback count (only non-zero entries).
-     * A fallback means the WASM handler returned false → JS handled the call.
-     */
-    getFallbackReport(): Map<number, number> {
-        const result = new Map<number, number>();
-        if (!this.initialized || !this.view) return result;
-        this.refreshViews();
-        if (!this.view) return result;
-
-        for (let i = 0; i < 68; i++) {
-            const count = this.view.getUint8(this.hpBase + OFF_HC_FALLBACK_COUNTS + i);
-            if (count > 0) {
-                result.set(i, count);
-            }
-        }
-        return result;
-    }
 }
 
 export const hypercallDataManager = new HypercallDataManager();

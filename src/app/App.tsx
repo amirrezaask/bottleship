@@ -1252,6 +1252,7 @@ export default function App() {
       const devicePixelRatio = window.devicePixelRatio || 1;
       const width = Math.max(1, Math.floor(canvas.clientWidth * devicePixelRatio));
       const height = Math.max(1, Math.floor(canvas.clientHeight * devicePixelRatio));
+      const deferV86 = selectedGame?.id === "dev" && new URLSearchParams(window.location.search).get("game") === "dev";
 
       resolutionRef.current = { width, height };
 
@@ -1264,22 +1265,28 @@ export default function App() {
             canvas: globalOffscreen,
             inputBuffer,
             width,
-            height
+            height,
+            // Embedded GameBoxBridge starts ?game=dev bundles after the bridge
+            // is ready. Let the worker read manifest.json before constructing
+            // V86Starter so manifest RAM is an actual v86 init parameter.
+            deferV86
           },
           [globalOffscreen]
         );
       } catch (err) {
         console.warn('BottleShip: Failed to transfer control (maybe already transferred), signaling worker anyway');
-        worker.postMessage({ type: "init" });
+        worker.postMessage({ type: "init", deferV86 });
       }
     } else {
       console.log('BottleShip: Already have offscreen canvas, signaling worker');
       const { width, height } = resolutionRef.current;
+      const deferV86 = selectedGame?.id === "dev" && new URLSearchParams(window.location.search).get("game") === "dev";
       worker.postMessage({
         type: "init",
         inputBuffer,
         width,
-        height
+        height,
+        deferV86
       });
     }
 

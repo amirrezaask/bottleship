@@ -22,6 +22,25 @@ const BUILD_SHA = (
 // cert). Opt into a self-signed HTTPS dev/preview server with VITE_SSL=1.
 const useSsl = !!process.env.VITE_SSL;
 
+export type PreparedRuntimeMapping = "identity" | "profile";
+
+/**
+ * Select the address-space mapping contract baked into prepared-runtime
+ * metadata. Generic builds retain the identity-mapped default; profile builds
+ * must opt in explicitly so a profile-qualified artifact cannot be mislabeled.
+ */
+export function resolvePreparedRuntimeMapping(
+  value = process.env.GAMEBOX_PREPARED_RUNTIME_MAPPING,
+): PreparedRuntimeMapping {
+  if (value === undefined) return "identity";
+  if (value === "identity" || value === "profile") return value;
+  throw new Error(
+    `GAMEBOX_PREPARED_RUNTIME_MAPPING must be "identity" or "profile" (received ${JSON.stringify(value)})`,
+  );
+}
+
+const preparedRuntimeMapping = resolvePreparedRuntimeMapping();
+
 const coopCoepHeaders = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Embedder-Policy": "require-corp"
@@ -152,6 +171,19 @@ function copyPublicDirExceptApps(): Plugin {
 export default defineConfig({
   base: process.env.GAMEBOX_RUNTIME_BASE ?? "/",
   define: {
+    __GAMEBOX_TRUST_PREPARED_AOT__: JSON.stringify(process.env.GAMEBOX_TRUST_PREPARED_AOT === "1"),
+    __GAMEBOX_PREPARED_RUNTIME__: JSON.stringify({
+      wasmSha256: createHash("sha256").update(fs.readFileSync(path.join(__dirname, "public/v86.wasm"))).digest("hex"),
+      javascriptSha256: createHash("sha256").update(fs.readFileSync(path.join(__dirname, "vendor/v86/build/libv86.mjs"))).digest("hex"),
+      // BottleShip enables the guest page tables after protected-mode setup.
+      // Prepared CPU artifacts compiled in the offline flat context must not
+      // be installed merely because their Wasm/JS hashes match.
+      cpuMode: "protected32-flat",
+      paging: "enabled",
+      mapping: preparedRuntimeMapping,
+      graphicsRecipe: "graphics-recipe-v1",
+      graphicsAbiVersion: 1,
+    }),
     __GAMEBOX_AOT_ABI__: JSON.stringify(createHash("sha256").update(fs.readFileSync(path.join(__dirname, "public/v86.wasm"))).digest("hex")),
     __BUILD_SHA__: JSON.stringify(BUILD_SHA),
   },

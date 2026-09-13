@@ -1,5 +1,8 @@
 /** Bundled into the pinned upstream host; only GameBox's reviewed adapter calls this API. */
 export function installGameBoxBridge(worker, closeAudio) {
+  const now = () => globalThis.performance?.now?.() ?? Date.now();
+  const bridgeInstalledAt = now();
+  let processCreationMs = null;
   let ready = false;
   let launched = false;
   let stopped = false;
@@ -7,6 +10,7 @@ export function installGameBoxBridge(worker, closeAudio) {
   let error;
   let fault;
   let closing;
+  const pendingProfileRequests = new Set();
   let status = 'Starting BottleShip…';
   const publish = (message) => {
     status = message;
@@ -29,7 +33,63 @@ export function installGameBoxBridge(worker, closeAudio) {
       worker.addEventListener('message', receive);
       worker.postMessage({ type: 'gamebox_aot', id, mode, ...extra });
     });
+  const profileRequest = (mode, payload = {}) =>
+    new Promise((resolve, reject) => {
+      let settled = false;
+      let cancel;
+      const finish = (error, result) => {
+        if (settled) return;
+        settled = true;
+        pendingProfileRequests.delete(cancel);
+        clearTimeout(timer);
+        worker.removeEventListener('message', receive);
+        worker.removeEventListener('error', workerError);
+        if (error) reject(error instanceof Error ? error : new Error(String(error)));
+        else resolve(result);
+      };
+      const id = crypto.randomUUID();
+      const timer = setTimeout(
+        () => finish(new Error('GameBox profile operation timed out')),
+        60000,
+      );
+      const receive = ({ data }) => {
+        if (data.type !== 'gamebox_profile_result' || data.id !== id) return;
+        if (data.error) finish(new Error(data.error));
+        else finish(undefined, data.result);
+      };
+      const workerError = (event) =>
+        finish(new Error(event?.message || 'BottleShip worker failed during profiling'));
+      cancel = (reason) => finish(new Error(reason));
+      pendingProfileRequests.add(cancel);
+      worker.addEventListener('message', receive);
+      worker.addEventListener('error', workerError);
+      try {
+        // The worker API keeps start options under `options`; accept direct
+        // options here as the public bridge payload and preserve the explicit
+        // { options, graphics } form for callers that already use it.
+        const { options, graphics, ...directOptions } = payload ?? {};
+        const request =
+          mode === 'start'
+            ? {
+                type: 'gamebox_profile',
+                id,
+                mode,
+                options: options ?? directOptions,
+                ...(graphics === undefined ? {} : { graphics }),
+              }
+            : { type: 'gamebox_profile', id, mode, ...payload };
+        worker.postMessage(request);
+      } catch (error) {
+        finish(error);
+      }
+    });
   worker.addEventListener('message', ({ data }) => {
+    if (
+      data.type === 'gamebox_milestone' &&
+      data.milestone === 'process_created' &&
+      processCreationMs === null
+    )
+      processCreationMs = now() - bridgeInstalledAt;
     if (data.type === 'ready') {
       ready = true;
       publish('BottleShip ready');
@@ -55,6 +115,9 @@ export function installGameBoxBridge(worker, closeAudio) {
     publish(error);
   });
   window.GameBoxBottleShip = {
+    get startupMilestones() {
+      return { processCreationMs };
+    },
     get ready() {
       return ready;
     },
@@ -76,6 +139,8 @@ export function installGameBoxBridge(worker, closeAudio) {
       aotUrl,
       lowestGraphics = false,
       translationCache = 'enabled',
+      preparedTrustStore,
+      jitConfigOverrides,
     }) {
       if (!ready || launched || stopped)
         throw new Error('BottleShip cannot start another game in this player');
@@ -101,7 +166,17 @@ export function installGameBoxBridge(worker, closeAudio) {
         gameId,
         cacheKey,
         lowestGraphics: lowestGraphics === true,
+        ...(jitConfigOverrides === undefined ? {} : { jitConfigOverrides }),
+        ...(preparedTrustStore === undefined ? {} : { preparedTrustStore }),
       });
+      launched = true;
+      await window.loadApp(url.href);
+      // Embedded ?game=dev transfers the canvas before this call and defers v86
+      // construction until load_bundle has read manifest.json. Queue AOT/cache
+      // work after loadApp so the worker can service it once the manifest-sized
+      // emulator exists; the worker drains these requests before PE load. On the
+      // ordinary eager path the process already exists, so ordering is unchanged
+      // from the caller's perspective.
       if (aotUrl) {
         await aotRequest('load', { url: aotUrl });
       } else if (translationCache !== 'disabled') {
@@ -114,8 +189,6 @@ export function installGameBoxBridge(worker, closeAudio) {
           console.warn('Persistent translation cache unavailable:', cacheError);
         }
       }
-      launched = true;
-      await window.loadApp(url.href);
     },
     async translationCache(mode, payload = {}) {
       const allowed = new Set([
@@ -131,9 +204,15 @@ export function installGameBoxBridge(worker, closeAudio) {
       if (!allowed.has(mode)) throw new Error('Unknown translation cache developer operation');
       return aotRequest(`persistent-${mode}`, payload);
     },
+    async profile(mode, payload = {}) {
+      if (!['start', 'finish', 'cancel'].includes(mode))
+        throw new Error('Unknown GameBox profile operation');
+      return profileRequest(mode, payload);
+    },
     async stop() {
       if (stopped) return;
       if (closing) return closing;
+      for (const cancel of pendingProfileRequests) cancel('BottleShip stopped during profiling');
       closing = new Promise((resolve, reject) => {
         const id = crypto.randomUUID();
         const finish = (failure) => {
