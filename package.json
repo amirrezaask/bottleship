@@ -31,12 +31,13 @@
     "logs:stats": "bun tools/log-manager.ts stats",
     "analyze-trace": "bun tools/analyze-trace.ts",
     "test:fpu-relaxed": "node vendor/v86/tests/fpu-relaxed-diff.mjs",
-    "build:v86": "cd vendor/v86 && bash build-wasm.sh && cp build/v86.wasm ../../public/v86.wasm && echo 'v86.wasm copied to public/'",
+    "build:v86": "node tools/build-v86-runtime/build.mjs",
     "build:video-decoder": "bash tools/build-ffmpeg-decoder/build.sh",
     "build:unpack-streaming": "powershell -ExecutionPolicy Bypass -File tools/build-unpack-streaming/build.ps1",
     "build:unpack-buffered": "bash tools/build-unpack-buffered/build-wasm.sh",
     "test:unpack-buffered-7z": "bun tools/tests/unpack-buffered-7z.smoke.ts",
-    "gen:inno-fixtures": "cargo run --bin gen-fixtures --manifest-path tools/build-unpack-streaming/Cargo.toml"
+    "gen:inno-fixtures": "cargo run --bin gen-fixtures --manifest-path tools/build-unpack-streaming/Cargo.toml",
+    "test:cpu-runtime": "node --test tools/runtime-test/*.test.mjs"
   },
   "dependencies": {
     "@bottleship/formats": "workspace:*",

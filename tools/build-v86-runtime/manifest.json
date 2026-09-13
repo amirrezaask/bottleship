@@ -1,0 +1,20 @@
+{
+  "v86Commit": "e070a0523fa95c97a35a0c31bedd6d50c5a49281",
+  "rust": "1.96.0",
+  "target": "wasm32-unknown-unknown",
+  "features": [
+    "bulk-memory",
+    "multivalue",
+    "simd128"
+  ],
+  "patchSha256": "c00b786ebcc8ffd3283243e7226f1d7420050b8bedec3f768a39f01dd28cd2a6",
+  "kernelSha256": "bd38e02563391cf5de0302b155cdee75a0ad23747533919b60b5b0069211a71d",
+  "stringPatchSha256": "f25048e7f71c83bbbb4141bb62458df2e751b5d7c1097cc04c223d1ff0c22532",
+  "stringKernelSha256": "1dd8e48167779daab70f7a2f999f11c23363645870bc310db1d5537f9839ebc6",
+  "repPatchSha256": "3527313d133cdb3db4d4e6c636b4960f87ecf841febb9d09756ba05e192ea03f",
+  "repKernelSha256": "0414ef1aa83c790524e3204394c9dba6dc476233ff1898a6295c31d4160b7177",
+  "unalignedPatchSha256": "3804b865557ac09f4f8f948789144dbd1cd909527861f323e8f39b70209b1bca",
+  "unalignedKernelSha256": "4a79ef4d15d5281277fec981da13160705cf1f101f10806bc7de3f9a1f68f939",
+  "buildScriptSha256": "54557d46e4e9aa55031a8d47ac4af40be0b8e0ee94c4528c1a3801356afeea4e",
+  "wasmSha256": "062ba609d2628b1860dae5a35e1a18bd2072061b166aa7e64d3affdcaef423ea"
+}

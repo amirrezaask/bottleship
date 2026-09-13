@@ -347,6 +347,16 @@ const HANDLER_MAP: Record<string, number> = {
     'crtdll._strcmpi': HANDLER_STRICMP,
     'msvcrt.memcmp': HANDLER_MEMCMP,
     'crtdll.memcmp': HANDLER_MEMCMP,
+    // Versioned bulk-memory ABI; old v86 assets must retain the existing JS handlers.
+    'msvcrt.memmove': 82,
+    'crtdll.memmove': 82,
+    'msvcrt.memchr': 83,
+    'crtdll.memchr': 83,
+    // A separate capability keeps cached pre-string CPU assets on their JS fallbacks.
+    'msvcrt.strchr': 84,
+    'crtdll.strchr': 84,
+    'msvcrt.strrchr': 85,
+    'crtdll.strrchr': 85,
     // Narrow ANSI string leaves — _strnicmp (count==0 → equal, NARROW convention), strstr, atoi/atol
     'msvcrt._strnicmp': HANDLER_STRNICMP,
     'crtdll._strnicmp': HANDLER_STRNICMP,
@@ -876,11 +886,15 @@ export class HypercallDataManager {
      */
     registerFunction(dllName: string, functionName: string, functionId: number): void {
         if (!this.initialized || !this.view) return;
-        if (functionId <= 0 || functionId >= 4096) return;
+        if (!Number.isInteger(functionId) || functionId <= 0 || functionId >= 4096) return;
 
         const key = `${dllName.toLowerCase()}.${functionName.toLowerCase()}`;
         const handlerId = HANDLER_MAP[key];
         if (!handlerId) return;
+        if ((handlerId === 82 || handlerId === 83) &&
+            this.cpu?.wm?.exports?.get_bulk_memory_abi?.() !== 1) return;
+        if ((handlerId === 84 || handlerId === 85) &&
+            this.cpu?.wm?.exports?.get_string_memory_abi?.() !== 1) return;
 
         this.refreshViews();
         if (!this.view) return;
@@ -905,12 +919,12 @@ export class HypercallDataManager {
      * Idempotent; survives dispatch-table rebuild via registeredEntries.
      */
     registerRawHandler(functionId: number, handlerId: number): void {
-        if (functionId <= 0 || functionId >= 4096) {
+        if (!Number.isInteger(functionId) || functionId <= 0 || functionId >= 4096) {
             Logger.warn(LogCategory.SYSTEM,
                 `[HYPERCALL] registerRawHandler: functionId ${functionId} out of dispatch-table range`);
             return;
         }
-        if (handlerId <= 0 || handlerId > 255) {
+        if (!Number.isInteger(handlerId) || handlerId <= 0 || handlerId > 255) {
             Logger.warn(LogCategory.SYSTEM,
                 `[HYPERCALL] registerRawHandler: handlerId ${handlerId} not a u8`);
             return;
@@ -926,7 +940,7 @@ export class HypercallDataManager {
 
     /** Remove a raw dispatch-table binding (inner-loop hook unpatch). */
     unregisterRawHandler(functionId: number): void {
-        if (functionId <= 0 || functionId >= 4096) return;
+        if (!Number.isInteger(functionId) || functionId <= 0 || functionId >= 4096) return;
         this.registeredEntries.delete(functionId);
         this.refreshViews();
         if (this.view) {

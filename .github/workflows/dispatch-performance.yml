@@ -1,0 +1,64 @@
+name: Dispatch performance
+
+on:
+  push:
+    branches: [main, master, 'perf/wasm-dispatch-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: dispatch-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          submodules: true
+          fetch-depth: 0
+      - run: rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+      - name: Rebuild core and identical-toolchain unpatched control
+        env:
+          V86_BASELINE_OUTPUT: performance-results/v86-baseline-rebuilt.wasm
+        run: node tools/build-v86-runtime/build.mjs
+      - name: Verify committed runtime and provenance
+        run: git diff --exit-code -- public/v86.wasm tools/build-v86-runtime/manifest.json vendor/v86
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun tools/generate-index.ts
+      - run: bun tools/validate-signatures.ts
+      - run: bun tools/validate-struct-offsets.ts
+      - run: bun run typecheck
+      - name: Project tests and compiled CPU regression tests
+        run: |
+          mkdir -p performance-results
+          bun test 2>&1 | tee performance-results/project-tests.log
+          node --test tools/runtime-test/*.test.mjs 2>&1 | tee performance-results/cpu-tests.log
+      - run: bun run build
+      - name: Guest-call benchmarks in Node and Chromium
+        env:
+          V86_REBUILT_BASELINE: performance-results/v86-baseline-rebuilt.wasm
+        run: |
+          node tools/perf/bulk-memory.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/node-bulk.json
+          node tools/perf/browser-bulk-memory.mjs 9501efd8bc208be8e67f72f226bb795255451bc7 performance-results/chromium-bulk.json
+          git status --short > performance-results/working-tree.txt
+          cp tools/build-v86-runtime/manifest.json performance-results/manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dispatch-performance-results
+          path: performance-results/
+          retention-days: 14
