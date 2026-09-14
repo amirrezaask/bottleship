@@ -10,9 +10,11 @@ const limits = {
   translations: 8192,
 };
 
-function checkedCount(value) {
+function checkedCount(value, label = 'profile counter') {
   if (typeof value !== 'bigint' || value < 0n || value > U64)
-    throw new Error('Runtime must expose exact unsigned 64-bit profile counters');
+    throw new Error(
+      `Runtime must expose ${label} as an exact unsigned 64-bit profile counter (received ${typeof value})`,
+    );
   return value;
 }
 
@@ -42,7 +44,10 @@ function translationSnapshot(exports) {
     const row =
       rows.get(address) ?? Object.fromEntries(Object.keys(fields).map((key) => [key, 0n]));
     for (const [key, getter] of Object.entries(fields)) {
-      row[key] += checkedCount(exports[`aot_profile_${getter}_u64`](i));
+      row[key] += checkedCount(
+        exports[`aot_profile_${getter}_u64`](i),
+        `aot_profile_${getter}_u64`,
+      );
       if (row[key] > U64) throw new Error('Translation counter overflow');
     }
     rows.set(address, row);
@@ -151,7 +156,10 @@ export async function startCpuProfile(cpu, options) {
     exports.trace2_reset();
     const jitConfig = config(exports);
     const beforeTranslations = translationSnapshot(exports);
-    const beforeDroppedTranslations = checkedCount(exports.aot_profile_overflow());
+    const beforeDroppedTranslations = checkedCount(
+      exports.aot_profile_overflow(),
+      'aot_profile_overflow',
+    );
     for (const page of pages) {
       const watched = observesVirtualPages
         ? exports.trace2_watch_virtual_page(page)
@@ -246,7 +254,8 @@ export async function startCpuProfile(cpu, options) {
           if (!exports.trace2_enabled() || exports.trace2_watched_page_count() !== pages.length)
             throw new Error('Native profile recording was reset during capture');
           const droppedTranslations =
-            checkedCount(exports.aot_profile_overflow()) - beforeDroppedTranslations;
+            checkedCount(exports.aot_profile_overflow(), 'aot_profile_overflow') -
+            beforeDroppedTranslations;
           if (droppedTranslations < 0n)
             throw new Error('Translation counters were reset during capture');
           const coverage = {
@@ -262,14 +271,27 @@ export async function startCpuProfile(cpu, options) {
               win32: false,
               translations: false,
             },
-            droppedBlocks: checkedCount(exports.trace2_slot_overflow_u64()).toString(),
-            droppedFunctions: checkedCount(exports.trace2_function_overflow_u64()).toString(),
-            droppedEdges: checkedCount(exports.trace2_edge_overflow_u64()).toString(),
-            droppedIndirects: checkedCount(exports.trace2_indirect_overflow_u64()).toString(),
+            droppedBlocks: checkedCount(
+              exports.trace2_slot_overflow_u64(),
+              'trace2_slot_overflow_u64',
+            ).toString(),
+            droppedFunctions: checkedCount(
+              exports.trace2_function_overflow_u64(),
+              'trace2_function_overflow_u64',
+            ).toString(),
+            droppedEdges: checkedCount(
+              exports.trace2_edge_overflow_u64(),
+              'trace2_edge_overflow_u64',
+            ).toString(),
+            droppedIndirects: checkedCount(
+              exports.trace2_indirect_overflow_u64(),
+              'trace2_indirect_overflow_u64',
+            ).toString(),
             droppedWin32: '0',
             droppedTranslations: droppedTranslations.toString(),
             watchedPageInvalidations: checkedCount(
               exports.trace2_watched_page_invalidations(),
+              'trace2_watched_page_invalidations',
             ).toString(),
           };
           const blocks = [],
@@ -280,7 +302,7 @@ export async function startCpuProfile(cpu, options) {
           let count = exports.trace2_block_snapshot();
           if (count > limits.blocks) throw new Error('Runtime block table exceeds budget');
           for (let i = 0; i < count; i++) {
-            const hits = checkedCount(exports.trace2_block_exec_u64(i));
+            const hits = checkedCount(exports.trace2_block_exec_u64(i), 'trace2_block_exec_u64');
             if (hits)
               blocks.push({
                 address: addressOfPhysical(exports.trace2_block_addr(i) >>> 0),
@@ -290,7 +312,10 @@ export async function startCpuProfile(cpu, options) {
           count = exports.trace2_function_snapshot();
           if (count > limits.functions) throw new Error('Runtime function table exceeds budget');
           for (let i = 0; i < count; i++) {
-            const hits = checkedCount(exports.trace2_function_exec_u64(i));
+            const hits = checkedCount(
+              exports.trace2_function_exec_u64(i),
+              'trace2_function_exec_u64',
+            );
             if (hits)
               functions.push({
                 address: addressOfPhysical(exports.trace2_function_addr(i) >>> 0),
@@ -304,7 +329,10 @@ export async function startCpuProfile(cpu, options) {
             count = exports[`trace2_${prefix}_snapshot`]();
             if (count > limit) throw new Error('Runtime edge table exceeds budget');
             for (let i = 0; i < count; i++) {
-              const hits = checkedCount(exports[`trace2_${prefix}_${getter}_u64`](i));
+              const hits = checkedCount(
+                exports[`trace2_${prefix}_${getter}_u64`](i),
+                `trace2_${prefix}_${getter}_u64`,
+              );
               if (hits)
                 output.push({
                   from: addressOfPhysical(exports[`trace2_${prefix}_from`](i) >>> 0),
@@ -348,6 +376,7 @@ export async function startCpuProfile(cpu, options) {
                 physicalAddress,
                 generation: checkedCount(
                   exports.trace2_page_observation_generation(i),
+                  'trace2_page_observation_generation',
                 ).toString(),
               });
             }

@@ -39,9 +39,17 @@ function configOf(bytes: Uint8Array): number[] {
 }
 
 function cpu(config: number[], memoryBytes: number): any {
+  const current = [...config];
   return {
     memory_size: new Uint32Array([memoryBytes]),
-    wm: { exports: { get_jit_config: (index: number) => config[index] } },
+    wm: {
+      exports: {
+        get_jit_config: (index: number) => current[index],
+        set_jit_config: (index: number, value: number) => {
+          current[index] = value >>> 0;
+        },
+      },
+    },
   };
 }
 
@@ -250,7 +258,10 @@ describe('prepared runtime integration', () => {
         reason: 'catalog-signature-signature-verification-failed',
       },
     ]);
-    expect(result.cpuProfile).toEqual({ status: 'skipped', reason: 'prepared-signature-untrusted' });
+    expect(result.cpuProfile).toEqual({
+      status: 'skipped',
+      reason: 'prepared-signature-untrusted',
+    });
   });
 
   test('loads the real profile summary but skips matching AOT by default', async () => {
@@ -318,6 +329,86 @@ describe('prepared runtime integration', () => {
       },
     ]);
     expect(result.translations).toBe('installed');
+  });
+
+  test('applies a trusted schema-v2 compiler configuration before installing PGO', async () => {
+    const fixture = await pgoFixture();
+    const artifactConfig = configOf(fixture.artifact);
+    const baseJitConfig = [...artifactConfig];
+    baseJitConfig[1] = 3;
+    const manifest = {
+      ...fixture.manifest,
+      version: 2,
+      jitConfig: baseJitConfig,
+      jitConfigOverrides: [[1, artifactConfig[1]]],
+    };
+    const files = new Map(fixture.files);
+    files.set('gamebox/optimized/manifest.json', text(manifest));
+    const runtimeCpu = cpu(baseJitConfig, manifest.memoryBytes);
+    let installs = 0;
+    const result = await prepareGameboxRuntime(
+      runtimeCpu,
+      archive(files),
+      catalog({
+        optimized: 'gamebox/optimized/manifest.json',
+        cpuProfile: 'gamebox/profiles/cpu.json',
+        files: fixture.sources,
+      }),
+      {
+        runtime: {
+          wasmSha256: manifest.runtimeWasmSha256,
+          javascriptSha256: manifest.runtimeJavascriptSha256,
+        },
+        trustPreparedAot: true,
+        install: () => {
+          installs++;
+        },
+      },
+    );
+    expect(installs).toBe(1);
+    expect(result.translationAttempts[0]).toMatchObject({ kind: 'pgo', status: 'installed' });
+    expect(runtimeCpu.wm.exports.get_jit_config(1)).toBe(artifactConfig[1]);
+  });
+
+  test('rolls back a compiler configuration when PGO installation fails', async () => {
+    const fixture = await pgoFixture();
+    const artifactConfig = configOf(fixture.artifact);
+    const baseJitConfig = [...artifactConfig];
+    baseJitConfig[1] = 3;
+    const manifest = {
+      ...fixture.manifest,
+      version: 2,
+      jitConfig: baseJitConfig,
+      jitConfigOverrides: [[1, artifactConfig[1]]],
+    };
+    const files = new Map(fixture.files);
+    files.set('gamebox/optimized/manifest.json', text(manifest));
+    const runtimeCpu = cpu(baseJitConfig, manifest.memoryBytes);
+    const result = await prepareGameboxRuntime(
+      runtimeCpu,
+      archive(files),
+      catalog({
+        optimized: 'gamebox/optimized/manifest.json',
+        cpuProfile: 'gamebox/profiles/cpu.json',
+        files: fixture.sources,
+      }),
+      {
+        runtime: {
+          wasmSha256: manifest.runtimeWasmSha256,
+          javascriptSha256: manifest.runtimeJavascriptSha256,
+        },
+        trustPreparedAot: true,
+        install: () => {
+          throw new Error('fixture install failure');
+        },
+      },
+    );
+    expect(result.translationAttempts[0]).toMatchObject({
+      kind: 'pgo',
+      status: 'skipped',
+      reason: 'Error: fixture install failure',
+    });
+    expect(runtimeCpu.wm.exports.get_jit_config(1)).toBe(baseJitConfig[1]);
   });
 
   test('rejects a wrong runtime before the installer and enforces pinned PGO source identity', async () => {
@@ -468,7 +559,9 @@ describe('prepared runtime integration', () => {
       catalog({
         bundleHash: 'b'.repeat(64),
         files: new Map([[sourceHash, { sourceHash }]]),
-        staticArtifacts: [{ moduleHash: sourceHash, bytes: artifact.length, sha256: await sha256(artifact) }],
+        staticArtifacts: [
+          { moduleHash: sourceHash, bytes: artifact.length, sha256: await sha256(artifact) },
+        ],
       }),
       {
         runtime: {
@@ -479,7 +572,9 @@ describe('prepared runtime integration', () => {
           mapping: 'identity',
         },
         trustPreparedAot: true,
-        install: () => { installs++; },
+        install: () => {
+          installs++;
+        },
       },
     );
     expect(installs).toBe(0);
@@ -545,10 +640,18 @@ describe('prepared runtime integration', () => {
       'rgba8unorm',
     );
     expect((factory as any).preparedDescriptorMatches('1|exact', {})).toBe(true);
-    expect(factory.getPreparedDescriptorStats()).toMatchObject({ hits: 1, misses: 0, candidates: 1 });
+    expect(factory.getPreparedDescriptorStats()).toMatchObject({
+      hits: 1,
+      misses: 0,
+      candidates: 1,
+    });
     factory.setSampleCount(4);
     expect((factory as any).preparedDescriptorMatches('1|exact', {})).toBe(false);
-    expect(factory.getPreparedDescriptorStats()).toMatchObject({ hits: 1, misses: 1, candidates: 1 });
+    expect(factory.getPreparedDescriptorStats()).toMatchObject({
+      hits: 1,
+      misses: 1,
+      candidates: 1,
+    });
     delete (globalThis as any).__gameboxGraphicsProfile;
     delete (globalThis as any).__gameboxGraphicsPreparedStats;
   });

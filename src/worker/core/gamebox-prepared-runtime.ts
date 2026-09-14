@@ -226,13 +226,21 @@ function preparedGraphicsPipeline(value: unknown): PreparedGraphicsPipeline | un
   try {
     if (typeof value !== 'string') return undefined;
     const descriptor = object(JSON.parse(value));
-    if (descriptor.mode !== 'ffp' || typeof descriptor.targetFormat !== 'string' ||
-        descriptor.targetFormat.length === 0 || descriptor.targetFormat.length > 256 ||
-        descriptor.depthFormat !== 'depth24plus-stencil8' ||
-        descriptor.sampleCount !== 1 && descriptor.sampleCount !== 2 &&
-        descriptor.sampleCount !== 4 && descriptor.sampleCount !== 8 ||
-        !descriptor.keyConfig || typeof descriptor.keyConfig !== 'object' ||
-        Array.isArray(descriptor.keyConfig)) return undefined;
+    if (
+      descriptor.mode !== 'ffp' ||
+      typeof descriptor.targetFormat !== 'string' ||
+      descriptor.targetFormat.length === 0 ||
+      descriptor.targetFormat.length > 256 ||
+      descriptor.depthFormat !== 'depth24plus-stencil8' ||
+      (descriptor.sampleCount !== 1 &&
+        descriptor.sampleCount !== 2 &&
+        descriptor.sampleCount !== 4 &&
+        descriptor.sampleCount !== 8) ||
+      !descriptor.keyConfig ||
+      typeof descriptor.keyConfig !== 'object' ||
+      Array.isArray(descriptor.keyConfig)
+    )
+      return undefined;
     return {
       descriptor: canonicalDescriptor(value),
       keyConfig: canonicalValue(descriptor.keyConfig),
@@ -633,12 +641,16 @@ async function validateOptimizedBinding(
   archive: ZipArchive,
   catalog: GameboxCatalog,
   runtime: PreparedRuntimeIdentity,
-): Promise<string | undefined> {
-  if (!catalog.optimized) return undefined;
+): Promise<{
+  error?: string;
+  baseJitConfig?: number[];
+  effectiveJitConfig?: number[];
+}> {
+  if (!catalog.optimized) return {};
   try {
     const manifest = object(await readGameboxJson(archive, catalog.optimized));
     if ((manifest.version !== 1 && manifest.version !== 2) || !Array.isArray(manifest.artifacts))
-      return 'optimized-index-invalid';
+      return { error: 'optimized-index-invalid' };
     if (
       manifest.version === 2 &&
       (manifest.sourceBundleHash !== catalog.bundleHash ||
@@ -650,7 +662,48 @@ async function validateOptimizedBinding(
         !Number.isSafeInteger(manifest.memoryBytes) ||
         manifest.memoryBytes <= 0)
     )
-      return 'optimized-runtime-or-source-mismatch';
+      return { error: 'optimized-runtime-or-source-mismatch' };
+    let baseJitConfig: number[] | undefined;
+    let effectiveJitConfig: number[] | undefined;
+    if (manifest.version === 2) {
+      if (
+        !Array.isArray(manifest.jitConfig) ||
+        manifest.jitConfig.length !== 22 ||
+        manifest.jitConfig.some(
+          (value: unknown) =>
+            !Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 0xffffffff,
+        ) ||
+        !Array.isArray(manifest.jitConfigOverrides) ||
+        manifest.jitConfigOverrides.length > 22
+      )
+        return { error: 'optimized-index-invalid' };
+      baseJitConfig = manifest.jitConfig.map((value: number) => value >>> 0);
+      effectiveJitConfig = [...baseJitConfig];
+      const configured = new Set<number>();
+      for (const pair of manifest.jitConfigOverrides) {
+        if (
+          !Array.isArray(pair) ||
+          pair.length !== 2 ||
+          !Number.isSafeInteger(pair[0]) ||
+          pair[0] < 0 ||
+          pair[0] >= 22 ||
+          configured.has(pair[0]) ||
+          !Number.isSafeInteger(pair[1]) ||
+          pair[1] < 0 ||
+          pair[1] > 0xffffffff
+        )
+          return { error: 'optimized-index-invalid' };
+        configured.add(pair[0]);
+        effectiveJitConfig[pair[0]] = pair[1] >>> 0;
+      }
+      // Prepared region artifacts intentionally disable speculative stores;
+      // enabling them requires a separately built and generation-tracked map.
+      if (effectiveJitConfig[19] !== 0) return { error: 'optimized-index-invalid' };
+      // Flag-local mode also needs the runtime's guarded setup path. The
+      // prepared loader may retain an already active mode but must not toggle
+      // it through the raw Wasm setter.
+      if (effectiveJitConfig[21] !== baseJitConfig[21]) return { error: 'optimized-index-invalid' };
+    }
     const sources = new Set(Array.from(catalog.files.values(), (file) => file.sourceHash));
     const seen = new Set<string>();
     for (const value of manifest.artifacts) {
@@ -660,13 +713,26 @@ async function validateOptimizedBinding(
         !sources.has(artifact.moduleHash) ||
         seen.has(artifact.moduleHash)
       )
-        return 'optimized-module-not-in-catalog';
+        return { error: 'optimized-module-not-in-catalog' };
       seen.add(artifact.moduleHash);
     }
-    return undefined;
+    return { baseJitConfig, effectiveJitConfig };
   } catch {
-    return 'optimized-index-invalid';
+    return { error: 'optimized-index-invalid' };
   }
+}
+
+function readJitConfig(cpu: any): number[] | undefined {
+  const get = cpu?.wm?.exports?.get_jit_config;
+  if (typeof get !== 'function') return undefined;
+  return Array.from({ length: 22 }, (_, index) => Number(get(index)) >>> 0);
+}
+
+function setJitConfig(cpu: any, values: readonly number[]): boolean {
+  const set = cpu?.wm?.exports?.set_jit_config;
+  if (typeof set !== 'function' || values.length !== 22) return false;
+  for (const [index, value] of values.entries()) set(index, value);
+  return JSON.stringify(readJitConfig(cpu)) === JSON.stringify(values);
 }
 
 /** Called after mounting the catalog and before any bootloader instruction executes. */
@@ -712,7 +778,13 @@ export async function prepareGameboxRuntime(
           return {
             cpuProfile: { status: 'skipped', reason: 'prepared-sidecar-hash-missing' },
             graphicsProfile: { status: 'skipped', reason: 'prepared-sidecar-hash-missing' },
-            translationAttempts: [{ kind: 'prepared-runtime', status: 'skipped', reason: 'prepared-sidecar-hash-missing' }],
+            translationAttempts: [
+              {
+                kind: 'prepared-runtime',
+                status: 'skipped',
+                reason: 'prepared-sidecar-hash-missing',
+              },
+            ],
             translations: 'ordinary-jit-or-existing-cache',
             graphics: catalog.features.graphicsCache
               ? 'unsupported-metadata-runtime-fallback'
@@ -731,7 +803,13 @@ export async function prepareGameboxRuntime(
         return {
           cpuProfile: { status: 'skipped', reason: 'prepared-sidecar-hash-mismatch' },
           graphicsProfile: { status: 'skipped', reason: 'prepared-sidecar-hash-mismatch' },
-          translationAttempts: [{ kind: 'prepared-runtime', status: 'skipped', reason: 'prepared-sidecar-hash-mismatch' }],
+          translationAttempts: [
+            {
+              kind: 'prepared-runtime',
+              status: 'skipped',
+              reason: 'prepared-sidecar-hash-mismatch',
+            },
+          ],
           translations: 'ordinary-jit-or-existing-cache',
           graphics: catalog.features.graphicsCache
             ? 'unsupported-metadata-runtime-fallback'
@@ -759,9 +837,9 @@ export async function prepareGameboxRuntime(
   const graphicsProfile = await loadGraphicsProfile(archive, catalog, runtime);
   const translationAttempts: Status[] = [];
   const indexes: PreparedAotIndex[] = [];
-  const optimizedError = await validateOptimizedBinding(archive, catalog, runtime);
-  if (optimizedError)
-    translationAttempts.push({ kind: 'pgo', status: 'skipped', reason: optimizedError });
+  const optimizedBinding = await validateOptimizedBinding(archive, catalog, runtime);
+  if (optimizedBinding.error)
+    translationAttempts.push({ kind: 'pgo', status: 'skipped', reason: optimizedBinding.error });
   else if (catalog.optimized) indexes.push({ kind: 'pgo', manifestPath: catalog.optimized });
   if (archive.getEntry('gamebox/translations/index.json'))
     indexes.push({
@@ -769,16 +847,45 @@ export async function prepareGameboxRuntime(
       manifestPath: 'gamebox/translations/index.json',
       artifacts: catalog.staticArtifacts,
     });
-  const installed = {
+  const installed = () => ({
     ...runtime,
     memoryBytes: Number(cpu?.memory_size?.[0] ?? cpu?.memory_size ?? 0),
-    jitConfig: Array.from({ length: 22 }, (_, i) => Number(cpu?.wm?.exports?.get_jit_config?.(i))),
-  };
+    jitConfig: readJitConfig(cpu) ?? [],
+  });
   for (const index of indexes) {
+    const originalJitConfig = readJitConfig(cpu);
+    let configuredForArtifact = false;
+    if (index.kind === 'pgo' && optimizedBinding.effectiveJitConfig) {
+      if (!trust) {
+        translationAttempts.push({
+          kind: index.kind,
+          status: 'skipped',
+          reason: 'unsigned-local-artifacts-not-enabled',
+        });
+        continue;
+      }
+      if (
+        !originalJitConfig ||
+        JSON.stringify(originalJitConfig) !== JSON.stringify(optimizedBinding.baseJitConfig) ||
+        !setJitConfig(cpu, optimizedBinding.effectiveJitConfig)
+      ) {
+        if (originalJitConfig) setJitConfig(cpu, originalJitConfig);
+        translationAttempts.push({
+          kind: index.kind,
+          status: 'skipped',
+          reason: 'runtime-config-mismatch',
+        });
+        continue;
+      }
+      configuredForArtifact = true;
+    }
+    const restoreConfiguration = () => {
+      if (configuredForArtifact && originalJitConfig) setJitConfig(cpu, originalJitConfig);
+    };
     const result = await preflightPreparedAot({
       cpu,
       index,
-      installed,
+      installed: installed(),
       sourceBundleHash: catalog.bundleHash,
       archive: {
         read: async (path, maxBytes) => {
@@ -796,10 +903,12 @@ export async function prepareGameboxRuntime(
       },
     });
     if (result.status === 'skipped') {
+      restoreConfiguration();
       translationAttempts.push({ kind: index.kind, status: 'skipped', reason: result.reason });
       continue;
     }
     if (!trust) {
+      restoreConfiguration();
       translationAttempts.push({
         kind: index.kind,
         status: 'skipped',
@@ -823,6 +932,7 @@ export async function prepareGameboxRuntime(
       });
       break;
     } catch (error) {
+      restoreConfiguration();
       translationAttempts.push({ kind: index.kind, status: 'skipped', reason: String(error) });
     }
   }
