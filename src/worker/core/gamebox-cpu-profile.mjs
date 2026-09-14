@@ -389,6 +389,12 @@ export async function startCpuProfile(cpu, options) {
           const finalPages = watchedPages.map(({ physicalAddress }) =>
             cpu.mem8.slice(physicalAddress, physicalAddress + 4096),
           );
+          // Native counters, mappings, and page bytes are now detached into
+          // JavaScript-owned snapshots. Release this session before hashing so
+          // a bounded follow-up pass can start without waiting on WebCrypto.
+          // close() is owner-checked, so this session's finalizer cannot tear
+          // down a successor that starts while the hashes are pending.
+          close();
           const memoryObservation = observesVirtualPages
             ? {
                 memoryBytes: String(cpu.mem8.byteLength),
@@ -405,7 +411,6 @@ export async function startCpuProfile(cpu, options) {
                 ),
               }
             : null;
-          close();
           for (let i = 0; i < watchedPages.length; i++)
             if (
               (await pageHash(finalPages[i])) !== watchedPages[i].sha256 &&

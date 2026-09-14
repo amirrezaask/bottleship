@@ -137,3 +137,24 @@ test('attributes physical trace rows through the captured mapping while keeping 
   assert.equal(profile.indirects[0].from.rva, 4);
   assert.equal(profile.indirects[0].to.rva, 8);
 });
+
+test('allows the next bounded pass to start while detached page hashes finish', async () => {
+  const cpu = pagingFixture();
+  const options = (scenario) => ({
+    gameContentHash: 'a'.repeat(64),
+    runtimeWasmSha256: 'b'.repeat(64),
+    runtimeJavascriptSha256: 'c'.repeat(64),
+    scenario,
+    modules: [],
+    pages: [0xf0001000],
+    isPaused: () => true,
+  });
+  const first = await startCpuProfile(cpu, options('bounded-pass-1'));
+  const firstResult = first.finish();
+  const second = await startCpuProfile(cpu, options('bounded-pass-2'));
+
+  await firstResult;
+  assert.equal(second.isActive(), true);
+  const secondResult = await second.finish();
+  assert.equal(secondResult.scenario, 'bounded-pass-2');
+});
