@@ -13,8 +13,7 @@ const inputs = {
     stringPatchSha256: 'string-memory.patch', stringKernelSha256: 'string-memory.rs',
     repPatchSha256: 'rep-memory.patch', repKernelSha256: 'rep-memory.rs',
     unalignedPatchSha256: 'unaligned-memory.patch', unalignedKernelSha256: 'unaligned-memory.rs',
-    jitPolicyPatchSha256: 'jit-policy.patch', buildScriptSha256: 'build.mjs',
-    profileCountersPatchSha256: 'profile-counters.patch',
+    buildScriptSha256: 'build.mjs',
 };
 
 export async function verifyRuntime(binary, manifest, readInput) {

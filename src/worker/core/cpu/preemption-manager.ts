@@ -60,16 +60,6 @@ export class PreemptionManager {
     private retChainingEnabled = true;          // config idx 12
     private retSpeculationEnabled = true;       // config idx 13
 
-    /** Hotness tiering (config idx 15 = per-module re-entry promotion threshold,
-     *  0 = OFF). Default ON after the null-function root cause was fixed in the
-     *  fork: the ret-memo outlived table-slot frees on the module-overwrite path
-     *  (ret_cache invalidation moved into free_wasm_table_index + epoch-keyed memo).
-     *  Kill-switch: dbg.jitTier2(0) — routed through
-     *  setTier2Threshold so the choice survives a game reload. Known perf-quality
-     *  caveat (not correctness): chained edges bypass cycle_internal, so heavily
-     *  chained modules accumulate re-entries slower and promote late. */
-    private tier2Threshold = 300_000;           // config idx 15 (0 = tier-2 OFF)
-
     /** Set the relaxed-FPU mode authoritatively: stores the desired state (so the NEXT
      *  v86 init boots with it) AND applies it live + clears the JIT cache so FPU-bearing
      *  blocks recompile. on=false → strict F80 (diagnostic A/B). */
@@ -168,15 +158,6 @@ export class PreemptionManager {
     }
     isRetSpeculationEnabled(): boolean { return this.retSpeculationEnabled; }
 
-    /** Hotness-tiering authoritative toggle (survives game reload). Pure runtime knob —
-     *  promotion happens organically past the threshold, so no cache clear needed. */
-    setTier2Threshold(threshold: number): void {
-        this.tier2Threshold = threshold >>> 0;
-        const ex = this.wasmExports;
-        if (ex?.set_jit_config) ex.set_jit_config(15, this.tier2Threshold);
-    }
-    getTier2Threshold(): number { return this.tier2Threshold; }
-
     /** 5× original LOOP_COUNTER — reduces postMessage round-trips from ~1K/s to ~200/s.
      *  Each do_many_cycles_native() runs ~5ms instead of ~1ms, matching TIME_PER_FRAME=1ms
      *  (inner loop exits immediately after first iteration since 5ms > 1ms threshold).
@@ -240,11 +221,6 @@ export class PreemptionManager {
             this.wasmExports.set_jit_config(13, this.retSpeculationEnabled ? 1 : 0);
             console.log(`[PERF] dynamic dispatch: retChain=${this.retChainingEnabled ? "on" : "off"} retSpec=${this.retSpeculationEnabled ? "on" : "off"}`);
 
-            // Hotness tiering (idx 15) — the Rust static defaults ON (300K); OVERRIDE it every
-            // init with the TS authority (default 0 = OFF, see tier2Threshold above — the
-            // promotion invalidation bug crashes Discworld Noir with "null function").
-            this.wasmExports.set_jit_config(15, this.tier2Threshold);
-            console.log(`[PERF] B3 tiering: threshold=${this.tier2Threshold || "OFF"}`);
         }
 
         // Re-apply any active guest-debugger config onto this (fresh) wasm instance.

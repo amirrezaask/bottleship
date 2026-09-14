@@ -1544,7 +1544,7 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
 }
 
 /**
- * Register JS fast path for PeekMessageA/W (Tier 2).
+ * Register JS fallback for the PeekMessageA/W WASM fast path.
  * Called when WASM handler falls through (queue non-empty or starvation limit).
  * Reads args directly from stack, avoids marshaling overhead.
  */

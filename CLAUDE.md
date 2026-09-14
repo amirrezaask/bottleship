@@ -147,13 +147,13 @@ Legacy Graphics (DirectDraw, D3D3-9). You bridge x86 Windows internals with mode
 - Self-restore optimization: if performSwitch picks the same thread, skip restore entirely —
   CPU state is already correct, RET N executes naturally.
 
-3.7 WASM Hypercall Tiers
+3.7 WASM Hypercall Groups
 
-Four-tier hierarchy — implement new hot paths here before adding JS thunks:
-  Tier 1 (1–16):  Time, sync primitives, UI (GetTickCount, CS enter/leave, GetCursorPos, PeekMessage).
-  Tier 2 (17–45): FPU/math (_ftol, _CI*, sin/cos/sqrt/pow/ceil/floor and friends).
-  Tier 3 (51–62): String/memory (wcscpy/wcslen, memcpy/memset, strcmp/stricmp/memcmp).
-  Tier 4:         JS fallback — try_dispatch() returns false → JS handles it.
+Implement new hot paths here before adding JS thunks. Handler IDs are grouped by function:
+  1–16:  Time, sync primitives, UI (GetTickCount, CS enter/leave, GetCursorPos, PeekMessage).
+  17–45: FPU/math (_ftol, _CI*, sin/cos/sqrt/pow/ceil/floor and friends).
+  51–62: String/memory (wcscpy/wcslen, memcpy/memset, strcmp/stricmp/memcmp).
+  Other calls fall back through try_dispatch() for JS to handle.
 JS implementations are mandatory fallbacks; never remove them.
 
 3.8 Static-Library HLE — Scope Constraints

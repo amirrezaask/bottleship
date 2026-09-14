@@ -397,8 +397,8 @@ export const dbg = {
      *  7=JIT_INDIRECT_REGION_MIN_SHARE(%) 8=JIT_INDIRECT_REGION_MAX_PAGES
      *  9=JIT_FASTMEM_READS 10=JIT_X87_LOCALS 11=JIT_PUSH_RUN_COALESCING
      *  12=JIT_RET_CHAINING 13=JIT_RET_SPECULATION 14=JIT_RET_SPEC_MAX_INSTR
-     *  15=JIT_TIER2_THRESHOLD 16=JIT_TIER2_RET_SPEC_MAX_INSTR 17=TIER2_MAX_PAGES
-     *  18=JIT_FASTMEM_READ_SPLIT 19=JIT_FASTMEM_WRITES 20=TIER2_PAGE_SET_CAP
+     *  15..17=reserved compatibility slots
+     *  18=JIT_FASTMEM_READ_SPLIT 19=JIT_FASTMEM_WRITES 20=reserved compatibility slot
      *  21=JIT_FLAG_LOCALS.
      *  Indices 19 and 21 have correctness-sensitive setup — use dbg.fastmemWrites /
      *  dbg.flagLocals rather than setting them here.
@@ -434,49 +434,18 @@ export const dbg = {
         const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
         console.log(`[dbg] JIT_RET_SPECULATION=${g(13)} maxInstr=${g(14)} (authoritative — survives reload) + cache cleared`);
     },
-    /** Hotness tiering (set_jit_config idx 15 = per-module re-entry threshold, 0=off;
-     *  idx 16 = tier-2 RET-spec budget; idx 17 = tier-2 module page budget). Default ON
-     *  (300K) via the Rust static — the promotion invalidation bug (ret-memo/dispatch
-     *  pointing at freed entries → "null function" trap) is
-     *  fixed in the fork (flush in free_wasm_table_index + epoch key). Routed through
-     *  the PreemptionManager when it exposes setTier2Threshold so the choice survives a
-     *  game reload. Pure runtime knob: changing it needs NO cache clear (promotion
-     *  happens organically as modules cross the threshold). */
-    jitTier2(threshold = 300000, specBudget = 0, maxPages = 0): void {
-        const w = wasm(); if (!w?.set_jit_config) return;
-        if (specBudget > 0) w.set_jit_config(16, specBudget >>> 0);
-        if (maxPages > 0) w.set_jit_config(17, maxPages >>> 0); // tier-2 module page budget (idx 17)
-        const pm = (globalThis as any).preemption;
-        if (pm?.setTier2Threshold) pm.setTier2Threshold(threshold);
-        else w.set_jit_config(15, threshold >>> 0);
-        const g = (i: number) => (w.get_jit_config ? (w.get_jit_config(i) >>> 0) : -1);
-        console.log(`[dbg] JIT_TIER2_THRESHOLD=${g(15)} tier2SpecBudget=${g(16)} tier2MaxPages=${g(17)} (runtime knob, no cache clear)`);
-    },
-    /** Hotness-tiering observability: pages currently tier-2-marked, successful promotions,
-     *  and promotions REFUSED because the page-set cap was full. blockedByCap > 0
-     *  with pageCount saturated at pageCap means the hot set outgrew the cap — the exact
-     *  failure mode that makes threshold changes read as "no effect" (see the in-race
-     *  NFSU A/B), and the normal state for a large title at the default cap. */
-    tier2Stats(): { pageCount: number; pageCap: number; promotions: number; blockedByCap: number; threshold: number; moduleEntries: number; chainedModuleEntries: number; promotedPages: number; blockedPages: number; promotionCoverage: number | null } | null {
-        const w = wasm(); if (!w?.jit_get_tier2_page_count) {
-            console.warn("[dbg] jit_get_tier2_page_count missing — rebuild vendor/v86 (build-wasm.sh)");
+    /** Runtime entry totals used to audit compiler-profile coverage. These counters
+     *  are observational only and never trigger eviction or recompilation. */
+    jitProfileStats(): { moduleEntries: number; chainedModuleEntries: number } | null {
+        const w = wasm(); if (!w?.jit_get_module_entries) {
+            console.warn("[dbg] compiler-profile counters missing — rebuild vendor/v86 (build-wasm.sh)");
             return null;
         }
-        const promotions = w.jit_get_tier2_promotions() >>> 0;
-        const blockedByCap = w.jit_get_tier2_blocked_by_cap() >>> 0;
         const s = {
-            pageCount: w.jit_get_tier2_page_count() >>> 0,
-            pageCap: w.get_jit_config ? (w.get_jit_config(20) >>> 0) : -1,
-            promotions,
-            blockedByCap,
-            threshold: w.get_jit_config ? (w.get_jit_config(15) >>> 0) : -1,
-            moduleEntries: w.jit_get_tier2_module_entries ? Number(w.jit_get_tier2_module_entries()) : 0,
-            chainedModuleEntries: w.jit_get_tier2_chained_module_entries ? Number(w.jit_get_tier2_chained_module_entries()) : 0,
-            promotedPages: w.jit_get_tier2_promoted_pages ? (w.jit_get_tier2_promoted_pages() >>> 0) : 0,
-            blockedPages: w.jit_get_tier2_blocked_pages ? (w.jit_get_tier2_blocked_pages() >>> 0) : 0,
-            promotionCoverage: promotions + blockedByCap > 0 ? promotions / (promotions + blockedByCap) : null,
+            moduleEntries: Number(w.jit_get_module_entries()),
+            chainedModuleEntries: w.jit_get_chained_module_entries ? Number(w.jit_get_chained_module_entries()) : 0,
         };
-        console.log(`[dbg] tier2: pages=${s.pageCount}/${s.pageCap} promotions=${s.promotions} blockedByCap=${s.blockedByCap} coverage=${s.promotionCoverage ?? 'n/a'} entries=${s.moduleEntries} chained=${s.chainedModuleEntries} threshold=${s.threshold}`);
+        console.log(`[dbg] compiler profile: entries=${s.moduleEntries} chained=${s.chainedModuleEntries}`);
         return s;
     },
     /** One serializable snapshot for controlled gameplay qualification. Keep the
@@ -484,7 +453,7 @@ export const dbg = {
     qualificationStats(): any {
         const w = wasm();
         if (!w?.get_jit_config) return null;
-        const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+        const indices = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 21];
         const raw = Object.fromEntries(indices.map((index) => [index, w.get_jit_config(index) >>> 0]));
         const fastmem = dbg.fastmemStats();
         const writeAudit = raw[19] ? dbg.fastmemWriteAudit() : null;
@@ -494,16 +463,12 @@ export const dbg = {
                 maxPages: raw[1],
                 retChaining: !!raw[12],
                 retSpeculation: !!raw[13],
-                tier2Threshold: raw[15],
-                tier2RetSpecMaxInstructions: raw[16],
-                tier2MaxPages: raw[17],
-                tier2PageCap: raw[20],
                 fastmemReads: !!raw[9],
                 fastmemReadSplit: !!raw[18],
                 fastmemWrites: !!raw[19],
                 flagLocals: !!raw[21],
             },
-            tier2: dbg.tier2Stats(),
+            compilerProfile: dbg.jitProfileStats(),
             fastmem,
             writeAudit,
             textureCopies: { ...getTextureKernelCopyStats(), directUploadEnabled: isTextureDirectUploadEnabled() },
@@ -1509,10 +1474,11 @@ export const dbg = {
         setWasmBlocksEnabled(!!on);
         console.log(`[dbg] d3dWasmBlocks=${on ? 1 : 0} (affects newly created state blocks)`);
     },
-    // ── Tier-2 trace-compiler ──────────
-    /** Watch the 4 KiB code page(s) containing the given guest addr(s) — Tier-1 recompiles
-     *  them with per-block exec counters + indirect-target recording. Accepts a single addr
-     *  or an array; hex strings ok. Zero cost for unwatched pages. */
+    // ── Compiler trace capture ──────────
+    /** Watch the 4 KiB code page(s) containing the given guest addr(s). The fallback
+     *  translator recompiles those pages with per-block counters and indirect-target
+     *  recording for an offline compiler experiment. Accepts a single address or an
+     *  array; hex strings are supported. */
     trace2Watch(addr: number | string | Array<number | string>): void {
         const w = wasm(); if (!w?.trace2_watch_page) { console.warn('[dbg] trace2 exports missing — rebuild v86'); return; }
         const list = Array.isArray(addr) ? addr : [addr];
@@ -1521,27 +1487,6 @@ export const dbg = {
             const ok = w.trace2_watch_page(p) >>> 0;
             console.log(`[dbg][trace2] watch page 0x${(p & ~0xFFF).toString(16)} → ${ok ? 'armed' : 'already-watched/full'}`);
         }
-    },
-    /** Watch the tier-2-promoted pages (known-hot by construction — they crossed the
-     *  re-entry threshold) under trace2, up to the 64-page watch cap. This is the
-     *  page-selection answer for the region-recompiler flow when no hot-page list is known a
-     *  priori: EIP sampling can't see inside cycle slices (JS timers only fire at
-     *  yield points → 100% idle-EIP samples). Flow: trace2WatchTier2() → play ~10s →
-     *  jitRegions(true). Returns {watched, tier2Total}. */
-    trace2WatchTier2(max = 64): { watched: number; tier2Total: number } | null {
-        const w = wasm(); if (!w?.trace2_watch_page || !w?.jit_get_tier2_page_at) {
-            console.warn('[dbg] trace2/tier2 exports missing — rebuild v86 (build-wasm.sh)');
-            return null;
-        }
-        const total = w.jit_get_tier2_page_count ? (w.jit_get_tier2_page_count() >>> 0) : 0;
-        let watched = 0;
-        for (let i = 0; i < total && watched < max; i++) {
-            const addr = w.jit_get_tier2_page_at(i) >>> 0;
-            if (!addr) break;
-            if (w.trace2_watch_page(addr) >>> 0) watched++;
-        }
-        console.log(`[dbg][trace2] watching ${watched}/${total} tier-2 pages (cap ${max})`);
-        return { watched, tier2Total: total };
     },
     /** Disable trace2 recording, clear all counters/CFG, de-instrument watched pages. */
     trace2Reset(): void {
@@ -1938,9 +1883,9 @@ export const dbg = {
     },
     /**
      * Return a bounded compiler-ready page plan from the live prepared process.
-     * Tier-2 entries are physical pages; the plan walks the current guest page
-     * tables to recover their unique executable virtual aliases. It is read-only
-     * and intentionally fails closed on unsupported/ambiguous mappings.
+     * Page selection comes from the compiler's execution profile; the plan walks
+     * current guest page tables to recover unique executable mappings. It is
+     * read-only and fails closed on unsupported or ambiguous mappings.
      */
     profilePlan(maxPages = PROFILE_PLAN_MAX_PAGES): Record<string, unknown> {
         if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > PROFILE_PLAN_MAX_PAGES)
@@ -1954,21 +1899,24 @@ export const dbg = {
         if (!pagingEnabled && modules.some((module) => module.base + module.size > memory.length))
             throw new Error('Profile plan module range exceeds physical guest memory');
         const exports = wasm();
-        if (!exports?.jit_get_tier2_page_count || !exports?.jit_get_tier2_page_at)
-            throw new Error('Profile plan tier-2 page exports are unavailable');
-        const tier2Count = Number(exports.jit_get_tier2_page_count());
-        if (!Number.isSafeInteger(tier2Count) || tier2Count < 1 || tier2Count > 8192)
-            throw new Error('Profile plan has no bounded tier-2 pages');
-        const tier2PhysicalPages = new Set<number>();
-        for (let i = 0; i < tier2Count; i++) {
-            const page = Number(exports.jit_get_tier2_page_at(i)) >>> 0;
-            if (page % 4096 || page > memory.length - 4096)
-                throw new Error('Profile plan returned an invalid tier-2 physical page');
-            tier2PhysicalPages.add(page);
+        if (!exports?.aot_profile_snapshot || !exports?.aot_profile_region || !exports?.aot_profile_executions)
+            throw new Error('Compiler execution-profile exports are unavailable');
+        const profileCount = Number(exports.aot_profile_snapshot(Date.now()));
+        if (!Number.isSafeInteger(profileCount) || profileCount < 1 || profileCount > 8192)
+            throw new Error('Profile plan has no bounded compiler profile');
+        const profiledPhysicalPages = new Set<number>();
+        for (let i = 0; i < profileCount; i++) {
+            const executions = Number(exports.aot_profile_executions(i));
+            if (!Number.isSafeInteger(executions) || executions < 0)
+                throw new Error('Compiler profile returned an invalid execution count');
+            if (executions === 0) continue;
+            const virtual = Number(exports.aot_profile_region(i)) >>> 0;
+            const physical = profilePlanTranslatePage(cpu, memory, virtual);
+            if (physical === null || physical % 4096 || physical > memory.length - 4096)
+                throw new Error('Compiler profile returned an unmapped executable address');
+            profiledPhysicalPages.add(physical);
         }
-        if (tier2PhysicalPages.size !== tier2Count)
-            throw new Error('Profile plan tier-2 page list contains duplicates');
-        if (!tier2PhysicalPages.size) throw new Error('Profile plan has no tier-2 pages');
+        if (!profiledPhysicalPages.size) throw new Error('Compiler profile has no executed pages');
         const candidates = new Map<number, number>();
         let probes = 0;
         for (const module of modules) {
@@ -1979,7 +1927,7 @@ export const dbg = {
                     if (++probes > PROFILE_PLAN_MAX_PROBES)
                         throw new Error('Profile plan page walk exceeded probe budget');
                     const physical = profilePlanTranslatePage(cpu, memory, virtual);
-                    if (physical === null || !tier2PhysicalPages.has(physical)) continue;
+                    if (physical === null || !profiledPhysicalPages.has(physical)) continue;
                     const previous = candidates.get(physical);
                     if (previous !== undefined && previous !== virtual)
                         throw new Error(`Profile plan physical page 0x${physical.toString(16)} has ambiguous virtual aliases`);
@@ -1988,24 +1936,24 @@ export const dbg = {
             }
         }
         if (!candidates.size)
-            throw new Error('Profile plan tier-2 pages do not map to loaded executable modules');
+            throw new Error('Profiled pages do not map to loaded executable modules');
         const allPairs = [...candidates.entries()].sort((a, b) => a[1] - b[1]);
         const pagePairs = allPairs.slice(0, maxPages);
-        const unmappedTier2PhysicalPages = [...tier2PhysicalPages]
+        const unmappedProfiledPhysicalPages = [...profiledPhysicalPages]
             .filter((physical) => !candidates.has(physical))
             .sort((a, b) => a - b);
-        const omittedTier2PhysicalPages = allPairs
+        const omittedProfiledPhysicalPages = allPairs
             .slice(maxPages)
             .map(([physical]) => physical)
             .sort((a, b) => a - b);
         const caveats = [];
-        if (unmappedTier2PhysicalPages.length)
-            caveats.push('Some Tier-2 pages were not mapped to loaded prepared executable modules');
-        if (omittedTier2PhysicalPages.length)
-            caveats.push('The deterministic page bound omitted additional mapped Tier-2 pages');
+        if (unmappedProfiledPhysicalPages.length)
+            caveats.push('Some profiled pages were not mapped to loaded prepared executable modules');
+        if (omittedProfiledPhysicalPages.length)
+            caveats.push('The deterministic page bound omitted additional mapped profiled pages');
         return {
             version: 1,
-            source: 'tier2-executable-pages',
+            source: 'compiler-execution-profile',
             memoryBytes: String(memory.length),
             pagingEnabled,
             jitConfig: Array.from({ length: 22 }, (_, index) => {
@@ -2020,10 +1968,10 @@ export const dbg = {
                 virtualAddress: virtual >>> 0,
                 physicalAddress: physical >>> 0,
             })),
-            tier2PhysicalPages: [...tier2PhysicalPages].sort((a, b) => a - b),
-            mappedTier2PhysicalPages: [...candidates.keys()].sort((a, b) => a - b),
-            unmappedTier2PhysicalPages,
-            omittedTier2PhysicalPages,
+            profiledPhysicalPages: [...profiledPhysicalPages].sort((a, b) => a - b),
+            mappedProfiledPhysicalPages: [...candidates.keys()].sort((a, b) => a - b),
+            unmappedProfiledPhysicalPages,
+            omittedProfiledPhysicalPages,
             caveats,
             probes,
         };

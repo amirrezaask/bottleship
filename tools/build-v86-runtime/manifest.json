@@ -1,5 +1,5 @@
 {
-  "v86Commit": "e070a0523fa95c97a35a0c31bedd6d50c5a49281",
+  "v86Commit": "a05cc6e51a4a493daede9fda63f6a4f733315f75",
   "rust": "1.96.0",
   "target": "wasm32-unknown-unknown",
   "features": [
@@ -7,8 +7,6 @@
     "multivalue",
     "simd128"
   ],
-  "jitPolicyPatchSha256": "0f742d523de2c1545f1ec3eec553e34180f4486c1e067161d1d49176206568e6",
-  "profileCountersPatchSha256": "fd1a998bdb85d9bd6dc5ad3d3b8d0fcd8fc04b1a1bcd431925167346f08ce033",
   "patchSha256": "c00b786ebcc8ffd3283243e7226f1d7420050b8bedec3f768a39f01dd28cd2a6",
   "kernelSha256": "bd38e02563391cf5de0302b155cdee75a0ad23747533919b60b5b0069211a71d",
   "stringPatchSha256": "f25048e7f71c83bbbb4141bb62458df2e751b5d7c1097cc04c223d1ff0c22532",
@@ -17,6 +15,6 @@
   "repKernelSha256": "0414ef1aa83c790524e3204394c9dba6dc476233ff1898a6295c31d4160b7177",
   "unalignedPatchSha256": "3804b865557ac09f4f8f948789144dbd1cd909527861f323e8f39b70209b1bca",
   "unalignedKernelSha256": "4a79ef4d15d5281277fec981da13160705cf1f101f10806bc7de3f9a1f68f939",
-  "buildScriptSha256": "20fb339df809587e120dfd4bdd39f579fe7976fda0238a679e92b73de3542b8a",
-  "wasmSha256": "7854f15e801d65a47ea497327f497b0f659da2bcb2d38e64fc9f8cf14b42fa65"
+  "buildScriptSha256": "2b2d64f79501df7cfdddb9e6f4594a3249207d10929d301fedcf6c0a6f7bbbc3",
+  "wasmSha256": "bd02a0e8af8befefd59ff0654ff1b44adb6b0173ca48260fa35d4dd50ef411bd"
 }

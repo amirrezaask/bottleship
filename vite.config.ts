@@ -26,13 +26,14 @@ export type PreparedRuntimeMapping = "identity" | "profile";
 
 /**
  * Select the address-space mapping contract baked into prepared-runtime
- * metadata. Generic builds retain the identity-mapped default; profile builds
- * must opt in explicitly so a profile-qualified artifact cannot be mislabeled.
+ * metadata. BottleShip enables paging before loading game code, so compiler
+ * output uses the observed profile mapping by default. Identity mapping is an
+ * explicit compatibility mode for separately qualified static artifacts.
  */
 export function resolvePreparedRuntimeMapping(
   value = process.env.GAMEBOX_PREPARED_RUNTIME_MAPPING,
 ): PreparedRuntimeMapping {
-  if (value === undefined) return "identity";
+  if (value === undefined) return "profile";
   if (value === "identity" || value === "profile") return value;
   throw new Error(
     `GAMEBOX_PREPARED_RUNTIME_MAPPING must be "identity" or "profile" (received ${JSON.stringify(value)})`,

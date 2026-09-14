@@ -643,8 +643,6 @@ async function validateOptimizedBinding(
   runtime: PreparedRuntimeIdentity,
 ): Promise<{
   error?: string;
-  baseJitConfig?: number[];
-  effectiveJitConfig?: number[];
 }> {
   if (!catalog.optimized) return {};
   try {
@@ -663,8 +661,6 @@ async function validateOptimizedBinding(
         manifest.memoryBytes <= 0)
     )
       return { error: 'optimized-runtime-or-source-mismatch' };
-    let baseJitConfig: number[] | undefined;
-    let effectiveJitConfig: number[] | undefined;
     if (manifest.version === 2) {
       if (
         !Array.isArray(manifest.jitConfig) ||
@@ -677,8 +673,8 @@ async function validateOptimizedBinding(
         manifest.jitConfigOverrides.length > 22
       )
         return { error: 'optimized-index-invalid' };
-      baseJitConfig = manifest.jitConfig.map((value: number) => value >>> 0);
-      effectiveJitConfig = [...baseJitConfig];
+      const baseJitConfig = manifest.jitConfig.map((value: number) => value >>> 0);
+      const compilerJitConfig = [...baseJitConfig];
       const configured = new Set<number>();
       for (const pair of manifest.jitConfigOverrides) {
         if (
@@ -694,15 +690,15 @@ async function validateOptimizedBinding(
         )
           return { error: 'optimized-index-invalid' };
         configured.add(pair[0]);
-        effectiveJitConfig[pair[0]] = pair[1] >>> 0;
+        compilerJitConfig[pair[0]] = pair[1] >>> 0;
       }
       // Prepared region artifacts intentionally disable speculative stores;
       // enabling them requires a separately built and generation-tracked map.
-      if (effectiveJitConfig[19] !== 0) return { error: 'optimized-index-invalid' };
+      if (compilerJitConfig[19] !== 0) return { error: 'optimized-index-invalid' };
       // Flag-local mode also needs the runtime's guarded setup path. The
       // prepared loader may retain an already active mode but must not toggle
       // it through the raw Wasm setter.
-      if (effectiveJitConfig[21] !== baseJitConfig[21]) return { error: 'optimized-index-invalid' };
+      if (compilerJitConfig[21] !== baseJitConfig[21]) return { error: 'optimized-index-invalid' };
     }
     const sources = new Set(Array.from(catalog.files.values(), (file) => file.sourceHash));
     const seen = new Set<string>();
@@ -716,7 +712,7 @@ async function validateOptimizedBinding(
         return { error: 'optimized-module-not-in-catalog' };
       seen.add(artifact.moduleHash);
     }
-    return { baseJitConfig, effectiveJitConfig };
+    return {};
   } catch {
     return { error: 'optimized-index-invalid' };
   }
@@ -726,13 +722,6 @@ function readJitConfig(cpu: any): number[] | undefined {
   const get = cpu?.wm?.exports?.get_jit_config;
   if (typeof get !== 'function') return undefined;
   return Array.from({ length: 22 }, (_, index) => Number(get(index)) >>> 0);
-}
-
-function setJitConfig(cpu: any, values: readonly number[]): boolean {
-  const set = cpu?.wm?.exports?.set_jit_config;
-  if (typeof set !== 'function' || values.length !== 22) return false;
-  for (const [index, value] of values.entries()) set(index, value);
-  return JSON.stringify(readJitConfig(cpu)) === JSON.stringify(values);
 }
 
 /** Called after mounting the catalog and before any bootloader instruction executes. */
@@ -853,35 +842,6 @@ export async function prepareGameboxRuntime(
     jitConfig: readJitConfig(cpu) ?? [],
   });
   for (const index of indexes) {
-    const originalJitConfig = readJitConfig(cpu);
-    let configuredForArtifact = false;
-    if (index.kind === 'pgo' && optimizedBinding.effectiveJitConfig) {
-      if (!trust) {
-        translationAttempts.push({
-          kind: index.kind,
-          status: 'skipped',
-          reason: 'unsigned-local-artifacts-not-enabled',
-        });
-        continue;
-      }
-      if (
-        !originalJitConfig ||
-        JSON.stringify(originalJitConfig) !== JSON.stringify(optimizedBinding.baseJitConfig) ||
-        !setJitConfig(cpu, optimizedBinding.effectiveJitConfig)
-      ) {
-        if (originalJitConfig) setJitConfig(cpu, originalJitConfig);
-        translationAttempts.push({
-          kind: index.kind,
-          status: 'skipped',
-          reason: 'runtime-config-mismatch',
-        });
-        continue;
-      }
-      configuredForArtifact = true;
-    }
-    const restoreConfiguration = () => {
-      if (configuredForArtifact && originalJitConfig) setJitConfig(cpu, originalJitConfig);
-    };
     const result = await preflightPreparedAot({
       cpu,
       index,
@@ -903,12 +863,10 @@ export async function prepareGameboxRuntime(
       },
     });
     if (result.status === 'skipped') {
-      restoreConfiguration();
       translationAttempts.push({ kind: index.kind, status: 'skipped', reason: result.reason });
       continue;
     }
     if (!trust) {
-      restoreConfiguration();
       translationAttempts.push({
         kind: index.kind,
         status: 'skipped',
@@ -932,7 +890,6 @@ export async function prepareGameboxRuntime(
       });
       break;
     } catch (error) {
-      restoreConfiguration();
       translationAttempts.push({ kind: index.kind, status: 'skipped', reason: String(error) });
     }
   }

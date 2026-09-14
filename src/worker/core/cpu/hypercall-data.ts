@@ -102,7 +102,7 @@ const HANDLER_IS_ICONIC = 13;
 const HANDLER_SCREEN_TO_CLIENT = 14;
 const HANDLER_GET_CURSOR_POS = 15;
 const HANDLER_PEEK_MESSAGE = 16;
-// Math/FPU hypercalls (Tier 2)
+// Math/FPU hypercalls
 const HANDLER_FTOL = 17;
 const HANDLER_CI_SIN = 18;
 const HANDLER_CI_COS = 19;

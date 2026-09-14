@@ -258,16 +258,8 @@ function checkDescriptorContext(context, installed) {
     return 'runtime-paging-mismatch';
   if (context.mapping !== undefined && context.mapping !== installed.mapping)
     return 'runtime-mapping-mismatch';
-  const profileFastmemErrorResult = profileFastmemError(
-    context.mapping ?? installed.mapping,
-    installed.jitConfig,
-    'runtime-profile-fastmem-mismatch',
-  );
-  if (profileFastmemErrorResult) return profileFastmemErrorResult;
   if (context.recipe !== undefined && installed.recipe !== undefined && context.recipe !== installed.recipe)
     return 'runtime-recipe-mismatch';
-  for (const [index, value] of context.overrides)
-    if (installed.jitConfig[index] !== (value >>> 0)) return 'runtime-config-mismatch';
   return null;
 }
 
@@ -456,8 +448,6 @@ export async function preflightPreparedAot({ cpu, index, archive, installed, sou
           'artifact-profile-fastmem-mismatch',
         );
         if (profileFastmemErrorResult) return skip(profileFastmemErrorResult);
-        if (unit.jitConfig.some((value, index) => value !== installed.jitConfig[index]))
-          return skip('artifact-config-mismatch');
       }
       parts.push(bytes);
       unitCount += parsed.count;

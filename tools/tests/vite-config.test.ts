@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resolvePreparedRuntimeMapping } from "../../vite.config";
 
-test("prepared runtime mapping defaults to the generic identity contract", () => {
-  assert.equal(resolvePreparedRuntimeMapping(undefined), "identity");
+test("prepared runtime mapping defaults to the compiler profile contract", () => {
+  assert.equal(resolvePreparedRuntimeMapping(undefined), "profile");
+});
+
+test("prepared runtime mapping accepts the explicit identity compatibility contract", () => {
   assert.equal(resolvePreparedRuntimeMapping("identity"), "identity");
 });
 

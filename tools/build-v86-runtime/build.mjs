@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const source = join(root, 'vendor/v86');
-const pinned = 'e070a0523fa95c97a35a0c31bedd6d50c5a49281';
+const pinned = 'a05cc6e51a4a493daede9fda63f6a4f733315f75';
 const rust = '1.96.0';
 const sha256 = p => createHash('sha256').update(readFileSync(p)).digest('hex');
 const at = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -20,8 +20,6 @@ const output = resolve(root, process.env.V86_OUTPUT || 'public/v86.wasm');
 const baseline = process.env.V86_BASELINE_OUTPUT && resolve(root, process.env.V86_BASELINE_OUTPUT);
 const patch = join(root, 'tools/build-v86-runtime/bulk-memory.patch');
 const kernel = join(root, 'tools/build-v86-runtime/bulk-memory.rs');
-const jitPolicyPatch = join(root, 'tools/build-v86-runtime/jit-policy.patch');
-const profileCountersPatch = join(root, 'tools/build-v86-runtime/profile-counters.patch');
 const stringPatch = join(root, 'tools/build-v86-runtime/string-memory.patch');
 const stringKernel = join(root, 'tools/build-v86-runtime/string-memory.rs');
 const stringBaseline = process.env.V86_STRING_BASELINE_OUTPUT && resolve(root, process.env.V86_STRING_BASELINE_OUTPUT);
@@ -39,7 +37,7 @@ try {
         const generator = table.startsWith('jit') ? 'jit' : table.startsWith('interpreter') ? 'interpreter' : 'analyzer';
         run(process.execPath, [`gen/generate_${generator}.js`, '--output-dir', 'build/', '--table', table]);
     }
-    run(process.env.CLANG || 'clang-18', ['-c', '--target=wasm32', '-O3', '-flto', '-nostdlib',
+    run(process.env.CLANG || 'clang', ['-c', '--target=wasm32', '-O3', '-flto', '-nostdlib',
         '-fvisibility=hidden', '-ffunction-sections', '-fdata-sections', '-DZSTDLIB_VISIBILITY=',
         '-o', 'build/zstddeclib.o', 'lib/zstd/zstddeclib.c']);
     const compile = target => {
@@ -54,10 +52,6 @@ try {
         chmodSync(target, 0o644);
         run(process.execPath, ['tools/check-wasm-exports.mjs', target]);
     };
-    run('git', ['apply', '--check', jitPolicyPatch]);
-    run('git', ['apply', jitPolicyPatch]);
-    run('git', ['apply', '--check', profileCountersPatch]);
-    run('git', ['apply', profileCountersPatch]);
     if (baseline) compile(baseline);
     run('git', ['apply', '--check', patch]);
     run('git', ['apply', patch]);
@@ -83,8 +77,7 @@ try {
         if (!WebAssembly.Module.exports(module).some(e => e.name === name)) throw new Error(`Missing export ${name}`);
     }
     const manifest = { v86Commit: pinned, rust, target: 'wasm32-unknown-unknown',
-        features: ['bulk-memory', 'multivalue', 'simd128'], jitPolicyPatchSha256: sha256(jitPolicyPatch),
-        profileCountersPatchSha256: sha256(profileCountersPatch),
+        features: ['bulk-memory', 'multivalue', 'simd128'],
         patchSha256: sha256(patch),
         kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),
         stringKernelSha256: sha256(stringKernel), repPatchSha256: sha256(repPatch),

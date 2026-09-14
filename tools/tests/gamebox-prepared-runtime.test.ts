@@ -331,7 +331,7 @@ describe('prepared runtime integration', () => {
     expect(result.translations).toBe('installed');
   });
 
-  test('applies a trusted schema-v2 compiler configuration before installing PGO', async () => {
+  test('keeps runtime fallback policy while installing schema-v2 compiler output', async () => {
     const fixture = await pgoFixture();
     const artifactConfig = configOf(fixture.artifact);
     const baseJitConfig = [...artifactConfig];
@@ -367,10 +367,10 @@ describe('prepared runtime integration', () => {
     );
     expect(installs).toBe(1);
     expect(result.translationAttempts[0]).toMatchObject({ kind: 'pgo', status: 'installed' });
-    expect(runtimeCpu.wm.exports.get_jit_config(1)).toBe(artifactConfig[1]);
+    expect(runtimeCpu.wm.exports.get_jit_config(1)).toBe(baseJitConfig[1]);
   });
 
-  test('rolls back a compiler configuration when PGO installation fails', async () => {
+  test('keeps runtime fallback policy when PGO installation fails', async () => {
     const fixture = await pgoFixture();
     const artifactConfig = configOf(fixture.artifact);
     const baseJitConfig = [...artifactConfig];

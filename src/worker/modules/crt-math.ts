@@ -1,7 +1,7 @@
 /**
  * CRT math intrinsics (FPU fallbacks).
  *
- * Two flavours, both JS fallbacks for when the WASM math hypercalls (Tier 2)
+ * Two flavours, both JS fallbacks for when the WASM math hypercalls
  * don't fire:
  *   - `_CI*` (Microsoft __cdecl FPU-calling-convention helpers): operands arrive
  *     on the x87 stack (ST(0)/ST(1)); the result replaces ST(0).
