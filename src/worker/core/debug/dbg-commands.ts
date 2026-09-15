@@ -474,6 +474,14 @@ export const dbg = {
             textureCopies: { ...getTextureKernelCopyStats(), directUploadEnabled: isTextureDirectUploadEnabled() },
         };
     },
+    /** Read-only streamed-bundle I/O counters. These expose whether compiler
+     * filesystem warming replaced demand fetches instead of merely adding I/O. */
+    filesystemIoStats(): unknown {
+        const source = (globalThis as unknown as {
+            __wgbSabIo?: { stats?: () => unknown };
+        }).__wgbSabIo;
+        return source?.stats?.() ?? null;
+    },
     textureDirectUpload(on = true): void {
         setTextureDirectUploadEnabled(on);
         console.log(`[dbg][texture] direct DXT upload=${isTextureDirectUploadEnabled()}`);

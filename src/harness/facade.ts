@@ -198,11 +198,11 @@ export function installHarnessFacade(worker: Worker): HarnessFacade {
         // the agent/make-wgb can hand a raw path — no symlink, no hardcoded folder.
         const isWinAbs = /^[a-zA-Z]:[\\/]/.test(idOrUrl);
         const isPosixAbsWgb = idOrUrl.startsWith("/") && !idOrUrl.startsWith("/apps/")
-            && !idOrUrl.startsWith("/__wgb/") && idOrUrl.toLowerCase().endsWith(".wgb");
+            && !idOrUrl.startsWith("/__wgb/") && isGameBundlePath(idOrUrl);
         if (isWinAbs || isPosixAbsWgb) return `/__wgb/?path=${encodeURIComponent(idOrUrl)}`;
         if (idOrUrl.includes("/")) return idOrUrl;                       // already a URL (/apps/…, /__wgb/…)
         // Bare id → a bundled demo served statically from public/apps.
-        if (idOrUrl.toLowerCase().endsWith(".wgb")) return `/apps/${idOrUrl}`;
+        if (isGameBundlePath(idOrUrl)) return `/apps/${idOrUrl}`;
         return `/apps/${idOrUrl}.wgb`;
     }
 
@@ -318,3 +318,4 @@ export function installHarnessFacade(worker: Worker): HarnessFacade {
     w.harness = facade;
     return facade;
 }
+import { isGameBundlePath } from '../game-bundle-path';

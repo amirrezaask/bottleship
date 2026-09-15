@@ -13,6 +13,7 @@ const inputs = {
     stringPatchSha256: 'string-memory.patch', stringKernelSha256: 'string-memory.rs',
     repPatchSha256: 'rep-memory.patch', repKernelSha256: 'rep-memory.rs',
     unalignedPatchSha256: 'unaligned-memory.patch', unalignedKernelSha256: 'unaligned-memory.rs',
+    aotWarmReplacementPatchSha256: 'aot-warm-replacement.patch',
     buildScriptSha256: 'build.mjs',
 };
 

@@ -5,7 +5,11 @@ import {
 } from './core/gamebox-profile-session';
 import { graphicsProfile } from './core/graphics-profile';
 import { V86 } from 'v86';
-import { finishPersistentTranslationCache, gameboxAot } from './core/gamebox-aot';
+import {
+  bindGameboxAotEngine,
+  finishPersistentTranslationCache,
+  gameboxAot,
+} from './core/gamebox-aot';
 import { ThunkGenerator } from './core/thunking/thunk-generator';
 import { Process } from './core/process';
 import { System } from './core/system';
@@ -344,6 +348,12 @@ let pendingBundle: { data?: Uint8Array; url?: string; blob?: Blob } | null = nul
 let deferV86Init = false;
 let deferredV86InitPromise: Promise<void> | null = null;
 const pendingGameboxAot: Array<Record<string, unknown>> = [];
+/**
+ * True from receipt of load_bundle until its final PE-load boundary. The bridge
+ * sends translation-cache work immediately after load_bundle; keep those
+ * requests with the bundle so reset/mount work cannot race or discard them.
+ */
+let bundleStartupCacheWindow = false;
 let heartbeatInterval: number | null = null;
 let schedulerInterval: number | null = null;
 let registryFlushInterval: number | null = null;
@@ -1953,6 +1963,29 @@ const loadBundleImpl = async (payload: {
     }
     bootMark('prefetch-done');
 
+    // The compiler profile identifies the byte ranges used through initial
+    // gameplay. Warm those ranges in the disk/network source cache beside guest
+    // startup, after mandatory metadata and small-file preparation have
+    // completed. This overlaps scattered asset I/O without retaining whole
+    // archives or adding a second cache owner.
+    if (bundle.gamebox) {
+      if (bundle.gamebox.filesystemWarmSetSkipped) {
+        Logger.warn(LogCategory.SYSTEM, bundle.gamebox.filesystemWarmSetSkipped);
+      } else {
+        void bundle.gamebox
+          .prewarmFilesystem()
+          .then((result) => {
+            Logger.log(
+              LogCategory.SYSTEM,
+              `WGB: compiler warm set ready — ${result.chunks} source chunks, ${(result.bytes / 1024 / 1024).toFixed(1)} MB fetched`,
+            );
+          })
+          .catch((error) => {
+            Logger.warn(LogCategory.SYSTEM, `WGB: compiler warm set skipped: ${String(error)}`);
+          });
+      }
+    }
+
     if (!EmulatorConfig.getInstance().skipVideo) {
       void videoEngine
         .ensureLoaded()
@@ -2085,6 +2118,19 @@ const loadBundleImpl = async (payload: {
       throw new Error('Prepared entrypoint is missing from the catalog');
     if (preparedImage?.fallbackReason)
       Logger.warn(LogCategory.SYSTEM, `GameBox: ${preparedImage.fallbackReason}`);
+    // This is the last safe startup boundary: prepareFullGameSwitch has reset
+    // the final v86 instance and the bundle is fully mounted, but no guest code
+    // has run. Resolve every cache request sent after load_bundle here so AOT
+    // state applies to this game rather than the preflight emulator state.
+    bundleStartupCacheWindow = false;
+    for (const request of pendingGameboxAot.splice(0)) {
+      try {
+        const result = await gameboxAot(request as any);
+        self.postMessage({ type: 'gamebox_aot_result', id: request.id, result });
+      } catch (error) {
+        self.postMessage({ type: 'gamebox_aot_result', id: request.id, error: String(error) });
+      }
+    }
     await loadPeData(bundle.entrypointBytes, true, preparedImage);
     bootMark('pe-loaded');
 
@@ -2107,6 +2153,14 @@ const loadBundleImpl = async (payload: {
     if (!bundle.gamebox) system.fileSystem.startProgressivePrefetch(_prefetchController.signal);
     gameSessionActive = true;
   } catch (err) {
+    bundleStartupCacheWindow = false;
+    for (const request of pendingGameboxAot.splice(0)) {
+      self.postMessage({
+        type: 'gamebox_aot_result',
+        id: request.id,
+        error: 'Game bundle failed before translation-cache initialization',
+      });
+    }
     const error = err as Error;
     Logger.error(
       LogCategory.SYSTEM,
@@ -2117,6 +2171,7 @@ const loadBundleImpl = async (payload: {
 };
 
 const loadBundle = (payload: { data?: Uint8Array; url?: string; blob?: Blob; blobs?: File[] }) => {
+  bundleStartupCacheWindow = true;
   loadBundleChain = loadBundleChain
     .then(() => loadBundleImpl(payload))
     .catch((err) => Logger.error(LogCategory.SYSTEM, `load_bundle failed: ${err}`));
@@ -2211,6 +2266,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
         thunkGenerator,
         apiRegistry,
       );
+      bindGameboxAotEngine(v86);
       process.canvas = canvas;
 
       // Initialize System singleton
@@ -2933,14 +2989,6 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       if (pendingBundle) {
         const buffered = pendingBundle;
         pendingBundle = null;
-        for (const request of pendingGameboxAot.splice(0)) {
-          try {
-            const result = await gameboxAot(request as any);
-            self.postMessage({ type: 'gamebox_aot_result', id: request.id, result });
-          } catch (error) {
-            self.postMessage({ type: 'gamebox_aot_result', id: request.id, error: String(error) });
-          }
-        }
         loadBundle(buffered);
       }
     });
@@ -3193,11 +3241,10 @@ self.onmessage = (event: MessageEvent) => {
     return;
   }
   if (message?.type === 'gamebox_aot') {
-    if (!System.getInstance().process && deferV86Init) {
-      // GameBoxBridge intentionally starts the bundle load before awaiting an
-      // external legacy AOT request when v86 construction is deferred. Keep the
-      // request ordered ahead of pendingBundle's PE load once the manifest-sized
-      // emulator is ready.
+    if ((deferV86Init && pendingBundle) || bundleStartupCacheWindow) {
+      // GameBoxBridge intentionally sends this immediately after load_bundle.
+      // The bundle loader drains the queue after its final reset/mount work and
+      // immediately before PE load, which is the only stable startup boundary.
       pendingGameboxAot.push(message as Record<string, unknown>);
       return;
     }
@@ -3212,7 +3259,7 @@ self.onmessage = (event: MessageEvent) => {
     if (
       !gameboxGameId &&
       /^app:gamebox-[a-f0-9]{64}$/.test(message.gameId) &&
-      /^gamebox-[a-f0-9]{64}\.wgb$/.test(message.cacheKey)
+      /^gamebox-[a-f0-9]{64}\.gaf$/.test(message.cacheKey)
     ) {
       if (message.jitConfigOverrides !== undefined) {
         const overrides = message.jitConfigOverrides;

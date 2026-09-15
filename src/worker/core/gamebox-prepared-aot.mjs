@@ -4,7 +4,7 @@
 // caller must pass the returned package to the existing loader only after this
 // function reports `validated`; all other outcomes are ordinary-JIT fallback.
 
-const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES = 96 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 const MAX_UNITS = 2048;
 const MAX_UNIT_BYTES = 1024 * 1024;

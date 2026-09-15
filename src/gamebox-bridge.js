@@ -148,7 +148,7 @@ export function installGameBoxBridge(worker, closeAudio) {
       if (
         url.origin !== location.origin ||
         !url.pathname.startsWith('/assets/') ||
-        !url.pathname.toLowerCase().endsWith('.wgb') ||
+        !url.pathname.toLowerCase().endsWith('.gaf') ||
         url.search ||
         url.hash
       )
@@ -160,7 +160,7 @@ export function installGameBoxBridge(worker, closeAudio) {
           (b) => b.toString(16).padStart(2, '0'),
         ).join('');
       const gameId = `app:gamebox-${await hash(saveNamespace)}`;
-      const cacheKey = `gamebox-${await hash(url.pathname)}.wgb`;
+      const cacheKey = `gamebox-${await hash(url.pathname)}.gaf`;
       worker.postMessage({
         type: 'gamebox_configure',
         gameId,
@@ -169,6 +169,12 @@ export function installGameBoxBridge(worker, closeAudio) {
         ...(jitConfigOverrides === undefined ? {} : { jitConfigOverrides }),
         ...(preparedTrustStore === undefined ? {} : { preparedTrustStore }),
       });
+      // Max Payne v2 has an exact-byte, fail-closed inner-loop hook. Enable
+      // static-library HLE only for that catalog identity; same-worker message
+      // ordering guarantees detection is armed before load_bundle maps the PE.
+      if (url.pathname === '/assets/max-payne/v2/game.gaf') {
+        worker.postMessage({ type: 'hle_enable', logOnly: false });
+      }
       launched = true;
       await window.loadApp(url.href);
       // Embedded ?game=dev transfers the canvas before this call and defers v86
@@ -189,6 +195,30 @@ export function installGameBoxBridge(worker, closeAudio) {
           console.warn('Persistent translation cache unavailable:', cacheError);
         }
       }
+    },
+    async cpuFeedback() {
+      if (!launched || stopped) throw new Error('BottleShip feedback requires a running game');
+      const persistent = await aotRequest('persistent-feedback');
+      if (persistent) return persistent;
+      const stats = await aotRequest('stats');
+      const captured = await aotRequest('finish');
+      const bytes = captured?.bytes;
+      if (
+        !(bytes instanceof Uint8Array) ||
+        bytes.byteLength <= 8 ||
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(4, true) === 0
+      )
+        return null;
+      const artifactSha256 = Array.from(
+        new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)),
+        (byte) => byte.toString(16).padStart(2, '0'),
+      ).join('');
+      return {
+        artifact: bytes,
+        artifactSha256,
+        artifactBytes: bytes.byteLength,
+        compilations: Number(stats?.fallbackCompilations ?? 1),
+      };
     },
     async translationCache(mode, payload = {}) {
       const allowed = new Set([

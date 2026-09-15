@@ -86,6 +86,7 @@ export interface GameBoxFilesystemProfileSnapshot {
   retainedFiles: number;
   droppedFiles: string;
   droppedRanges: string;
+  droppedCommonRanges: string;
   droppedPathBytes: string;
   droppedAccessOrder: string;
   counterOverflow: string;
@@ -123,6 +124,7 @@ export class GameBoxFilesystemProfile {
   private rangeCountState = 0;
   private droppedFilesState = 0n;
   private droppedRangesState = 0n;
+  private droppedCommonRangesState = 0n;
   private droppedPathBytesState = 0n;
   private droppedAccessOrderState = 0n;
   private accessOrderState: Array<{
@@ -171,6 +173,7 @@ export class GameBoxFilesystemProfile {
     this.rangeCountState = 0;
     this.droppedFilesState = 0n;
     this.droppedRangesState = 0n;
+    this.droppedCommonRangesState = 0n;
     this.droppedPathBytesState = 0n;
     this.droppedAccessOrderState = 0n;
     this.accessOrderState = [];
@@ -199,6 +202,7 @@ export class GameBoxFilesystemProfile {
     field:
       | 'droppedFilesState'
       | 'droppedRangesState'
+      | 'droppedCommonRangesState'
       | 'droppedPathBytesState'
       | 'droppedAccessOrderState',
     value = 1n,
@@ -275,7 +279,10 @@ export class GameBoxFilesystemProfile {
     if (!this.runningState) return;
     this.increment('opens');
     if (!success) this.increment('failedOpens');
-    const state = this.file(path, source);
+    // Failed loose-file probes are useful aggregate evidence, but they are not
+    // launch assets. Do not let thousands of misses evict the successful ROM
+    // working set from the bounded compiler profile.
+    const state = success ? this.file(path, source) : (this.files.get(pathKey(path)) ?? null);
     if (!state) return;
     if (success) state.opens.success = add(state.opens.success);
     else state.opens.failed = add(state.opens.failed);
@@ -297,7 +304,7 @@ export class GameBoxFilesystemProfile {
     this.increment('requestedBytes', req);
     this.increment('returnedBytes', got);
     if (!success) this.increment('failedReads');
-    const state = this.file(path, source);
+    const state = success ? this.file(path, source) : (this.files.get(pathKey(path)) ?? null);
     if (!state) return;
     state.reads.calls = add(state.reads.calls);
     state.reads.requested = add(state.reads.requested, req);
@@ -322,7 +329,7 @@ export class GameBoxFilesystemProfile {
     if (common) common.count = add(common.count);
     else if (state.commonRanges.size < GAMEBOX_FILESYSTEM_PROFILE_MAX_COMMON_RANGES)
       state.commonRanges.set(key, { offset: start, length: safeNumber(requested), count: 1n });
-    else this.addDropped('droppedRangesState');
+    else this.addDropped('droppedCommonRangesState');
   }
 
   recordSeek(path: string, source: Source, oldOffset: number, newOffset: number): void {
@@ -338,7 +345,7 @@ export class GameBoxFilesystemProfile {
   recordStat(path: string, source: Source, hit: boolean): void {
     if (!this.runningState) return;
     this.increment('stats');
-    const state = this.file(path, source);
+    const state = hit ? this.file(path, source) : (this.files.get(pathKey(path)) ?? null);
     if (!state) return;
     state.stats.calls = add(state.stats.calls);
     if (hit) state.stats.hits = add(state.stats.hits);
@@ -350,7 +357,7 @@ export class GameBoxFilesystemProfile {
     if (!this.runningState) return;
     this.increment('enumerations');
     this.increment('enumeratedEntries', BigInt(safeNumber(entries)));
-    const state = this.file(path, source);
+    const state = success ? this.file(path, source) : (this.files.get(pathKey(path)) ?? null);
     if (!state) return;
     state.enumerations.calls = add(state.enumerations.calls);
     state.enumerations.entries = add(state.enumerations.entries, BigInt(safeNumber(entries)));
@@ -441,6 +448,7 @@ export class GameBoxFilesystemProfile {
       retainedFiles: files.length,
       droppedFiles: decimal(this.droppedFilesState),
       droppedRanges: decimal(this.droppedRangesState),
+      droppedCommonRanges: decimal(this.droppedCommonRangesState),
       droppedPathBytes: decimal(this.droppedPathBytesState),
       droppedAccessOrder: decimal(this.droppedAccessOrderState),
       counterOverflow: decimal(this.counterOverflowState),

@@ -1,7 +1,7 @@
 const CACHE_ROOT = 'translation-cache';
 export const TRANSLATION_CACHE_SCHEMA_VERSION = 1;
 export const TRANSLATION_ABI_VERSION = 1;
-export const MAX_TRANSLATION_ARTIFACT_BYTES = 32 * 1024 * 1024;
+export const MAX_TRANSLATION_ARTIFACT_BYTES = 96 * 1024 * 1024;
 /** Maximum number of complete artifacts retained by the persistent cache. */
 export const MAX_TRANSLATION_CACHE_ENTRIES = 64;
 /** Maximum aggregate artifact bytes retained by the persistent cache. */

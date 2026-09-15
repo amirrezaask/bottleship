@@ -12,7 +12,7 @@
 // as an "expensive sync" source), so the guest's hot reads are served from a
 // local RAM block cache and only cold misses cross to the I/O worker.
 
-import type { ZipSource } from "@bottleship/formats/zip";
+import type { ZipPrefetchRange, ZipPrefetchResult, ZipSource } from "@bottleship/formats/zip";
 import { Logger, LogCategory } from "../../core/logger";
 import {
     SAB_TOTAL_BYTES, CTL_WORDS, CTL_STATE, CTL_RESP_LEN, CTL_ERRNO,
@@ -36,6 +36,12 @@ export class SabIoSource implements ZipSource {
     private _requests = 0;
     private _waits = 0;
     private _timeouts = 0;
+    private nextPrefetchId = 1;
+    private readonly pendingPrefetch = new Map<number, {
+        resolve: (value: ZipPrefetchResult) => void;
+        reject: (reason: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+    }>();
 
     private constructor(worker: Worker, sab: SharedArrayBuffer, size: number) {
         this.worker = worker;
@@ -43,6 +49,24 @@ export class SabIoSource implements ZipSource {
         this.meta = new Float64Array(sab, META_OFFSET_BYTES, META_WORDS);
         this.data = new Uint8Array(sab, DATA_OFFSET_BYTES, DATA_BYTES);
         this.size = size;
+        worker.onmessage = (event: MessageEvent) => {
+            const message = event.data;
+            if (message?.type === "log") {
+                Logger.log(LogCategory.SYSTEM, `[io-worker] ${message.msg}`);
+                return;
+            }
+            if (message?.type !== "prefetch_result") return;
+            const pending = this.pendingPrefetch.get(message.id);
+            if (!pending) return;
+            clearTimeout(pending.timer);
+            this.pendingPrefetch.delete(message.id);
+            if (message.error) pending.reject(new Error(String(message.error)));
+            else pending.resolve({
+                ranges: Number(message.ranges) || 0,
+                chunks: Number(message.chunks) || 0,
+                bytes: Number(message.bytes) || 0,
+            });
+        };
     }
 
     /**
@@ -75,12 +99,36 @@ export class SabIoSource implements ZipSource {
             worker.postMessage({ type: "init", sab, url, tune });
         }).catch(error => { worker.terminate(); throw error; });
 
-        // Keep forwarding I/O-worker logs after init.
-        worker.onmessage = (e: MessageEvent) => {
-            if (e.data?.type === "log") Logger.log(LogCategory.SYSTEM, `[io-worker] ${e.data.msg}`);
-        };
-
         return new SabIoSource(worker, sab, size);
+    }
+
+    async prefetchRanges(
+        ranges: readonly ZipPrefetchRange[],
+        maxBytes: number,
+    ): Promise<ZipPrefetchResult> {
+        if (this.closed) throw new Error("SabIoSource is closed");
+        if (
+            ranges.length > 8192 ||
+            !Number.isSafeInteger(maxBytes) ||
+            maxBytes < 0 ||
+            maxBytes > 64 * 1024 * 1024 ||
+            ranges.some(({ start, end }) =>
+                !Number.isSafeInteger(start) ||
+                !Number.isSafeInteger(end) ||
+                start < 0 ||
+                end <= start ||
+                end > this.size)
+        ) throw new Error("Invalid SAB prefetch request");
+        if (ranges.length === 0 || maxBytes === 0) return { ranges: 0, chunks: 0, bytes: 0 };
+        const id = this.nextPrefetchId++;
+        return new Promise<ZipPrefetchResult>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingPrefetch.delete(id);
+                reject(new Error("SabIoSource: prefetch timed out"));
+            }, 30_000);
+            this.pendingPrefetch.set(id, { resolve, reject, timer });
+            this.worker.postMessage({ type: "prefetch", id, ranges, maxBytes });
+        });
     }
 
     readRangeSync(start: number, end: number): Uint8Array {
@@ -169,6 +217,11 @@ export class SabIoSource implements ZipSource {
 
     close(): void {
         this.closed = true;
+        for (const pending of this.pendingPrefetch.values()) {
+            clearTimeout(pending.timer);
+            pending.reject(new Error("SabIoSource is closed"));
+        }
+        this.pendingPrefetch.clear();
         try { this.worker.terminate(); } catch { /* best-effort */ }
     }
 }

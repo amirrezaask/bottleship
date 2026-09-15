@@ -9,7 +9,7 @@ import {
   type TranslationProfileRow,
 } from './translation-cache';
 declare const __GAMEBOX_AOT_ABI__: string;
-const LIMIT = 32 * 1024 * 1024;
+const LIMIT = 96 * 1024 * 1024;
 let persistentCache: PersistentTranslationCache | null = null;
 let previousPersistentEntry: TranslationCacheEntry | null = null;
 let profileTimer: ReturnType<typeof setInterval> | null = null;
@@ -40,6 +40,13 @@ interface AotExports extends WebAssembly.Exports {
   aot_profile_instantiate_us(index: number): number;
   aot_profile_first_execution_at(index: number): number;
   aot_profile_last_execution_at(index: number): number;
+}
+type V86Engine = { cpu?: unknown; v86?: { cpu?: unknown } };
+let boundEngine: V86Engine | undefined;
+
+/** Bind AOT operations to the worker's actual v86 owner at process creation. */
+export function bindGameboxAotEngine(engine: V86Engine): void {
+  boundEngine = engine;
 }
 const digest = async (bytes: Uint8Array) =>
   Array.from(
@@ -73,10 +80,23 @@ async function bounded(url: URL, limit: number): Promise<Uint8Array<ArrayBuffer>
 }
 
 function exports(): AotExports | undefined {
-  const v86 = System.getInstance().process?.v86 as
-    { cpu?: unknown; v86?: { cpu?: unknown } } | undefined;
+  const v86 = boundEngine ?? (System.getInstance().process?.v86 as V86Engine | undefined);
   const cpu = v86?.cpu || v86?.v86?.cpu;
   return (cpu as { wm?: { exports?: AotExports } } | undefined)?.wm?.exports;
+}
+
+function aotSupportDiagnostic(): string {
+  const engine = boundEngine ?? (System.getInstance().process?.v86 as V86Engine | undefined);
+  const cpu = engine?.cpu || engine?.v86?.cpu;
+  const wasm = (cpu as { wm?: { exports?: WebAssembly.Exports } } | undefined)?.wm?.exports;
+  return [
+    `process=${Boolean(System.getInstance().process)}`,
+    `bound=${Boolean(boundEngine)}`,
+    `engine=${Boolean(engine)}`,
+    `cpu=${Boolean(cpu)}`,
+    `wasm=${Boolean(wasm)}`,
+    `aotStat=${typeof (wasm as { aot_stat?: unknown } | undefined)?.aot_stat}`,
+  ].join(', ');
 }
 
 function validatePackage(bytes: Uint8Array<ArrayBuffer>): void {
@@ -252,6 +272,25 @@ export async function finishPersistentTranslationCache(): Promise<void> {
   persistentMetrics.cacheWriteMs += performance.now() - startedAt;
 }
 
+async function takePersistentTranslationFeedback() {
+  await finishPersistentTranslationCache();
+  if (!persistentCache) return null;
+  const entry = await persistentCache.load();
+  if (!entry) return null;
+  // The stop path must not replace this just-flushed package with a second,
+  // empty capture from the same session.
+  persistentWriteDisabled = true;
+  return {
+    artifact: entry.artifact,
+    artifactSha256: entry.manifest.artifactSha256,
+    artifactBytes: entry.manifest.artifactBytes,
+    compilations: entry.manifest.profiles.reduce(
+      (sum, row) => Math.min(Number.MAX_SAFE_INTEGER, sum + row.translations),
+      0,
+    ),
+  };
+}
+
 async function persistentOperation(
   mode: string,
   message: { gameId?: string; moduleId?: string; entry?: TranslationCacheEntry },
@@ -351,9 +390,11 @@ export async function gameboxAot(message: {
   entry?: TranslationCacheEntry;
 }) {
   const e = exports();
-  if (!e?.aot_stat) throw new Error('This runtime has no AOT support');
+  if (!e?.aot_stat)
+    throw new Error(`This runtime has no AOT support (${aotSupportDiagnostic()})`);
   if (message.mode.startsWith('persistent-')) {
     if (message.mode === 'persistent-start') return persistentStart(e);
+    if (message.mode === 'persistent-feedback') return takePersistentTranslationFeedback();
     return persistentOperation(message.mode, message);
   }
   if (message.mode === 'capture') {
@@ -369,7 +410,7 @@ export async function gameboxAot(message: {
     const url = new URL(message.url!);
     if (
       url.origin !== location.origin ||
-      !/^\/assets\/[^/]+\/[^/]+\/aot\.json$/.test(url.pathname) ||
+      !/^\/(?:assets|gaf)\/[^/]+\/[^/]+\/aot\.json$/.test(url.pathname) ||
       url.search ||
       url.hash
     )

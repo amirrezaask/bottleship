@@ -40,6 +40,7 @@ import type {
   PresentMode,
   UiSettings,
 } from "../ui-settings";
+import { isGameBundlePath } from "../game-bundle-path";
 
 async function writeOpfsFile(dir: FileSystemDirectoryHandle, name: string, blob: Blob): Promise<void> {
   const handle = await dir.getFileHandle(name, { create: true });
@@ -1730,12 +1731,12 @@ export default function App() {
       setBundleDisplayName(null);
       canvasRef.current?.focus();
       const lower = path.toLowerCase();
-      if (lower.endsWith(".wgb")) {
+      if (isGameBundlePath(lower)) {
         setLoadingProgress({ phase: "loading", percent: 0, label: "" });
         globalWorker.postMessage({ type: "load_bundle", url: path, galaxyHle: true, hleLogOnly: logOnly, galaxyHleMixer: galaxyHleMixer });
         return;
       }
-      // Non-WGB: enable then fall through to fetch path.
+      // Non-bundle: enable then fall through to the raw executable path.
       globalWorker.postMessage({ type: "hle_enable", logOnly });
       await new Promise((r) => setTimeout(r, 50));
       return (window as any).loadApp(path);
@@ -1757,7 +1758,7 @@ export default function App() {
       }
       canvasRef.current?.focus();
       const lower = path.toLowerCase();
-      if (lower.endsWith(".wgb")) {
+      if (isGameBundlePath(lower)) {
         setLoadingProgress({ phase: "loading", percent: 0, label: "" });
         globalWorker.postMessage({ type: "load_bundle", url: path });
         return;

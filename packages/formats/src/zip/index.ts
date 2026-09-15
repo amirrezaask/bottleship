@@ -9,6 +9,12 @@ export interface ZipSource {
     size: number;
     readRange(start: number, end: number): Promise<Uint8Array>;
     /**
+     * Best-effort, bounded warming of source ranges. Implementations may align
+     * requests to their cache granularity, but must not fetch more than
+     * `maxBytes`. No returned byte buffer is retained by the caller.
+     */
+    prefetchRanges?(ranges: readonly ZipPrefetchRange[], maxBytes: number): Promise<ZipPrefetchResult>;
+    /**
      * Optional sync range read. Returns the bytes when they can be served
      * synchronously (BufferSource / SAH always can), or `null` when a sync read
      * is not possible right now (e.g. a CachedSource block-cache miss) — callers
@@ -16,6 +22,23 @@ export interface ZipSource {
      * never return null, so this widening is behavior-preserving for them.
      */
     readRangeSync?(start: number, end: number): Uint8Array | null;
+}
+
+export interface ZipPrefetchRange {
+    start: number;
+    end: number;
+}
+
+export interface ZipPrefetchResult {
+    ranges: number;
+    chunks: number;
+    bytes: number;
+}
+
+export interface ZipEntryPrefetchRange {
+    entry: ZipEntry;
+    offset: number;
+    length: number;
 }
 
 export interface ZipEntry {
@@ -97,19 +120,41 @@ export class BlobSource implements ZipSource {
 }
 
 /** Read exactly the requested response body without buffering an unchecked server reply. */
-async function boundedRange(url: string, start: number, end: number, size?: number, signal?: AbortSignal): Promise<{ bytes: Uint8Array; size: number }> {
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || (size !== undefined && end > size))
+async function boundedRange(
+    url: string,
+    start: number,
+    end: number,
+    size?: number,
+    signal?: AbortSignal,
+): Promise<{ bytes: Uint8Array; size: number }> {
+    if (
+        !Number.isSafeInteger(start) ||
+        !Number.isSafeInteger(end) ||
+        start < 0 ||
+        end <= start ||
+        (size !== undefined && end > size)
+    )
         throw new Error("Invalid WGB range");
     const timeout = AbortSignal.timeout(30_000);
-    const response = await fetch(url, { headers: { Range: `bytes=${start}-${end - 1}` }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    const response = await fetch(url, {
+        headers: { Range: `bytes=${start}-${end - 1}` },
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
     const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");
     const total = match ? Number(match[3]) : NaN;
     const expected = end - start;
     const contentLength = response.headers.get("content-length");
-    if (response.status !== 206 || !match || Number(match[1]) !== start || Number(match[2]) !== end - 1 ||
-        !Number.isSafeInteger(total) || total < end || (size !== undefined && total !== size) ||
+    if (
+        response.status !== 206 ||
+        !match ||
+        Number(match[1]) !== start ||
+        Number(match[2]) !== end - 1 ||
+        !Number.isSafeInteger(total) ||
+        total < end ||
+        (size !== undefined && total !== size) ||
         (contentLength !== null && Number(contentLength) !== expected) ||
-        ![null, "identity"].includes(response.headers.get("content-encoding"))) {
+        ![null, "identity"].includes(response.headers.get("content-encoding"))
+    ) {
         await response.body?.cancel().catch(() => {});
         throw new Error("WGB server must return the exact requested byte range");
     }
@@ -154,7 +199,9 @@ export class HttpRangeSource implements ZipSource {
         return (await boundedRange(this.url, start, end, this.size, this.lifetime.signal)).bytes;
     }
 
-    close(): void { this.lifetime.abort(); }
+    close(): void {
+        this.lifetime.abort();
+    }
 }
 
 /**
@@ -177,28 +224,36 @@ export class SyncHttpRangeSource implements ZipSource {
         this.size = size;
     }
 
+    static fromKnownSize(url: string, size: number): SyncHttpRangeSource {
+        if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid known HTTP source size");
+        const base = typeof location === "undefined" ? "http://localhost/" : location.href;
+        const parsed = new URL(url, base);
+        if (parsed.origin !== new URL(base).origin || parsed.username || parsed.password)
+            throw new Error("External ZIP entries require a same-origin URL");
+        return new SyncHttpRangeSource(parsed.href, size);
+    }
+
     static async create(url: string): Promise<SyncHttpRangeSource> {
         // Probe Range support AND size in one request: a compliant server answers
         // bytes=0-0 with 206 + `Content-Range: bytes 0-0/<total>`.
         const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
         if (probe.status !== 206) {
-            try { await probe.body?.cancel(); } catch {}
+            try {
+                await probe.body?.cancel();
+            } catch {}
             throw new Error(`SyncHttpRangeSource requires Range (expected 206, got ${probe.status}) for ${url}`);
         }
         const contentRange = probe.headers.get("content-range");
         const match = contentRange?.match(/\/(\d+)\s*$/);
-        try { await probe.body?.cancel(); } catch {}
+        try {
+            await probe.body?.cancel();
+        } catch {}
         if (!match) throw new Error(`SyncHttpRangeSource: missing/invalid Content-Range for ${url}`);
         return new SyncHttpRangeSource(url, Number(match[1]));
     }
 
     async readRange(start: number, end: number): Promise<Uint8Array> {
-        const resp = await fetch(this.url, { headers: { Range: `bytes=${start}-${end - 1}` } });
-        if (resp.status !== 206) {
-            try { await resp.body?.cancel(); } catch {}
-            throw new Error(`Range request failed (${resp.status}) for ${this.url}`);
-        }
-        return new Uint8Array(await resp.arrayBuffer());
+        return (await boundedRange(this.url, start, end, this.size)).bytes;
     }
 
     readRangeSync(start: number, end: number): Uint8Array {
@@ -207,10 +262,13 @@ export class SyncHttpRangeSource implements ZipSource {
         xhr.responseType = "arraybuffer"; // permitted for sync XHR inside a Worker
         xhr.setRequestHeader("Range", `bytes=${start}-${end - 1}`);
         xhr.send();
-        if (xhr.status !== 206) {
-            throw new Error(`sync range request failed (${xhr.status}) for ${this.url}`);
+        const bytes = new Uint8Array(xhr.response as ArrayBuffer);
+        const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(xhr.getResponseHeader("content-range") ?? "");
+        if (xhr.status !== 206 || !range || Number(range[1]) !== start ||
+            Number(range[2]) !== end - 1 || Number(range[3]) !== this.size || bytes.byteLength !== end - start) {
+            throw new Error(`invalid sync range response (${xhr.status}) for ${this.url}`);
         }
-        return new Uint8Array(xhr.response as ArrayBuffer);
+        return bytes;
     }
 }
 
@@ -267,7 +325,11 @@ export class SyncAccessHandleSource implements ZipSource {
     }
 
     close(): void {
-        try { this.sah.close(); } catch { /* best-effort */ }
+        try {
+            this.sah.close();
+        } catch {
+            /* best-effort */
+        }
     }
 }
 
@@ -275,6 +337,8 @@ export class ZipArchive {
     private source: ZipSource;
     private entries: Map<string, ZipEntry> = new Map();
     private localDataOffsets: Map<string, number> = new Map();
+    /** Logical STORED entries whose bytes live in a separate immutable source. */
+    private externalSources: Map<string, ZipSource> = new Map();
     /**
      * Byte offset of the actual ZIP data from the start of the source. Non-zero for a
      * self-extractor (a PE stub prepended to the archive): WinZip/7z SFX write the central
@@ -286,13 +350,18 @@ export class ZipArchive {
     private readonly maxCentralDirectoryBytes: number | undefined;
     private readonly rejectDuplicateNames: boolean;
 
-    constructor(source: ZipSource, options: {
+    constructor(
+        source: ZipSource,
+        options: {
         maxCentralDirectoryBytes?: number;
         rejectDuplicateNames?: boolean;
-    } = {}) {
+        } = {},
+    ) {
         this.source = source;
-        if (options.maxCentralDirectoryBytes !== undefined &&
-            (!Number.isSafeInteger(options.maxCentralDirectoryBytes) || options.maxCentralDirectoryBytes < 0)) {
+        if (
+            options.maxCentralDirectoryBytes !== undefined &&
+            (!Number.isSafeInteger(options.maxCentralDirectoryBytes) || options.maxCentralDirectoryBytes < 0)
+        ) {
             throw new Error("Invalid central-directory byte limit");
         }
         this.maxCentralDirectoryBytes = options.maxCentralDirectoryBytes;
@@ -301,8 +370,29 @@ export class ZipArchive {
 
     close(): void {
         (this.source as ZipSource & { close?: () => void }).close?.();
+        for (const source of this.externalSources.values()) (source as ZipSource & { close?: () => void }).close?.();
         this.entries.clear();
         this.localDataOffsets.clear();
+        this.externalSources.clear();
+    }
+
+    /** Add a manifest-authenticated logical file without copying it into this ZIP. */
+    registerExternalStoredEntry(name: string, source: ZipSource): ZipEntry {
+        if (!name || name.endsWith("/") || this.entries.has(name) || this.externalSources.has(name))
+            throw new Error(`Duplicate or invalid external ZIP entry: ${name}`);
+        if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size > 0xffffffff)
+            throw new Error(`Invalid external ZIP entry size: ${name}`);
+        const entry: ZipEntry = {
+            name,
+            compressedSize: source.size,
+            uncompressedSize: source.size,
+            compression: 0,
+            localHeaderOffset: 0,
+            isDirectory: false,
+        };
+        this.entries.set(name, entry);
+        this.externalSources.set(name, source);
+        return entry;
     }
 
     getEntry(name: string): ZipEntry | undefined {
@@ -373,7 +463,7 @@ export class ZipArchive {
             const localHeaderOffset = view.getUint32(offset + 42, true);
 
             const nameBytes = cd.slice(offset + 46, offset + 46 + nameLen);
-            const name = (flags & 0x0800) ? decoderUtf8.decode(nameBytes) : decoderUtf8.decode(nameBytes);
+            const name = flags & 0x0800 ? decoderUtf8.decode(nameBytes) : decoderUtf8.decode(nameBytes);
             const isDirectory = name.endsWith("/");
 
             if (this.rejectDuplicateNames && this.entries.has(name)) {
@@ -427,20 +517,53 @@ export class ZipArchive {
             return new Uint8Array();
         }
 
+        const external = this.externalSources.get(entry.name);
+        if (external) return external.readRange(clampedOffset, clampedEnd);
         const dataStart = await this.getEntryDataStart(entry);
         return this.source.readRange(dataStart + clampedOffset, dataStart + clampedEnd);
     }
 
+    /** Resolve STORED entry-relative ranges once, then let the source warm its
+     * own bounded cache without materializing whole files in the VFS. */
+    async prefetchEntryRanges(ranges: readonly ZipEntryPrefetchRange[], maxBytes: number): Promise<ZipPrefetchResult> {
+        if (!this.source.prefetchRanges) return { ranges: 0, chunks: 0, bytes: 0 };
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 64 * 1024 * 1024)
+            throw new Error("Invalid ZIP prefetch budget");
+        const sourceRanges: ZipPrefetchRange[] = [];
+        for (const range of ranges) {
+            const { entry, offset, length } = range;
+            if (
+                entry.compression !== 0 ||
+                !Number.isSafeInteger(offset) ||
+                !Number.isSafeInteger(length) ||
+                offset < 0 ||
+                length <= 0 ||
+                offset > entry.uncompressedSize - length
+            )
+                throw new Error(`Invalid ZIP prefetch range (${entry.name})`);
+            // External immutable blobs have their own transport/cache. Do not
+            // turn one title warm-set request into unbounded cross-source work.
+            if (this.externalSources.has(entry.name)) continue;
+            const dataStart = await this.getEntryDataStart(entry);
+            sourceRanges.push({ start: dataStart + offset, end: dataStart + offset + length });
+        }
+        return this.source.prefetchRanges(sourceRanges, maxBytes);
+    }
+
     /** Sync range read for STORED entries when ZipSource supports readRangeSync. */
     readEntryRangeSync(entry: ZipEntry, offset: number, length: number): Uint8Array | null {
-        if (entry.compression !== 0 || !this.source.readRangeSync) return null;
+        if (entry.compression !== 0) return null;
+        const source = this.externalSources.get(entry.name) ?? this.source;
+        if (!source.readRangeSync) return null;
         if (length <= 0 || offset >= entry.uncompressedSize) return new Uint8Array();
         const clampedOffset = Math.max(0, offset);
         const clampedEnd = Math.min(entry.uncompressedSize, clampedOffset + length);
         if (clampedOffset >= clampedEnd) return new Uint8Array();
+        const external = this.externalSources.get(entry.name);
+        if (external) return external.readRangeSync!(clampedOffset, clampedEnd);
         const dataStart = this.getEntryDataStartSync(entry);
         if (dataStart === null) return null;
-        return this.source.readRangeSync(dataStart + clampedOffset, dataStart + clampedEnd);
+        return source.readRangeSync!(dataStart + clampedOffset, dataStart + clampedEnd);
     }
 
     private async getEntryDataStart(entry: ZipEntry): Promise<number> {

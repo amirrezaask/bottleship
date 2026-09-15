@@ -188,6 +188,64 @@ async function handleRequest(): Promise<void> {
     }
 }
 
+async function handlePrefetch(message: {
+    id: number;
+    ranges: Array<{ start: number; end: number }>;
+    maxBytes: number;
+}): Promise<void> {
+    const src = source!;
+    if (
+        !Number.isSafeInteger(message.id) ||
+        !Array.isArray(message.ranges) ||
+        message.ranges.length > 8192 ||
+        !Number.isSafeInteger(message.maxBytes) ||
+        message.maxBytes < 0 ||
+        message.maxBytes > MAX_CACHE_BYTES
+    ) throw new Error("Invalid I/O-worker prefetch request");
+    const selected: number[] = [];
+    const seen = new Set<number>();
+    let bytes = 0;
+    for (const range of message.ranges) {
+        if (
+            !Number.isSafeInteger(range?.start) ||
+            !Number.isSafeInteger(range?.end) ||
+            range.start < 0 ||
+            range.end <= range.start ||
+            range.end > src.size
+        ) throw new Error("Invalid I/O-worker prefetch range");
+        const first = Math.floor(range.start / CHUNK);
+        const last = Math.floor((range.end - 1) / CHUNK);
+        for (let chunk = first; chunk <= last; chunk++) {
+            if (seen.has(chunk)) continue;
+            seen.add(chunk);
+            if (!chunks.has(chunk) && !inflight.has(chunk)) {
+                const start = chunk * CHUNK;
+                const chunkBytes = Math.min(src.size, start + CHUNK) - start;
+                if (bytes > message.maxBytes - chunkBytes) continue;
+                bytes += chunkBytes;
+            }
+            selected.push(chunk);
+        }
+    }
+    // Keep two transport slots free for synchronous guest faults. Process the
+    // compiler warm set in small parallel batches so a critical read never
+    // queues behind the entire prepared working set.
+    const batchSize = Math.max(1, MAX_INFLIGHT - 2);
+    for (let index = 0; index < selected.length; index += batchSize) {
+        await Promise.all(
+            selected.slice(index, index + batchSize).map((chunk) => getChunk(chunk, true)),
+        );
+    }
+    publishStats();
+    (self as unknown as Worker).postMessage({
+        type: "prefetch_result",
+        id: message.id,
+        ranges: message.ranges.length,
+        chunks: selected.length,
+        bytes,
+    });
+}
+
 self.onmessage = (e: MessageEvent) => {
     const msg = e.data;
     if (msg?.type === "init") {
@@ -218,6 +276,16 @@ self.onmessage = (e: MessageEvent) => {
         if (serving) return;
         serving = true;
         void handleRequest().finally(() => { serving = false; });
+        return;
+    }
+    if (msg?.type === "prefetch") {
+        void handlePrefetch(msg).catch((error) => {
+            (self as unknown as Worker).postMessage({
+                type: "prefetch_result",
+                id: msg.id,
+                error: String(error),
+            });
+        });
         return;
     }
 };

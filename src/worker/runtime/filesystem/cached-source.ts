@@ -25,7 +25,7 @@
 // coalesced) calls to the inner source. No worker/DOM dependencies — unit
 // testable in isolation.
 
-import type { ZipSource } from "@bottleship/formats/zip";
+import type { ZipPrefetchRange, ZipPrefetchResult, ZipSource } from "@bottleship/formats/zip";
 
 /** Default block granularity. Matches the msvcrt getc refill chunk (256 KiB),
  *  which is a good amortization point for async fault-ins. */
@@ -191,6 +191,44 @@ export class CachedSource implements ZipSource {
             this.copyBlockInto(out, s, e, b, data);
         }
         return out;
+    }
+
+    async prefetchRanges(
+        ranges: readonly ZipPrefetchRange[],
+        maxBytes: number,
+    ): Promise<ZipPrefetchResult> {
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_CACHE_BYTES)
+            throw new Error("Invalid cache prefetch budget");
+        if (this.inner.prefetchRanges)
+            return this.inner.prefetchRanges(ranges, maxBytes);
+
+        const blocks: number[] = [];
+        const seen = new Set<number>();
+        let bytes = 0;
+        for (const range of ranges) {
+            const [start, end] = this.clamp(range.start, range.end);
+            if (end <= start) continue;
+            const first = Math.floor(start / this.blockSize);
+            const last = Math.floor((end - 1) / this.blockSize);
+            for (let block = first; block <= last; block++) {
+                if (seen.has(block) || this.blocks.has(block)) continue;
+                const [blockStart, blockEnd] = this.blockBounds(block);
+                const blockBytes = blockEnd - blockStart;
+                if (bytes > maxBytes - blockBytes) break;
+                seen.add(block);
+                blocks.push(block);
+                bytes += blockBytes;
+            }
+        }
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(4, blocks.length) }, async () => {
+            while (cursor < blocks.length) {
+                const block = blocks[cursor++]!;
+                await this.ensureBlock(block);
+            }
+        });
+        await Promise.all(workers);
+        return { ranges: ranges.length, chunks: blocks.length, bytes };
     }
 
     /** Best-effort passthrough so wrapping a closable source (SAH) still cleans up. */

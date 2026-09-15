@@ -1,0 +1,149 @@
+diff --git a/src/rust/cpu/hypercall_eagl.rs b/src/rust/cpu/hypercall_eagl.rs
+index 6e7a85b..45069e7 100644
+--- a/src/rust/cpu/hypercall_eagl.rs
++++ b/src/rust/cpu/hypercall_eagl.rs
+@@ -1,4 +1,6 @@
+-//! Inner-loop HLE handlers for EAGL (EA Graphics Layer) — the 128..=132 band
++//! Guarded inner-loop HLE handlers — the 128..=255 band.
++//!
++//! EAGL (EA Graphics Layer) owns 128..=132; Max Payne owns 135.
+ //! of the hypercall dispatch table (see hypercall.rs try_dispatch):
+ //!
+ //!   128       shader-constant converter (guest FUN_005cbd17)
+@@ -36,6 +38,9 @@ pub(crate) unsafe fn dispatch_inner_loop(handler_id: u8) -> bool {
+         // class-6 shader batches — the guest filter routes everything else
+         // (and class-6 record mode) to the original.
+         132 => handle_eagl_token_dispatch(),
++        // 135 = Max Payne 1's exact-build ordered-tree lookup. The descriptor
++        // installs this only after matching the complete loop bytes.
++        135 => handle_max_payne_tree_find(),
+         _ => false,
+     }
+ }
+@@ -45,6 +50,62 @@ pub(crate) unsafe fn dispatch_inner_loop(handler_id: u8) -> bool {
+ /// (0x8000000000000000), whose low 32 bits are 0. Rust `as i64` saturates
+ /// (wrong for the guest), so the out-of-range cases are handled explicitly.
+ #[inline(always)]
++unsafe fn handle_max_payne_tree_find() -> bool {
++    const SENTINEL_POINTER: i32 = 0x008A_E3CC;
++    const MAX_VISITED_NODES: usize = 4096;
++
++    let object = read_reg32(ECX);
++    let esp = read_reg32(ESP);
++    let key_pointer = match safe_read32s(esp.wrapping_add(4)) {
++        Ok(value) => value,
++        Err(_) => return false,
++    };
++    let key = match safe_read32s(key_pointer) {
++        Ok(value) => value,
++        Err(_) => return false,
++    };
++    let header = match safe_read32s(object.wrapping_add(4)) {
++        Ok(value) => value,
++        Err(_) => return false,
++    };
++    let mut candidate = header;
++    let mut node = match safe_read32s(header.wrapping_add(4)) {
++        Ok(value) => value,
++        Err(_) => return false,
++    };
++    let sentinel = match safe_read32s(SENTINEL_POINTER) {
++        Ok(value) => value,
++        Err(_) => return false,
++    };
++
++    for _ in 0..MAX_VISITED_NODES {
++        if node == sentinel {
++            write_reg32(EAX, candidate);
++            return true;
++        }
++        let node_key = match safe_read32s(node.wrapping_add(12)) {
++            Ok(value) => value,
++            Err(_) => return false,
++        };
++        if node_key < key {
++            node = match safe_read32s(node.wrapping_add(8)) {
++                Ok(value) => value,
++                Err(_) => return false,
++            };
++        }
++        else {
++            candidate = node;
++            node = match safe_read32s(node) {
++                Ok(value) => value,
++                Err(_) => return false,
++            };
++        }
++    }
++
++    // Corrupt/cyclic or unexpectedly deep trees retain the original guest path.
++    false
++}
++
+ fn ftol_low32(x: f64) -> u32 {
+     if !x.is_finite() || x >= 9223372036854775808.0 || x < -9223372036854775808.0 {
+         return 0;
+diff --git a/src/rust/jit.rs b/src/rust/jit.rs
+index 6d93ab2..7a81316 100644
+--- a/src/rust/jit.rs
++++ b/src/rust/jit.rs
+@@ -3696,7 +3696,11 @@ fn jit_generate_module(
+         .free_local(ctx.instruction_counter.unsafe_clone());
+     ctx.builder.free_flag_locals();
+ 
+-    ctx.builder.finish();
++    let function_name = match (entry_blocks.first(), entry_blocks.last()) {
++        (Some(first), Some(last)) => Some(format!("guest_{first:08x}_{last:08x}")),
++        _ => None,
++    };
++    ctx.builder.finish_named(function_name.as_deref());
+ 
+     let entries = Vec::from_iter(entry_blocks.iter().map(|addr| {
+         let block = basic_blocks.get(&addr).unwrap();
+diff --git a/src/rust/wasmgen/wasm_builder.rs b/src/rust/wasmgen/wasm_builder.rs
+index 71d3edb..9c9aa05 100644
+--- a/src/rust/wasmgen/wasm_builder.rs
++++ b/src/rust/wasmgen/wasm_builder.rs
+@@ -205,7 +205,9 @@ impl WasmBuilder {
+         self.next_label = Label::ZERO;
+     }
+ 
+-    pub fn finish(&mut self) -> usize {
++    pub fn finish(&mut self) -> usize { self.finish_named(None) }
++
++    pub fn finish_named(&mut self, function_name: Option<&str>) -> usize {
+         dbg_assert!(self.label_to_depth.is_empty());
+         dbg_assert!(self.label_stack.is_empty());
+ 
+@@ -286,9 +288,31 @@ impl WasmBuilder {
+         let code_section_size = (self.output.len() - idx_code_section_size - 4) as u32;
+         write_fixed_leb32_at_idx(&mut self.output, idx_code_section_size, code_section_size);
+ 
++        if let Some(name) = function_name {
++            self.write_function_name_section(name);
++        }
+         self.output.len()
+     }
+ 
++    fn write_function_name_section(&mut self, name: &str) {
++        let mut function_names = Vec::with_capacity(name.len() + 8);
++        write_leb_u32(&mut function_names, 1);
++        write_leb_u32(&mut function_names, self.function_import_count as u32);
++        write_leb_u32(&mut function_names, name.len() as u32);
++        function_names.extend_from_slice(name.as_bytes());
++
++        let mut payload = Vec::with_capacity(function_names.len() + 8);
++        write_leb_u32(&mut payload, 4);
++        payload.extend_from_slice(b"name");
++        payload.push(1); // function-names subsection
++        write_leb_u32(&mut payload, function_names.len() as u32);
++        payload.extend_from_slice(&function_names);
++
++        self.output.push(0); // custom section
++        write_leb_u32(&mut self.output, payload.len() as u32);
++        self.output.extend_from_slice(&payload);
++    }
++
+     pub fn write_type_section(&mut self) {
+         self.output.push(op::SC_TYPE);
+ 

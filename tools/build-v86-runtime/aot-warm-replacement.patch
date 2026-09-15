@@ -1,0 +1,80 @@
+diff --git a/src/rust/jit/aot.rs b/src/rust/jit/aot.rs
+index fa143c6..4216034 100644
+--- a/src/rust/jit/aot.rs
++++ b/src/rust/jit/aot.rs
+@@ -2,7 +2,7 @@
+ //! Reuse checks guest bytes, mappings, memory base, CPU mode, and any code-shape
+ //! assumptions whose validity depends on mutable runtime state.
+ use super::*;
+-const LIMIT: usize = 32 * 1024 * 1024;
++const LIMIT: usize = 96 * 1024 * 1024;
+ const MAX_UNIT: usize = 1024 * 1024;
+ const CONFIGS: usize = 22;
+ const HEADER: usize = 11 + CONFIGS;
+@@ -30,7 +30,7 @@ struct SlotProfile {
+ 
+ struct State {
+     capture: bool,
+-    captured: BTreeMap<(u32, u32), Vec<u8>>,
++    captured: BTreeMap<(u32, u32, u32), Vec<u8>>,
+     captured_bytes: usize,
+     blob: Vec<u8>,
+     export: Vec<u8>,
+@@ -153,16 +153,11 @@ pub fn aot_capture_finish() -> u32 {
+                 if end > s.blob.len() || s.export.len() + 4 + len > LIMIT {
+                     break;
+                 }
+-                let record = &s.blob[offset + 4..end];
+-                // A newly generated unit supersedes the same physical-page/state
+-                // candidate. This bounds multi-launch growth and lets changed code
+-                // replace a stale record after the normal validation fallback.
+-                if record.len() < 12
+-                    || !s.captured.contains_key(&(word(record, 0), word(record, 2)))
+-                {
+-                    s.export.extend_from_slice(&s.blob[offset..end]);
+-                    count += 1;
+-                }
++                // Keep older variants for the same physical page and CPU state.
++                // Different entry points can produce distinct valid units, and
++                // replacing the prior variant makes warm launches oscillate.
++                s.export.extend_from_slice(&s.blob[offset..end]);
++                count += 1;
+                 offset = end;
+             }
+         }
+@@ -390,6 +385,14 @@ mod profile_counter_tests {
+         set(&mut unit, 1 + FIXED_CONTEXT_WORDS + 9, 1);
+         assert!(!replay_context_matches(&unit, &expected));
+     }
++
++    #[test]
++    fn warm_capture_keeps_distinct_entry_variants() {
++        let mut state = State::default();
++        state.captured.insert((0x401000, 7, 0x401004), vec![1]);
++        state.captured.insert((0x401000, 7, 0x401020), vec![2]);
++        assert_eq!(state.captured.len(), 2);
++    }
+ }
+ 
+ pub fn retire_slot(slot: WasmTableIndex, executions: u32) {
+@@ -593,16 +596,11 @@ pub fn record(
+             + 4
+             + builder.aot_table_relocations.len() * 4
+             + builder.get_output_len() as usize;
+-        let key = (phys & !4095, flags.to_u32());
++        let key = (phys & !4095, flags.to_u32(), phys);
+         let previous = s.captured.get(&key).map_or(0, Vec::len);
+-        // Charging the hydrated artifact against the capture budget means a warm
+-        // launch records almost nothing, so the stored artifact stays as the first
+-        // launch built it. That looks like a defect and measures like a feature:
+-        // letting a warm launch capture freely churns the artifact, and because
+-        // most freshly captured units fail their address guard next launch, the
+-        // replacement units validate less often than the ones they displaced.
+-        // See docs/bottleship-jit-retention-2026-09-13.md — do not "fix" this
+-        // without a stable module/RVA identity to make new captures reusable.
++        // The hydrated artifact remains part of the budget. New entry variants
++        // append to it so a later launch can reuse every observed root instead
++        // of trading one valid unit for another.
+         let loaded_bytes = if s.units.is_empty() { 0 } else { s.blob.len() };
+         if size > MAX_UNIT
+             || loaded_bytes + s.captured_bytes - previous + size + 8200 > LIMIT

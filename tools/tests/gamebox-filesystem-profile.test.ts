@@ -55,7 +55,7 @@ describe('GameBoxFilesystemProfile', () => {
       enumerations: '1',
       enumeratedEntries: '2',
     });
-    expect(snapshot.files).toHaveLength(3);
+    expect(snapshot.files).toHaveLength(2);
     expect(snapshot.files.find((row) => row.path === 'C:\\DATA\\A.DAT')).toMatchObject({
       opens: { success: '1', failed: '0' },
       reads: { calls: '2', requestedBytes: '12', returnedBytes: '7' },
@@ -66,7 +66,6 @@ describe('GameBoxFilesystemProfile', () => {
       ],
     });
     expect(snapshot.accessOrder.map((row) => row.operation)).toEqual([
-      'open',
       'open',
       'read',
       'read',
@@ -91,5 +90,21 @@ describe('GameBoxFilesystemProfile', () => {
     expect(snapshot.files.every((row) => row.reads.calls === '0' || row.ranges.length > 0)).toBe(
       true,
     );
+  });
+
+  it('keeps failed loose-file probes out of the bounded launch working set', () => {
+    const profile = new GameBoxFilesystemProfile();
+    profile.start();
+    for (let i = 0; i < GAMEBOX_FILESYSTEM_PROFILE_MAX_FILES * 2; i++)
+      profile.recordOpen(`C:\\missing\\${i}.dat`, 'unknown', false);
+    profile.recordOpen('C:\\ROM\\DATA.RAS', 'rom', true);
+    profile.recordRead('C:\\ROM\\DATA.RAS', 'rom', 0, 4096, 4096);
+
+    expect(profile.snapshot()).toMatchObject({
+      retainedFiles: 1,
+      droppedFiles: '0',
+      files: [{ path: 'C:\\ROM\\DATA.RAS', source: 'rom' }],
+      counters: { opens: String(GAMEBOX_FILESYSTEM_PROFILE_MAX_FILES * 2 + 1) },
+    });
   });
 });

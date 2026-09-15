@@ -15,6 +15,8 @@
   "repKernelSha256": "0414ef1aa83c790524e3204394c9dba6dc476233ff1898a6295c31d4160b7177",
   "unalignedPatchSha256": "3804b865557ac09f4f8f948789144dbd1cd909527861f323e8f39b70209b1bca",
   "unalignedKernelSha256": "4a79ef4d15d5281277fec981da13160705cf1f101f10806bc7de3f9a1f68f939",
-  "buildScriptSha256": "2b2d64f79501df7cfdddb9e6f4594a3249207d10929d301fedcf6c0a6f7bbbc3",
-  "wasmSha256": "bd02a0e8af8befefd59ff0654ff1b44adb6b0173ca48260fa35d4dd50ef411bd"
+  "maxPayneTreePatchSha256": "311e640df18ee5f35a6d71f79be68a87ed1abc7d5a4badd336adbced116245b0",
+  "aotWarmReplacementPatchSha256": "2ed69db94390ecdabca7e61d41c74552721e525fa40ddd2e0e1a75a101932330",
+  "buildScriptSha256": "7f0a856f86928bdf21658b7caa72c6cd0da9521350e207a46a64dcf404cbd9db",
+  "wasmSha256": "3e198e52c12ae86785ff8abbb6e632171bf52adcfdf8f7369fd36de4da0c9f35"
 }

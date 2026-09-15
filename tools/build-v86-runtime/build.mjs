@@ -29,6 +29,8 @@ const repBaseline = process.env.V86_REP_BASELINE_OUTPUT && resolve(root, process
 const unalignedPatch = join(root, 'tools/build-v86-runtime/unaligned-memory.patch');
 const unalignedKernel = join(root, 'tools/build-v86-runtime/unaligned-memory.rs');
 const unalignedBaseline = process.env.V86_UNALIGNED_BASELINE_OUTPUT && resolve(root, process.env.V86_UNALIGNED_BASELINE_OUTPUT);
+const maxPayneTreePatch = join(root, 'tools/build-v86-runtime/max-payne-tree.patch');
+const aotWarmReplacementPatch = join(root, 'tools/build-v86-runtime/aot-warm-replacement.patch');
 try {
     execFileSync('git', ['clone', '--shared', '--no-checkout', source, work], { stdio: 'inherit' });
     run('git', ['checkout', '--detach', pinned]);
@@ -68,6 +70,10 @@ try {
     run('git', ['apply', '--check', unalignedPatch]);
     run('git', ['apply', unalignedPatch]);
     copyFileSync(unalignedKernel, join(work, 'src/rust/cpu/unaligned_memory.rs'));
+    run('git', ['apply', '--check', maxPayneTreePatch]);
+    run('git', ['apply', maxPayneTreePatch]);
+    run('git', ['apply', '--check', aotWarmReplacementPatch]);
+    run('git', ['apply', aotWarmReplacementPatch]);
     compile(output);
     const module = new WebAssembly.Module(readFileSync(output));
     for (const name of ['get_bulk_memory_abi', 'get_bulk_memory_stats_ptr', 'set_bulk_memory_enabled',
@@ -82,7 +88,9 @@ try {
         kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),
         stringKernelSha256: sha256(stringKernel), repPatchSha256: sha256(repPatch),
         repKernelSha256: sha256(repKernel), unalignedPatchSha256: sha256(unalignedPatch),
-        unalignedKernelSha256: sha256(unalignedKernel), buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
+        unalignedKernelSha256: sha256(unalignedKernel), maxPayneTreePatchSha256: sha256(maxPayneTreePatch),
+        aotWarmReplacementPatchSha256: sha256(aotWarmReplacementPatch),
+        buildScriptSha256: sha256(fileURLToPath(import.meta.url)), wasmSha256: sha256(output) };
     writeFileSync(join(root, 'tools/build-v86-runtime/manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
     console.log(JSON.stringify(manifest, null, 2));
 } finally { rmSync(work, { recursive: true, force: true }); }

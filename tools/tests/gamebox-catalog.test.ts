@@ -4,6 +4,8 @@ import { BufferSource, ZipArchive } from '@bottleship/formats/zip';
 import {
   GAMEBOX_CHUNK_BYTES as CHUNK,
   GAMEBOX_GRAPHICS_PROFILE_PATH,
+  GAMEBOX_FILESYSTEM_PREWARM_BYTES,
+  GAMEBOX_FILESYSTEM_PROFILE_PATH,
   GAMEBOX_FILESYSTEM_PRIORITY_PATH,
   GameboxCatalog,
   verifyGameboxSignature,
@@ -24,8 +26,7 @@ async function signRoot(root: string, formatVersion: number): Promise<string> {
   const pkcs8 = new Uint8Array(16 + seed.length);
   pkcs8.set(
     Uint8Array.from([
-      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-      0x04,
+      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
     ]),
   );
   pkcs8.set(seed, 16);
@@ -40,7 +41,10 @@ async function signRoot(root: string, formatVersion: number): Promise<string> {
   const message = new Uint8Array(domain.length + 4 + 32);
   message.set(domain);
   new DataView(message.buffer).setUint32(domain.length, formatVersion, true);
-  message.set(Uint8Array.from(root.match(/../gu)!, (pair) => Number.parseInt(pair, 16)), domain.length + 4);
+  message.set(
+    Uint8Array.from(root.match(/../gu)!, (pair) => Number.parseInt(pair, 16)),
+    domain.length + 4,
+  );
   return hex(
     new Uint8Array(
       await crypto.subtle.sign(
@@ -62,8 +66,7 @@ async function signCatalog(bytes: Uint8Array): Promise<string> {
   const pkcs8 = new Uint8Array(16 + seed.length);
   pkcs8.set(
     Uint8Array.from([
-      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-      0x04,
+      0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
     ]),
   );
   pkcs8.set(seed, 16);
@@ -158,7 +161,7 @@ async function fixture(
     }),
   );
   entries.set(marker.catalog, catalogBytes);
-  entries.set('assets/GAME.EXE', bytes);
+  if (!catalog.files[0].blob) entries.set('assets/GAME.EXE', bytes);
   const packed = buildZip(entries);
   const reads: number[] = [];
   const base = new BufferSource(packed);
@@ -175,6 +178,29 @@ async function fixture(
 }
 
 describe('prepared transport catalog', () => {
+  test('mounts a thin title catalog over an immutable shared blob', async () => {
+    const value = await fixture(async (catalog, bytes) => {
+      const sourceHash = await hash(bytes);
+      catalog.formatVersion = 2;
+      catalog.files[0].blob = `/shared/blobs/${sourceHash}`;
+      catalog.externalArtifacts = [
+        {
+          path: 'gamebox/optimized/module.wasm',
+          sourceHash,
+          sourceBytes: bytes.length,
+          blob: `/shared/blobs/${sourceHash}`,
+        },
+      ];
+    });
+    const catalog = await GameboxCatalog.open(value.archive, value.marker, 'assets');
+    const entry = catalog.buildRomIndex().get('GAME.EXE');
+    expect(entry?.uncompressedSize).toBe(value.bytes.length);
+    expect(catalog.image('GAME.EXE')?.source.size).toBe(value.bytes.length);
+    expect(value.archive.getEntry('gamebox/optimized/module.wasm')?.uncompressedSize).toBe(
+      value.bytes.length,
+    );
+  });
+
   test('verifies the Rust domain-separated Ed25519 fixture before prepared metadata is trusted', async () => {
     const keyId = 'release-key';
     const publicKey = 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c';
@@ -212,9 +238,14 @@ describe('prepared transport catalog', () => {
         json({ formatVersion: 5, bundleHash: root, signature: catalog.signature, keyId }),
       );
     });
-    const catalog = await GameboxCatalog.open(fixtureResult.archive, fixtureResult.marker, 'assets', {
+    const catalog = await GameboxCatalog.open(
+      fixtureResult.archive,
+      fixtureResult.marker,
+      'assets',
+      {
       [keyId]: publicKey,
-    });
+      },
+    );
     expect(catalog.sourceFormatVersion).toBe(5);
     expect(catalog.preparedTrust).toEqual({ status: 'trusted', keyId });
     await expect(
@@ -284,7 +315,9 @@ describe('prepared transport catalog', () => {
     const store = {
       'release-key': 'ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c',
     };
-    await expect(verifyRuntimeCatalogSignature(original, signature, 'release-key', store)).resolves.toEqual({
+    await expect(
+      verifyRuntimeCatalogSignature(original, signature, 'release-key', store),
+    ).resolves.toEqual({
       status: 'trusted',
       keyId: 'release-key',
     });
@@ -297,12 +330,21 @@ describe('prepared transport catalog', () => {
       },
       {
         ...JSON.parse(new TextDecoder().decode(original)),
-        files: [{ ...JSON.parse(new TextDecoder().decode(original)).files[0], prepared: { imageSize: 1 } }],
+        files: [
+          {
+            ...JSON.parse(new TextDecoder().decode(original)).files[0],
+            prepared: { imageSize: 1 },
+          },
+        ],
       },
     ]) {
       await expect(
         verifyRuntimeCatalogSignature(json(value), signature, 'release-key', store),
-      ).resolves.toEqual({ status: 'untrusted', reason: 'signature-verification-failed', keyId: 'release-key' });
+      ).resolves.toEqual({
+        status: 'untrusted',
+        reason: 'signature-verification-failed',
+        keyId: 'release-key',
+      });
     }
   });
 
@@ -365,7 +407,16 @@ describe('prepared transport catalog', () => {
   test('deferred startup reads only the bounded manifest from a Blob', async () => {
     const packed = buildZip(
       new Map([
-        ['manifest.json', json({ formatVersion: 2, name: 'fixture', rom: 'rom', entrypoint: 'rom/GAME.EXE', emulator: { memory: { ram: 256 * 1024 * 1024 } } })],
+        [
+          'manifest.json',
+          json({
+            formatVersion: 2,
+            name: 'fixture',
+            rom: 'rom',
+            entrypoint: 'rom/GAME.EXE',
+            emulator: { memory: { ram: 256 * 1024 * 1024 } },
+          }),
+        ],
         ['rom/GAME.EXE', new Uint8Array([0x4d, 0x5a, 1, 2, 3])],
       ]),
     );
@@ -493,6 +544,60 @@ describe('prepared transport catalog', () => {
       'GAME.EXE',
       'BACKGROUND.DAT',
     ]);
+  });
+  test('warms compiler-observed ranges through the bounded archive source cache', async () => {
+    const f = await fixture(async (catalog, __, entries) => {
+      const profile = json({
+        version: 1,
+        gameContentHash: 'b'.repeat(64),
+        observations: [
+          {
+            path: 'GAME.EXE',
+            firstAccessOrder: '7',
+            ranges: [
+              { offset: '4096', length: '8192', reads: '3' },
+              { offset: '0', length: '64', reads: '1' },
+            ],
+          },
+        ],
+        counters: { droppedEvents: '0', counterOverflow: false },
+      });
+      const priority = json({
+        version: 1,
+        gameContentHash: 'b'.repeat(64),
+        recipe: 'filesystem-priority-v1-scenario-tier-first-access',
+        entries: [{ path: 'GAME.EXE', priority: 0, firstAccessOrder: '7' }],
+      });
+      catalog.filesystemProfile = {
+        path: GAMEBOX_FILESYSTEM_PROFILE_PATH,
+        sha256: await hash(profile),
+        observationCount: 1,
+        rangeCount: 2,
+      };
+      catalog.filesystemPriority = {
+        path: GAMEBOX_FILESYSTEM_PRIORITY_PATH,
+        sha256: await hash(priority),
+        entryCount: 1,
+      };
+      entries.set(GAMEBOX_FILESYSTEM_PROFILE_PATH, profile);
+      entries.set(GAMEBOX_FILESYSTEM_PRIORITY_PATH, priority);
+    });
+    let request: { ranges: Array<{ start: number; end: number }>; maxBytes: number } | null = null;
+    (f.source as any).prefetchRanges = async (
+      ranges: Array<{ start: number; end: number }>,
+      maxBytes: number,
+    ) => {
+      request = { ranges, maxBytes };
+      return { ranges: ranges.length, chunks: 1, bytes: 16 * 1024 };
+    };
+    const catalog = await GameboxCatalog.open(f.archive, f.marker, 'assets');
+    await expect(catalog.prewarmFilesystem()).resolves.toEqual({
+      ranges: 2,
+      chunks: 1,
+      bytes: 16 * 1024,
+    });
+    expect(request?.maxBytes).toBe(GAMEBOX_FILESYSTEM_PREWARM_BYTES);
+    expect(request?.ranges.map(({ start, end }) => end - start)).toEqual([8192, 64]);
   });
   test('skips malformed priority metadata without changing the namespace', async () => {
     const f = await fixture(async (catalog, __, entries) => {
