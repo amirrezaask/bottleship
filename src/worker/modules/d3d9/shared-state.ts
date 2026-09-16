@@ -74,6 +74,7 @@ export function getVTables(): Record<string, VTableInfo> {
  */
 export function resetD3D9SharedState(): void {
     for (const dev of devices.values()) {
+        dev.disposeTransientResources();
         dev.resetSubsystemPerf();
     }
     resetD3D9Perf();

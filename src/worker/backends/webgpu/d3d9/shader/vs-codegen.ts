@@ -51,9 +51,9 @@ export function analyzeVs(prog: SmProgram): VsAnalysis {
     }
 
     // Relative addressing (c[a0+n]) can index anywhere in the register file, so
-    // the static maxConst is not a safe array bound — size to the vs_1_1 ceiling.
+    // the static maxConst is not a safe array bound — use the register file advertised for that shader model.
     let constantCount = prog.maxConst + 1;
-    if (prog.usesRelativeConst) constantCount = Math.min(256, Math.max(constantCount, 96));
+    if (prog.usesRelativeConst) constantCount = Math.max(constantCount, prog.major >= 2 ? 256 : 96);
 
     return {
         inputDcls,
@@ -96,10 +96,14 @@ export function emitVsMain(prog: SmProgram, a: VsAnalysis, opts: VsEmitOptions):
                 case RegType.INPUT:
                     return opts.inputExprs.get(reg.num) ?? `vec4<f32>(in.v${reg.num})`;
                 case RegType.CONST:
-                    if (reg.relative) return `vsc.c[clamp(a0 + ${reg.num}, 0, ${maxConstIdx})]`;
+                    if (reg.relative) {
+                        const address = prog.major >= 2 ? `a0.${"xyzw"[reg.relativeComponent ?? 0]}` : "a0";
+                        const index = `${address} + ${reg.num}`;
+                        return `select(vec4<f32>(0.0), vsc.c[clamp(${index}, 0, ${maxConstIdx})], (${index}) >= 0 && (${index}) <= ${maxConstIdx})`;
+                    }
                     if (a.defConsts.has(reg.num)) return `dc${reg.num}`;
                     return `vsc.c[${reg.num}]`;
-                case RegType.ADDR: return `vec4<f32>(f32(a0))`;
+                case RegType.ADDR: return prog.major >= 2 ? `vec4<f32>(a0)` : `vec4<f32>(f32(a0))`;
                 default: return `vec4<f32>(0.0)`;
             }
         },
@@ -121,7 +125,7 @@ export function emitVsMain(prog: SmProgram, a: VsAnalysis, opts: VsEmitOptions):
 
     // Local register/output declarations.
     for (let r = 0; r <= a.maxTemp; r++) body.push(`var r${r}: vec4<f32> = vec4<f32>(0.0);`);
-    if (a.needsA0) body.push(`var a0: i32 = 0;`);
+    if (a.needsA0) body.push(prog.major >= 2 ? `var a0: vec4<i32> = vec4<i32>(0);` : `var a0: i32 = 0;`);
     body.push(`var oPos: vec4<f32> = vec4<f32>(0.0, 0.0, 0.0, 1.0);`);
     if (a.writesColor[0]) body.push(`var oD0: vec4<f32> = vec4<f32>(1.0);`);
     if (a.writesColor[1]) body.push(`var oD1: vec4<f32> = vec4<f32>(0.0);`);
@@ -139,7 +143,17 @@ export function emitVsMain(prog: SmProgram, a: VsAnalysis, opts: VsEmitOptions):
         if (d && d.reg.type === RegType.ADDR) {
             // vs_1_1 floors when loading a0; vs_2_0+ (mova) rounds.
             const rnd = (prog.major >= 2 || prog.minor >= 2) ? "round" : "floor";
-            body.push(`a0 = i32(${rnd}((${srcExpr(ins.src[0], ctx)}).x));`);
+            const value = srcExpr(ins.src[0], ctx);
+            if (prog.major >= 2) {
+                // WGSL has no assignment to a multi-component swizzle.
+                body.push(`let addr${uid} = vec4<i32>(${rnd}(${value}));`);
+                for (let component = 0; component < 4; component++) {
+                    if (d.writeMask & (1 << component)) body.push(`a0.${"xyzw"[component]} = addr${uid}.${"xyzw"[component]};`);
+                }
+                uid++;
+            } else {
+                body.push(`a0 = i32(${rnd}((${value}).x));`);
+            }
             continue;
         }
         const forceSat = d?.reg.type === RegType.RASTOUT && d.reg.num === RASTOUT_FOG;

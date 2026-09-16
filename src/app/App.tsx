@@ -1,3 +1,4 @@
+import { INPUT_BUFFER_BYTES, publishInputTransition } from "../input-event-queue";
 import { installGameBoxBridge } from "../gamebox-bridge.js";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cx } from "../ui/cx";
@@ -78,7 +79,7 @@ async function stageFilesAndLaunch(files: File[]): Promise<void> {
   window.location.assign(`?game=dev&ingest=1`);
 }
 
-const INPUT_BUFFER_SIZE = 1024;
+const INPUT_BUFFER_SIZE = INPUT_BUFFER_BYTES;
 const INPUT_INDEX = {
   seq: 0,
   mouseX: 1,
@@ -1342,6 +1343,7 @@ export default function App() {
         // (dinputDX/DY are independent atomic accumulators, not part of the seqlock snapshot.)
         Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX));
         Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY));
+        if (event.type === "pointerdown" || event.type === "pointerup") publishInputTransition(inputView);
         endInputWrite(inputView);
         globalWorker?.postMessage({ type: "input_tick" });
         return;
@@ -1383,6 +1385,7 @@ export default function App() {
       inputView[INPUT_INDEX.buttons] = event.buttons;
       Atomics.add(inputView, INPUT_INDEX.dinputDX, Math.round(event.movementX * scaleX));
       Atomics.add(inputView, INPUT_INDEX.dinputDY, Math.round(event.movementY * scaleY));
+      if (event.type === "pointerdown" || event.type === "pointerup") publishInputTransition(inputView);
       endInputWrite(inputView);
       globalWorker?.postMessage({ type: "input_tick" });
       if (isRecording) {
@@ -1515,6 +1518,7 @@ export default function App() {
       inputView[INPUT_INDEX.keyCode] = 0;
       inputView[INPUT_INDEX.keyState] = 0;
 
+      publishInputTransition(inputView);
       endInputWrite(inputView);
       globalWorker?.postMessage({ type: "input_tick" });
       if (isRecording) {
@@ -1705,6 +1709,7 @@ export default function App() {
         inputView[INPUT_INDEX.buttons] = 0; // mouse buttons too
         inputView[INPUT_INDEX.keyCode] = 0;
         inputView[INPUT_INDEX.keyState] = 0;
+        publishInputTransition(inputView);
         endInputWrite(inputView);
         globalWorker?.postMessage({ type: "input_tick" });
       }

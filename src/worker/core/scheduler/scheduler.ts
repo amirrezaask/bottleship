@@ -2932,15 +2932,19 @@ export class Scheduler {
         return t ? t.lastError >>> 0 : (this.process?.lastError ?? 0);
     }
 
-    pinCurrentThread(): void {
-        const t = this.getCurrentThread();
+    pinThread(threadId: number): void {
+        const t = this.threads.get(threadId);
         if (t) t.kernelPinCount++;
     }
 
-    unpinCurrentThread(): void {
-        const t = this.getCurrentThread();
+    unpinThread(threadId: number): void {
+        const t = this.threads.get(threadId);
         if (t && t.kernelPinCount > 0) t.kernelPinCount--;
     }
+
+    pinCurrentThread(): void { this.pinThread(this.getCurrentThreadId()); }
+
+    unpinCurrentThread(): void { this.unpinThread(this.getCurrentThreadId()); }
 
     /**
      * Pin the WinMM timer thread for the duration of ONE timer callback so it runs

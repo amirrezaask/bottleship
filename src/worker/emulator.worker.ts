@@ -2611,6 +2611,8 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       const dbghelp = new DbgHelp(process);
       process.registerModule(dbghelp.name, dbghelp);
       process.registerModule(ifc20.name, ifc20);
+      process.registerModule('ifc21', { name: 'ifc21', exports: ifc20.exports });
+      process.registerModule('ifc22', { name: 'ifc22', exports: ifc20.exports });
       process.registerModule(gdiplus.name, gdiplus);
       process.registerModule(bass.name, bass);
       process.registerModule(galaxy.name, galaxy);
@@ -2676,6 +2678,11 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       process.dispatcher.registerModule(imagehlp.name, imagehlp.exports);
       process.dispatcher.registerModule(dbghelp.name, dbghelp.exports);
       process.dispatcher.registerModule(ifc20.name, ifc20.exports);
+      // These DLLs are already forced to HLE by the PE loader. Use the same
+      // no-hardware implementation: an unimplemented CreateDevice returns 50,
+      // which legacy wrappers mistake for a real device pointer.
+      process.dispatcher.registerModule('ifc21', ifc20.exports);
+      process.dispatcher.registerModule('ifc22', ifc20.exports);
       process.dispatcher.registerModule(gdiplus.name, gdiplus.exports);
       process.dispatcher.registerModule(bass.name, bass.exports);
       process.dispatcher.registerModule(galaxy.name, galaxy.exports);
@@ -3288,6 +3295,7 @@ self.onmessage = (event: MessageEvent) => {
       gameboxGameId = message.gameId;
       (globalThis as any).__gameboxGameId = message.gameId;
       (globalThis as any).__gameboxCacheKey = message.cacheKey;
+      (globalThis as any).__GAMEBOX_SHARED_BLOB_BASE = message.sharedBlobBase;
       // Public keys are supplied explicitly by the embedding page. The
       // catalog validates the bounded map and never fetches keys remotely.
       if (message.preparedTrustStore !== undefined)

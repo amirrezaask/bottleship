@@ -4,6 +4,7 @@ import { Logger, LogCategory } from "../../core/logger";
 import { OpenGLBackendExecutor } from "../../backends/webgpu/opengl/opengl-backend-executor";
 import { System } from "../../core/system";
 import { gammaService } from "../../core/gamma-service";
+import { resolveThunkedExportAddress } from "../kernel32/module/module";
 
 interface WGLContextBinding {
     hglrc: number;
@@ -93,7 +94,10 @@ export function createWglExports(ctx: OpenGLContext): Record<string, ThunkImplem
         if (!name) return 0;
 
         // Try to find in module registry
-        const addr = ctx.process.moduleRegistry?.getExportAddress("opengl32", name) ?? 0;
+        const resolve = (exportName: string): number =>
+            ctx.process.moduleRegistry?.getExportAddress("opengl32", exportName)
+            ?? resolveThunkedExportAddress(ctx.process.dispatcher, "opengl32", exportName, false, true);
+        const addr = resolve(name);
         if (addr) {
             Logger.verbose(LogCategory.GDI32, `wglGetProcAddress("${name}") -> 0x${addr.toString(16)}`);
             return addr;
@@ -123,7 +127,7 @@ export function createWglExports(ctx: OpenGLContext): Record<string, ThunkImplem
 
         const mapped = aliasMap[name];
         if (mapped) {
-            const mappedAddr = ctx.process.moduleRegistry?.getExportAddress("opengl32", mapped) ?? 0;
+            const mappedAddr = resolve(mapped);
             if (mappedAddr) {
                 Logger.verbose(LogCategory.GDI32, `wglGetProcAddress("${name}") -> 0x${mappedAddr.toString(16)} (alias: ${mapped})`);
                 return mappedAddr;

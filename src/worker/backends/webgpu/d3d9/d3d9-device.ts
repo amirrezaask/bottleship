@@ -1,9 +1,12 @@
 /// <reference types="@webgpu/types" />
+import { GuestStagingPool } from "./guest-staging-pool";
+import { expandTriangleIndices } from "./triangle-indices";
+import { SurfaceBlitter, type SurfaceRect } from "./surface-blitter";
 import { WebGPUBackend } from "../webgpu-backend";
 import { RenderFramePool } from "../render-frame";
 import { LruCache } from "../../../core/collections/lru-cache";
-import { D3D9StateTracker } from "./d3d9-state-tracker";
-import { D3D9CommandRecorder } from "./d3d9-command-recorder";
+import { D3D9StateTracker, type StreamSource } from "./d3d9-state-tracker";
+import { D3D9CommandRecorder, type StreamVertexBinding } from "./d3d9-command-recorder";
 import { DynamicVbPool } from "./dynamic-vb-pool";
 import { D3D9BackendExecutor, UniformData } from "./d3d9-backend-executor";
 import { VertexBufferStore, IndexBufferStore, TextureStore } from "./d3d9-resources";
@@ -133,6 +136,9 @@ type ClearState = {
 };
 
 export class D3D9Device {
+    private guestStagingPool: GuestStagingPool | null = null;
+    private geometryReadOnlyLocks = 0;
+    private geometryWriteLocks = 0;
     // A hardware-3D presenter owns the screen: GDI window-background paints must NOT composite
     // over (and black out) the rendered 3D frame. Matches D3D8/Glide/OpenGL (RenderActive contract).
     readonly suppressGdiOverlay = true;
@@ -145,11 +151,20 @@ export class D3D9Device {
     private memory: Uint8Array;
 
     private stateTracker = new D3D9StateTracker();
-    private commandRecorder = new D3D9CommandRecorder(new RenderFramePool(2));
+    private additionalStreams = new Map<number, StreamSource>();
+    private streamStrides: number[] = new Array(16).fill(0);
+    private streamLayoutKey = "";
+    private extraStreamScratch: StreamVertexBinding[] = [];
+    private extraStreamSlots: StreamVertexBinding[] = [];
+    private framePool = new RenderFramePool(2);
+    private commandRecorder = new D3D9CommandRecorder(this.framePool);
     private backendExecutor: D3D9BackendExecutor;
 
     private vertexBuffers = new VertexBufferStore();
     private indexBuffers = new IndexBufferStore();
+    /** COM Release may reach zero while the device still owns a binding reference. */
+    private releasedBoundVertexBuffers = new Map<number, number>();
+    private releasedBoundIndexBuffers = new Map<number, number>();
     private textures = new TextureStore();
     readonly texturePalettes = new TexturePaletteStore();
 
@@ -263,6 +278,12 @@ export class D3D9Device {
             }
         }
         if (newTarget !== null) this.rtNonBackThisFrame++;
+        const size = newTarget === null ? this.backendExecutor.getCanvasSize() : {
+            width: this.textures.getWidth(newTarget), height: this.textures.getHeight(newTarget),
+        };
+        // SetRenderTarget resets the viewport. In particular, returning from a
+        // small effect texture must restore the full backbuffer dimensions.
+        this.viewport = { x: 0, y: 0, width: size.width, height: size.height, minZ: 0, maxZ: 1 };
         if (newTarget === this.currentRtIndex && newFace === this.currentRtFace) return 0;
         // Flush everything drawn for the current target/face before switching.
         this.submitFrame(false);
@@ -274,6 +295,24 @@ export class D3D9Device {
     /** A 2D render view into one face (+ mip level) of a cube RT. WebGPU renders into a single
      *  array layer via a 2d view with baseArrayLayer=face; the cube's sampling view stays the
      *  dimension:"cube" view created in createCubeTexture. Cached per (index, face, level). */
+    private surfaceBlitter: SurfaceBlitter | null = null;
+
+    /** Module validation restricts this path to base-level 2D color render targets. */
+    stretchRect(sourcePtr: number, destPtr: number, from: SurfaceRect, to: SurfaceRect, filter: number): number {
+        const resolve = (ptr: number): GPUTexture | null => {
+            if (!ptr) return this.backendExecutor.getBackBufferTexture();
+            const index = this.textures.getIndex(ptr);
+            return index !== null && this.textures.isRenderTarget(index) && !this.textures.isCubeMap(index)
+                ? this.textures.getGpuTexture(index) : null;
+        };
+        const source = resolve(sourcePtr), dest = resolve(destPtr);
+        if (!source || !dest || source === dest) return 0x8876086c;
+        this.submitFrame(false);
+        this.surfaceBlitter ??= new SurfaceBlitter(this.backend.getDevice()!);
+        this.surfaceBlitter.copy(source, dest, from, to, filter === 2);
+        return 0;
+    }
+
     private getCubeFaceRenderView(index: number, face: number, level: number): GPUTextureView | null {
         const tex = this.textures.getGpuTexture(index);
         if (!tex) return null;
@@ -483,7 +522,20 @@ export class D3D9Device {
             this.recordStateBlock({ op: "fvf", value: fvf });
             return 0;
         }
-        if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setFvf(fvf);
+        // SetFVF replaces the vertex declaration even when the numeric FVF is
+        // unchanged from an earlier draw. Otherwise a shader mesh's declaration
+        // leaks into subsequent HUD/FFP geometry and misreads position/color/UVs.
+        if (this.activeVertexDecl !== 0) {
+            this.activeVertexDecl = 0;
+            this.activeVertexDeclComPtr = 0;
+            this.currentPipelineKey = null;
+            this.currentPipelineId = null;
+            this._lrValid = false;
+        }
+        if (d3d9WasmArena.isInitialized()) {
+            d3d9WasmArena.setVertexDeclaration(0);
+            d3d9WasmArena.setFvf(fvf);
+        }
         if (!this.stateTracker.setFVF(fvf)) {
             d3d9PerfSkip("setFVF");
             return 0;
@@ -874,7 +926,7 @@ export class D3D9Device {
      *  Surfaces the texld projected/bias control bits per pixel shader so we can tell at a
      *  glance whether a title uses texldp (projected spotlight/reflection). Consumed by
      *  dbg.d3d9DumpShaders(); kept here so the registries stay private. */
-    dumpShaders(): {
+    dumpShaders(full = false): {
         vs: Array<{ handle: number; version: string; instrs: number; active: boolean }>;
         ps: Array<{
             handle: number; version: string; instrs: number; samplers: number[];
@@ -890,6 +942,7 @@ export class D3D9Device {
             version: `vs_${c.prog.major}_${c.prog.minor}`,
             instrs: c.prog.instructions.length,
             active: handle === this.activeVertexShader,
+            ...(full ? { instructions: c.prog.instructions, declarations: c.prog.declarations, constants: c.analysis.constantCount } : {}),
         }));
         const ps = [...this.psShaderRegistry.entries()].map(([handle, c]) => {
             let projectedTex = 0, biasedTex = 0;
@@ -932,10 +985,20 @@ export class D3D9Device {
 
     setStreamSource(streamNumber: number, vbPtr: number, offset: number, stride: number): number {
         d3d9PerfInc("setStreamSource");
-        // We only support stream 0 for now
-        if (streamNumber !== 0) return 0;
-
+        if (streamNumber < 0 || streamNumber >= 16 || offset < 0 || stride < 0) return 0x8876086c;
         const index = this.vertexBuffers.getIndex(vbPtr);
+        if (vbPtr && index === null) return 0x8876086c;
+        if (this.streamStrides[streamNumber] !== stride) {
+            this.streamStrides[streamNumber] = stride;
+            this.streamLayoutKey = this.streamStrides.join(',');
+            this.currentPipelineKey = null;
+            this._lrValid = false;
+        }
+        if (streamNumber !== 0) {
+            if (index === null) this.additionalStreams.delete(streamNumber);
+            else this.additionalStreams.set(streamNumber, { index, offset, stride });
+            return 0;
+        }
         if (index === null) {
             if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setStreamSource(0, 0, 0);
             if (!this.stateTracker.clearStreamSource()) d3d9PerfSkip("setStreamSource");
@@ -944,6 +1007,55 @@ export class D3D9Device {
         if (d3d9WasmArena.isInitialized()) d3d9WasmArena.setStreamSource(index, offset, stride);
         if (!this.stateTracker.setStreamSource(index, offset, stride)) d3d9PerfSkip("setStreamSource");
         return 0;
+    }
+
+    /** Snapshot only changed bytes. Renamed buffers inherit the preceding GPU version,
+     * in upload order, so earlier draws retain their own immutable geometry. */
+    private queueGeometryUpload(store: VertexBufferStore | IndexBufferStore, index: number,
+        buffer: GPUBuffer, previous: GPUBuffer | null): void {
+        const data = store.getData(index)!;
+        const start = previous ? Math.floor(store.getDirtyStart(index) / 4) * 4 : 0;
+        const end = previous ? Math.min(data.byteLength, Math.ceil(store.getDirtyEnd(index) / 4) * 4) : data.byteLength;
+        const inherit = previous && previous !== buffer && (start > 0 || end < data.byteLength) ? previous : null;
+        this.commandRecorder.queueUpload(buffer, data.subarray(start, end), start, inherit,
+            inherit ? Math.ceil(data.byteLength / 4) * 4 : 0);
+    }
+
+    /** Upload and bind declared streams beyond zero; never interleave/copy whole meshes. */
+    private captureAdditionalStreams(): StreamVertexBinding[] | null {
+        const out = this.extraStreamScratch;
+        out.length = 0;
+        const declaration = this.vsDeclRegistry.get(this.activeVertexDecl);
+        if (!declaration) return out;
+        let seen = 1;
+        for (const element of declaration) {
+            const slot = element.stream;
+            if (seen & (1 << slot)) continue;
+            seen |= 1 << slot;
+            const source = this.additionalStreams.get(slot);
+            if (!source) return null;
+            const data = this.vertexBuffers.getData(source.index);
+            if (!data) return null;
+            let buffer = this.vertexBuffers.getGpuBuffer(source.index);
+        const previousBuffer = buffer;
+            if (!buffer || (this.vertexBuffers.isDirty(source.index)
+                && this.commandRecorder.getCurrentFrame().referencedBuffers.has(buffer))) {
+                if (buffer) this.commandRecorder.registerPooledBuffer(buffer);
+                this.vbPool ??= new DynamicVbPool(this.backend.getDevice()!, true);
+                buffer = this.vbPool.acquire(this.vertexBuffers.getSize(source.index));
+                this.vertexBuffers.setGpuBuffer(source.index, buffer);
+            }
+            if (this.vertexBuffers.isDirty(source.index)) {
+                this.queueGeometryUpload(this.vertexBuffers, source.index, buffer, previousBuffer);
+                this.vertexBuffers.setDirty(source.index, false);
+            }
+            const binding = this.extraStreamSlots[slot] ??= { slot, buffer, offset: 0, size: 0 };
+            binding.buffer = buffer;
+            binding.offset = source.offset;
+            binding.size = this.vertexBuffers.getSize(source.index) - source.offset;
+            out.push(binding);
+        }
+        return out;
     }
 
     /** Tail-guard canary written past every VB/IB guest allocation and
@@ -980,23 +1092,26 @@ export class D3D9Device {
     }
 
     createVertexBuffer(vbPtr: number, size: number, fvf: number): number {
-        const process = System.getInstance().process;
-        if (!process) return 0;
         try {
-            // +16: tail canary (see BUF_CANARY) — kept outside the size the store/game sees.
-            const guestPtr = process.memory.alloc(size + D3D9Device.BUF_CANARY_BYTES, "HEAP");
-            this.vertexBuffers.create(vbPtr, size, fvf, guestPtr);
-            this.writeCanary(null, guestPtr, size);
-            return guestPtr;
+            // Lock pointers are valid only until Unlock. Keep the authoritative shadow in JS
+            // and allocate guest staging lazily so static geometry does not consume the guest heap.
+            this.vertexBuffers.create(vbPtr, size, fvf, -1);
+            return 1;
         } catch (e) {
-            Logger.error(LogCategory.D3D9, `createVertexBuffer: HEAP alloc failed size=${size}: ${e}`);
+            Logger.error(LogCategory.D3D9, `createVertexBuffer failed size=${size}: ${e}`);
             return 0;
         }
     }
 
-    lockVertexBuffer(vbPtr: number, offset: number, size: number): number {
+    lockVertexBuffer(vbPtr: number, offset: number, size: number, flags = 0): number {
+        const readOnly = (flags & 0x10) !== 0; // D3DLOCK_READONLY
+        if (readOnly) this.geometryReadOnlyLocks = Math.min(Number.MAX_SAFE_INTEGER, this.geometryReadOnlyLocks + 1);
+        else this.geometryWriteLocks = Math.min(Number.MAX_SAFE_INTEGER, this.geometryWriteLocks + 1);
         const index = this.vertexBuffers.getIndex(vbPtr);
-        if (index === null) return 0;
+        if (index === null) {
+            Logger.error(LogCategory.D3D9, `VertexBuffer::Lock missing store entry handle=0x${vbPtr.toString(16)}`);
+            return 0;
+        }
 
         const bufSize = this.vertexBuffers.getSize(index);
         // Faithful D3D9: a lock range that starts at/past the end of the buffer is
@@ -1009,10 +1124,37 @@ export class D3D9Device {
             );
             return 0;
         }
+        let guestBase = this.vertexBuffers.getGuestPtr(index);
+        if (guestBase < 0) {
+            const process = System.getInstance().process;
+            if (!process) return 0;
+            try {
+                this.guestStagingPool ??= new GuestStagingPool(process.memory);
+                guestBase = this.guestStagingPool.acquire(bufSize + D3D9Device.BUF_CANARY_BYTES);
+                if (guestBase === 0) return 0;
+                this.vertexBuffers.setGuestPtr(index, guestBase);
+                const data = this.vertexBuffers.getData(index);
+                if (data) {
+                    const length = size === 0 ? bufSize - offset : Math.min(size, bufSize - offset);
+                    process.getCurrentMemory().set(data.subarray(offset, offset + length), guestBase + offset);
+                }
+                this.writeCanary(null, guestBase, bufSize);
+            } catch (e) {
+                Logger.error(LogCategory.D3D9, `VertexBuffer::Lock staging alloc failed size=${bufSize}: ${e}`);
+                return 0;
+            }
+        }
         const maxSize = Math.max(0, bufSize - offset);
         const bytes = size === 0 ? maxSize : Math.min(size, maxSize);
-        const ptr = this.vertexBuffers.lock(index, offset, bytes);
-        return ptr >= 0 ? ptr : 0;
+        const ptr = this.vertexBuffers.lock(index, offset, bytes, readOnly);
+        if (ptr < 0) {
+            Logger.error(
+                LogCategory.D3D9,
+                `VertexBuffer::Lock missing guest backing handle=0x${vbPtr.toString(16)} index=${index} size=${bufSize}`,
+            );
+            return 0;
+        }
+        return ptr;
     }
 
     unlockVertexBuffer(vbPtr: number, memory: Uint8Array): number {
@@ -1023,25 +1165,27 @@ export class D3D9Device {
             this.checkCanary(memory, guestBase, this.vertexBuffers.getSize(index), "VB", vbPtr);
         }
         this.vertexBuffers.unlock(index, memory);
+        if (guestBase >= 0) {
+            this.guestStagingPool?.release(guestBase);
+            this.vertexBuffers.setGuestPtr(index, -1);
+        }
         return 0;
     }
 
     createIndexBuffer(ibPtr: number, size: number, format: number): number {
-        const process = System.getInstance().process;
-        if (!process) return 0;
         try {
-            // +16: tail canary, same scheme as createVertexBuffer.
-            const guestPtr = process.memory.alloc(size + D3D9Device.BUF_CANARY_BYTES, "HEAP");
-            this.indexBuffers.create(ibPtr, size, format, guestPtr);
-            this.writeCanary(null, guestPtr, size);
-            return guestPtr;
+            this.indexBuffers.create(ibPtr, size, format, -1);
+            return 1;
         } catch (e) {
-            Logger.error(LogCategory.D3D9, `createIndexBuffer: HEAP alloc failed size=${size}: ${e}`);
+            Logger.error(LogCategory.D3D9, `createIndexBuffer failed size=${size}: ${e}`);
             return 0;
         }
     }
 
-    lockIndexBuffer(ibPtr: number, offset: number, size: number): number {
+    lockIndexBuffer(ibPtr: number, offset: number, size: number, flags = 0): number {
+        const readOnly = (flags & 0x10) !== 0; // D3DLOCK_READONLY
+        if (readOnly) this.geometryReadOnlyLocks = Math.min(Number.MAX_SAFE_INTEGER, this.geometryReadOnlyLocks + 1);
+        else this.geometryWriteLocks = Math.min(Number.MAX_SAFE_INTEGER, this.geometryWriteLocks + 1);
         const index = this.indexBuffers.getIndex(ibPtr);
         if (index === null) return 0;
 
@@ -1054,9 +1198,29 @@ export class D3D9Device {
             );
             return 0;
         }
+        let guestBase = this.indexBuffers.getGuestPtr(index);
+        if (guestBase < 0) {
+            const process = System.getInstance().process;
+            if (!process) return 0;
+            try {
+                this.guestStagingPool ??= new GuestStagingPool(process.memory);
+                guestBase = this.guestStagingPool.acquire(bufSize + D3D9Device.BUF_CANARY_BYTES);
+                if (guestBase === 0) return 0;
+                this.indexBuffers.setGuestPtr(index, guestBase);
+                const data = this.indexBuffers.getData(index);
+                if (data) {
+                    const length = size === 0 ? bufSize - offset : Math.min(size, bufSize - offset);
+                    process.getCurrentMemory().set(data.subarray(offset, offset + length), guestBase + offset);
+                }
+                this.writeCanary(null, guestBase, bufSize);
+            } catch (e) {
+                Logger.error(LogCategory.D3D9, `IndexBuffer::Lock staging alloc failed size=${bufSize}: ${e}`);
+                return 0;
+            }
+        }
         const maxSize = Math.max(0, bufSize - offset);
         const bytes = size === 0 ? maxSize : Math.min(size, maxSize);
-        const ptr = this.indexBuffers.lock(index, offset, bytes);
+        const ptr = this.indexBuffers.lock(index, offset, bytes, readOnly);
         return ptr >= 0 ? ptr : 0;
     }
 
@@ -1068,6 +1232,10 @@ export class D3D9Device {
             this.checkCanary(memory, guestBase, this.indexBuffers.getSize(index), "IB", ibPtr);
         }
         this.indexBuffers.unlock(index, memory);
+        if (guestBase >= 0) {
+            this.guestStagingPool?.release(guestBase);
+            this.indexBuffers.setGuestPtr(index, -1);
+        }
         return 0;
     }
 
@@ -1106,12 +1274,10 @@ export class D3D9Device {
     }
 
     createTexture(texPtr: number, width: number, height: number, levels: number, format: number, usage: number = 0): number {
-        const process = System.getInstance().process;
-        if (!process) return 0;
-        const bytes = getD3DTextureLayout(format, width, height).bytes;
         try {
-            const guestPtr = process.memory.alloc(bytes, "HEAP");
-            const index = this.textures.create(texPtr, width, height, levels, format, guestPtr);
+            // TextureStore owns the persistent pixels. Guest LockRect staging is allocated
+            // lazily and released at UnlockRect instead of duplicating every texture in HEAP.
+            const index = this.textures.create(texPtr, width, height, levels, format, -1);
             // D3DUSAGE_RENDERTARGET (0x1): the guest renders INTO this texture (no LockRect
             // upload). Create a render-attachment-capable GPU texture eagerly so it is a valid
             // sample source the instant the guest binds it (otherwise ensureTexture would see
@@ -1137,9 +1303,9 @@ export class D3D9Device {
                     this.textures.setDirty(index, false); // nothing to upload; content comes from rendering
                 }
             }
-            return guestPtr;
+            return 1;
         } catch (e) {
-            Logger.error(LogCategory.D3D9, `createTexture: HEAP alloc failed ${width}x${height}: ${e}`);
+            Logger.error(LogCategory.D3D9, `createTexture failed ${width}x${height}: ${e}`);
             return 0;
         }
     }
@@ -1152,15 +1318,11 @@ export class D3D9Device {
      * static cubes upload LockRect'd face pixels via ensureCubeTexture.
      */
     createCubeTexture(cubePtr: number, edge: number, levels: number, format: number, usage: number = 0): number {
-        const process = System.getInstance().process;
-        if (!process) return 0;
         const e = Math.max(1, edge >>> 0);
         const levelCount = Math.max(1, levels >>> 0);
         try {
-            // Scratch HEAP backing keeps TextureStore.create's bookkeeping uniform with 2D
-            // textures; cube faces are locked into per-face scratch on demand (lockCubeFace).
-            const guestPtr = process.memory.alloc(getD3DTextureLayout(format, e, e).bytes, "HEAP");
-            const index = this.textures.create(cubePtr, e, e, levelCount, format, guestPtr);
+            // Cube faces already use per-lock scratch; no persistent guest duplicate is needed.
+            const index = this.textures.create(cubePtr, e, e, levelCount, format, -1);
             this.textures.markCube(index);
             if (d3d9WasmArena.isInitialized()) d3d9WasmArena.markTextureCube(index, true);
 
@@ -1188,9 +1350,9 @@ export class D3D9Device {
                     this.textures.setDirty(index, false); // content comes from rendering into faces
                 }
             }
-            return guestPtr;
+            return 1;
         } catch (e2) {
-            Logger.error(LogCategory.D3D9, `createCubeTexture: alloc failed ${edge}px: ${e2}`);
+            Logger.error(LogCategory.D3D9, `createCubeTexture failed ${edge}px: ${e2}`);
             return 0;
         }
     }
@@ -1251,14 +1413,25 @@ export class D3D9Device {
         const index = this.textures.getIndex(texPtr);
         if (index === null) return null;
 
-        // Level 0 is backed by the per-texture HEAP allocation.
         if (level === 0) {
             if (this.textures.isLocked(index)) {
                 const ptr = this.textures.getLockedPtr(index);
-                if (ptr >= 0) {
-                    return { ptr, pitch: this.textures.getPitch(index) };
-                }
+                if (ptr >= 0) return { ptr, pitch: this.textures.getPitch(index) };
             }
+            const process = System.getInstance().process;
+            if (!process) return null;
+            const data = this.textures.getData(index);
+            if (!data) return null;
+            let guestPtr: number;
+            try {
+                guestPtr = process.memory.alloc(data.length, "HEAP");
+                if (guestPtr === 0) return null;
+            } catch (e) {
+                Logger.error(LogCategory.D3D9, `lockTexture level0 staging alloc failed bytes=${data.length}: ${e}`);
+                return null;
+            }
+            process.getCurrentMemory().set(data, guestPtr);
+            this.textures.setGuestPtr(index, guestPtr);
             return this.textures.lock(index);
         }
 
@@ -1405,7 +1578,12 @@ export class D3D9Device {
             return 0;
         }
 
+        const guestPtr = this.textures.getGuestPtr(index);
         this.textures.unlock(index, memory);
+        if (guestPtr >= 0) {
+            System.getInstance().process?.memory.free(guestPtr);
+            this.textures.setGuestPtr(index, -1);
+        }
         return 0;
     }
 
@@ -1449,13 +1627,16 @@ export class D3D9Device {
      * Called when the COM object's refCount reaches 0.
      */
     releaseVertexBuffer(vbPtr: number): void {
+        const index = this.vertexBuffers.getIndex(vbPtr);
+        if (index === null) return;
+        this.releasedBoundVertexBuffers.set(vbPtr, index);
+    }
+
+    private destroyVertexBuffer(vbPtr: number): void {
+        this.releasedBoundVertexBuffers.delete(vbPtr);
         const vb = this.vertexBuffers.release(vbPtr);
-        if (vb?.gpuBuffer) {
-            vb.gpuBuffer.destroy();
-        }
-        if (vb && vb.guestPtr > 0) {
-            System.getInstance().process?.memory.free(vb.guestPtr);
-        }
+        vb?.gpuBuffer?.destroy();
+        if (vb && vb.guestPtr > 0) this.guestStagingPool?.release(vb.guestPtr);
     }
 
     /**
@@ -1463,12 +1644,27 @@ export class D3D9Device {
      * Called when the COM object's refCount reaches 0.
      */
     releaseIndexBuffer(ibPtr: number): void {
+        const index = this.indexBuffers.getIndex(ibPtr);
+        if (index === null) return;
+        this.releasedBoundIndexBuffers.set(ibPtr, index);
+    }
+
+    private destroyIndexBuffer(ibPtr: number): void {
+        this.releasedBoundIndexBuffers.delete(ibPtr);
         const ib = this.indexBuffers.release(ibPtr);
-        if (ib?.gpuBuffer) {
-            ib.gpuBuffer.destroy();
+        ib?.gpuBuffer?.destroy();
+        if (ib && ib.guestPtr > 0) this.guestStagingPool?.release(ib.guestPtr);
+    }
+
+    /** Collect zero-ref buffers only after submitted draws no longer bind them. */
+    private collectReleasedBuffers(): void {
+        const boundVertexIndex = this.stateTracker.getStreamSource()?.index ?? null;
+        for (const [ptr, index] of this.releasedBoundVertexBuffers) {
+            if (index !== boundVertexIndex && ![...this.additionalStreams.values()].some(source => source.index === index)) this.destroyVertexBuffer(ptr);
         }
-        if (ib && ib.guestPtr > 0) {
-            System.getInstance().process?.memory.free(ib.guestPtr);
+        const boundIndex = this.stateTracker.getIndexSource();
+        for (const [ptr, index] of this.releasedBoundIndexBuffers) {
+            if (index !== boundIndex) this.destroyIndexBuffer(ptr);
         }
     }
 
@@ -1723,14 +1919,14 @@ export class D3D9Device {
         const decl = this.activeVertexDecl > 0 ? this.vsDeclRegistry.get(this.activeVertexDecl) : null;
         let hasColor: boolean, hasSpecular: boolean;
         if (decl && decl.length > 0) {
-            hasColor = decl.some(e => e.stream === 0 && e.usage === DECLUSAGE_COLOR_FFP && e.usageIndex === 0);
-            hasSpecular = decl.some(e => e.stream === 0 && e.usage === DECLUSAGE_COLOR_FFP && e.usageIndex === 1);
+            hasColor = decl.some(e => e.usage === DECLUSAGE_COLOR_FFP && e.usageIndex === 0);
+            hasSpecular = decl.some(e => e.usage === DECLUSAGE_COLOR_FFP && e.usageIndex === 1);
         } else {
             hasColor = (fvf & D3DFVF_DIFFUSE) !== 0;
             hasSpecular = (fvf & D3DFVF_SPECULAR) !== 0;
         }
         const hasNormal = decl && decl.length > 0
-            ? decl.some(e => e.stream === 0 && e.usage === DECLUSAGE_NORMAL_FFP && e.usageIndex === 0)
+            ? decl.some(e => e.usage === DECLUSAGE_NORMAL_FFP && e.usageIndex === 0)
             : (fvf & D3DFVF_NORMAL) !== 0;
 
         const colorVertex = rs(D3DRS_COLORVERTEX) !== 0;
@@ -1846,8 +2042,7 @@ export class D3D9Device {
     setViewport(pViewport: number, mem: Uint8Array): number {
         if (!pViewport || !isValidAddress(mem, pViewport, 24)) return 0x8876086c;
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-        const targetW = this.viewport.width || 800;
-        const targetH = this.viewport.height || 600;
+        const { w: targetW, h: targetH } = this.getCurrentTargetSize();
         this.viewport = sanitizeViewport({
             x: view.getUint32(pViewport + 0, true),
             y: view.getUint32(pViewport + 4, true),
@@ -1868,8 +2063,11 @@ export class D3D9Device {
      *  (primitive/counts/textured/programmable) into the one schema. Placed before
      *  the trilist guard so non-trilist draws are still counted. Gated → zero cost. */
     private captureDrawIfArmed(primitiveType: number, primitiveCount: number): void {
+        if (this.commandRecorder.getCurrentFrame().drawStateCount >= 2048) this.submitFrame(false);
         if (!frameCapture.isCapturing()) return;
         const stage0 = this.stateTracker.getTexture(0);
+        const stream = this.stateTracker.getStreamSource();
+        const vertices = stream ? this.vertexBuffers.getData(stream.index) : null;
         frameCapture.recordRawDraw({
             backend: "d3d9",
             primitiveType,
@@ -1877,7 +2075,16 @@ export class D3D9Device {
             vertexCount: primitiveCount * 3,
             programmable: (this as any).isProgrammable?.() ?? false,
             derivedUseTexture: stage0 != null,
-            warnings: stage0 != null ? [`tex0 store-index=${stage0}`] : [],
+            alphaBlendEnabled: this.getRS(27), srcBlend: this.getRS(19), dstBlend: this.getRS(20),
+            zEnable: this.getRS(7), zWrite: this.getRS(14), lightingEnabled: this.getRS(137),
+            warnings: [JSON.stringify({
+                texture: stage0, rt: this.currentRtIndex, viewport: this.viewport,
+                fvf: this.stateTracker.getFVF(), vs: this.activeVertexShader, ps: this.activePixelShader,
+                declaration: this.vsDeclRegistry.get(this.activeVertexDecl),
+                stages: this.getAllTextureStageStates(),
+                stream, mvp: Array.from(this.stateTracker.getMVP()),
+                vertexPrefix: vertices && stream ? Array.from(vertices.subarray(stream.offset, stream.offset + 64)) : null,
+            })],
         });
     }
 
@@ -2032,7 +2239,7 @@ export class D3D9Device {
         // Upload the expanded quads to a pooled VB and record a triangle-list draw with the
         // synthetic-FVF pipeline (cull forced off). Same pooled-buffer flow as drawPrimitiveUP.
         const view = out.subarray(0, outBytes);
-        if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
+        if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
         const gpuBuffer = this.vbPool.acquire(Math.max(16, outBytes));
         device.queue.writeBuffer(gpuBuffer, 0, view);
 
@@ -2040,6 +2247,7 @@ export class D3D9Device {
         this.commandRecorder.recordDraw({
             pipelineId, gpuBuffer, bufferOffset: 0, bufferSize: outBytes,
             vertexCount: outVerts, startVertex: 0,
+            bindStateIndex: this.captureFixedFunctionState(),
         });
         this.commandRecorder.registerPooledBuffer(gpuBuffer);
         this.drawCount += 1;
@@ -2059,7 +2267,8 @@ export class D3D9Device {
             }
             return 0;
         }
-        if (primitiveType !== D3DPT_TRIANGLELIST) return 0;
+        if (primitiveType !== D3DPT_TRIANGLELIST
+            && primitiveType !== D3DPT_TRIANGLESTRIP && primitiveType !== D3DPT_TRIANGLEFAN) return 0;
         const streamSource = this.stateTracker.getStreamSource();
         if (!streamSource) return 0;
 
@@ -2069,16 +2278,17 @@ export class D3D9Device {
 
         const device = this.backend.getDevice()!;
         let gpuBuffer = this.vertexBuffers.getGpuBuffer(vbIndex);
-        if (!gpuBuffer) {
-            gpuBuffer = device.createBuffer({
-                size: this.vertexBuffers.getSize(vbIndex),
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
+        const previousGpuBuffer = gpuBuffer;
+        if (!gpuBuffer || (this.vertexBuffers.isDirty(vbIndex)
+            && this.commandRecorder.getCurrentFrame().referencedBuffers.has(gpuBuffer))) {
+            if (gpuBuffer) this.commandRecorder.registerPooledBuffer(gpuBuffer);
+            if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
+            gpuBuffer = this.vbPool.acquire(this.vertexBuffers.getSize(vbIndex));
             this.vertexBuffers.setGpuBuffer(vbIndex, gpuBuffer);
         }
 
         if (this.vertexBuffers.isDirty(vbIndex)) {
-            this.commandRecorder.queueUpload(gpuBuffer, vbData);
+            this.queueGeometryUpload(this.vertexBuffers, vbIndex, gpuBuffer, previousGpuBuffer);
             this.vertexBuffers.setDirty(vbIndex, false);
             
             if (this.frameSnapshot.frameCounters) {
@@ -2093,10 +2303,12 @@ export class D3D9Device {
         // Computed BEFORE pipeline resolution so a real-bypass hit (dbg.d3dWasmPath(true))
         // can skip the legacy string-key path entirely (see resolveProgrammablePipeline).
         let arenaKey: number | undefined;
-        if (d3d9WasmArena.isInitialized()) {
+        if (d3d9WasmArena.isInitialized() && this.additionalStreams.size === 0 && primitiveType === D3DPT_TRIANGLELIST) {
             arenaKey = d3d9WasmArena.recordDraw(0, primitiveCount * 3, startVertex, streamSource.stride, false);
         }
 
+        const extraStreams = this.captureAdditionalStreams();
+        if (!extraStreams) return 0x8876086c;
         let pipelineId: number;
         let bindStateIndex: number | undefined;
         if (this.isProgrammable()) {
@@ -2105,15 +2317,30 @@ export class D3D9Device {
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineId();
+            bindStateIndex = this.captureFixedFunctionState();
         }
-        this.commandRecorder.recordDraw({
+        if (primitiveType !== D3DPT_TRIANGLELIST) {
+            if (startVertex + primitiveCount + 2 > Math.floor((vbData.byteLength - streamSource.offset) / streamSource.stride)) return 0x8876086c;
+            const indices = expandTriangleIndices(primitiveType, primitiveCount, startVertex);
+            if (!indices) return 0x8876086c;
+            if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
+            const expanded = this.vbPool.acquire(indices.byteLength);
+            device.queue.writeBuffer(expanded, 0, indices);
+            this.commandRecorder.registerPooledBuffer(expanded);
+            this.commandRecorder.recordDrawIndexed({
+                pipelineId, vbGpuBuffer: gpuBuffer, vbOffset: streamSource.offset,
+                vbSize: this.vertexBuffers.getSize(vbIndex) - streamSource.offset,
+                ibGpuBuffer: expanded, ibFormat: "uint32", indexCount: indices.length,
+                startIndex: 0, baseVertex: 0, bindStateIndex, extraStreams,
+            });
+        } else this.commandRecorder.recordDraw({
             pipelineId,
             gpuBuffer,
             bufferOffset: streamSource.offset,
             bufferSize: this.vertexBuffers.getSize(vbIndex) - streamSource.offset,
             vertexCount: primitiveCount * 3,
             startVertex,
-            bindStateIndex,
+            bindStateIndex, extraStreams,
         });
         this.drawCount += 1;
 
@@ -2234,7 +2461,7 @@ export class D3D9Device {
         // scratch that the NEXT UP draw overwrites) is safe to pass without a staging
         // copy — unlike the deferred queueUpload path, which had to snapshot it.
         const bufferSize = Math.max(16, finalData.byteLength);
-        if (!this.vbPool) this.vbPool = new DynamicVbPool(device);
+        if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
         const gpuBuffer = this.vbPool.acquire(bufferSize);
         device.queue.writeBuffer(gpuBuffer, 0, finalData);
 
@@ -2265,7 +2492,8 @@ export class D3D9Device {
             if (pipelineId < 0) { this.commandRecorder.registerPooledBuffer(gpuBuffer); return 0; }
             bindStateIndex = this.captureDrawState();
         } else {
-            pipelineId = this.getPipelineIdForTopology(topology, true);
+            pipelineId = this.getPipelineIdForTopology(topology, true, stride);
+            bindStateIndex = this.captureFixedFunctionState();
         }
 
         this.commandRecorder.recordDraw({
@@ -2311,7 +2539,8 @@ export class D3D9Device {
     ): number {
         d3d9PerfInc("drawIndexedPrimitive");
         this.captureDrawIfArmed(primitiveType, primitiveCount);
-        if (primitiveType !== D3DPT_TRIANGLELIST) return 0;
+        if (primitiveType !== D3DPT_TRIANGLELIST
+            && primitiveType !== D3DPT_TRIANGLESTRIP && primitiveType !== D3DPT_TRIANGLEFAN) return 0;
         const streamSource = this.stateTracker.getStreamSource();
         if (!streamSource) return 0;
         const indexSource = this.stateTracker.getIndexSource();
@@ -2323,27 +2552,37 @@ export class D3D9Device {
         const ibData = this.indexBuffers.getData(ibIndex);
         if (!vbData || !ibData) return 0;
 
+        // D3D rejects an out-of-range draw. Submitting it to WebGPU invalidates
+        // the entire command buffer, including every earlier world draw.
+        const indexBytes = this.indexBuffers.getFormat(ibIndex) === D3DFMT_INDEX16 ? 2 : 4;
+        const indexCount = primitiveType === D3DPT_TRIANGLELIST ? primitiveCount * 3 : primitiveCount + 2;
+        if (!Number.isSafeInteger(startIndex) || startIndex < 0
+            || !Number.isSafeInteger(indexCount) || indexCount < 0
+            || startIndex + indexCount > Math.floor(ibData.byteLength / indexBytes)) return 0x8876086c;
+
         const device = this.backend.getDevice()!;
         let vbBuffer = this.vertexBuffers.getGpuBuffer(vbIndex);
-        if (!vbBuffer) {
-            vbBuffer = device.createBuffer({
-                size: this.vertexBuffers.getSize(vbIndex),
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
+        const previousVbBuffer = vbBuffer;
+        if (!vbBuffer || (this.vertexBuffers.isDirty(vbIndex)
+            && this.commandRecorder.getCurrentFrame().referencedBuffers.has(vbBuffer))) {
+            if (vbBuffer) this.commandRecorder.registerPooledBuffer(vbBuffer);
+            if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
+            vbBuffer = this.vbPool.acquire(this.vertexBuffers.getSize(vbIndex));
             this.vertexBuffers.setGpuBuffer(vbIndex, vbBuffer);
         }
 
         let ibBuffer = this.indexBuffers.getGpuBuffer(ibIndex);
-        if (!ibBuffer) {
-            ibBuffer = device.createBuffer({
-                size: this.indexBuffers.getSize(ibIndex),
-                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-            });
+        const previousIbBuffer = ibBuffer;
+        if (!ibBuffer || (this.indexBuffers.isDirty(ibIndex)
+            && this.commandRecorder.getCurrentFrame().referencedBuffers.has(ibBuffer))) {
+            if (ibBuffer) this.commandRecorder.registerPooledBuffer(ibBuffer);
+            if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
+            ibBuffer = this.vbPool.acquire(this.indexBuffers.getSize(ibIndex));
             this.indexBuffers.setGpuBuffer(ibIndex, ibBuffer);
         }
 
         if (this.vertexBuffers.isDirty(vbIndex)) {
-            this.commandRecorder.queueUpload(vbBuffer, vbData);
+            this.queueGeometryUpload(this.vertexBuffers, vbIndex, vbBuffer, previousVbBuffer);
             this.vertexBuffers.setDirty(vbIndex, false);
             
             if (this.frameSnapshot.frameCounters) {
@@ -2352,7 +2591,7 @@ export class D3D9Device {
             }
         }
         if (this.indexBuffers.isDirty(ibIndex)) {
-            this.commandRecorder.queueUpload(ibBuffer, ibData);
+            this.queueGeometryUpload(this.indexBuffers, ibIndex, ibBuffer, previousIbBuffer);
             this.indexBuffers.setDirty(ibIndex, false);
             
             if (this.frameSnapshot.frameCounters) {
@@ -2367,10 +2606,12 @@ export class D3D9Device {
         // resolveProgrammablePipeline). Only reachable for D3DPT_TRIANGLELIST (early-return
         // above), so topology=0/forceCullNone=false, matching the resolve call below.
         let arenaKey: number | undefined;
-        if (d3d9WasmArena.isInitialized()) {
+        if (d3d9WasmArena.isInitialized() && this.additionalStreams.size === 0 && primitiveType === D3DPT_TRIANGLELIST) {
             arenaKey = d3d9WasmArena.recordDrawIndexed(0, primitiveCount * 3, startIndex, baseVertexIndex, streamSource.stride, false);
         }
 
+        const extraStreams = this.captureAdditionalStreams();
+        if (!extraStreams) return 0x8876086c;
         let pipelineId: number;
         let bindStateIndex: number | undefined;
         if (this.isProgrammable()) {
@@ -2379,18 +2620,34 @@ export class D3D9Device {
             bindStateIndex = this.captureDrawState();
         } else {
             pipelineId = this.getPipelineId();
+            bindStateIndex = this.captureFixedFunctionState();
+        }
+        let drawIndexBuffer = ibBuffer;
+        let drawIndexFormat: "uint16" | "uint32" = this.indexBuffers.getFormat(ibIndex) === D3DFMT_INDEX16 ? "uint16" : "uint32";
+        let drawStartIndex = startIndex;
+        if (primitiveType !== D3DPT_TRIANGLELIST) {
+            const indices = expandTriangleIndices(primitiveType, primitiveCount, startIndex, {
+                bytes: ibData, indexBytes: drawIndexFormat === "uint16" ? 2 : 4,
+            });
+            if (!indices) return 0x8876086c;
+            if (!this.vbPool) this.vbPool = new DynamicVbPool(device, true);
+            drawIndexBuffer = this.vbPool.acquire(indices.byteLength);
+            device.queue.writeBuffer(drawIndexBuffer, 0, indices);
+            this.commandRecorder.registerPooledBuffer(drawIndexBuffer);
+            drawIndexFormat = "uint32";
+            drawStartIndex = 0;
         }
         this.commandRecorder.recordDrawIndexed({
             pipelineId,
             vbGpuBuffer: vbBuffer,
             vbOffset: streamSource.offset,
             vbSize: this.vertexBuffers.getSize(vbIndex) - streamSource.offset,
-            ibGpuBuffer: ibBuffer,
-            ibFormat: this.indexBuffers.getFormat(ibIndex) === D3DFMT_INDEX16 ? "uint16" : "uint32",
+            ibGpuBuffer: drawIndexBuffer,
+            ibFormat: drawIndexFormat,
             indexCount: primitiveCount * 3,
-            startIndex,
+            startIndex: drawStartIndex,
             baseVertex: baseVertexIndex,
-            bindStateIndex,
+            bindStateIndex, extraStreams,
         });
         this.drawCount += 1;
 
@@ -2439,6 +2696,7 @@ export class D3D9Device {
             this.currentRtFace = -1;
         }
         this.submitFrame(true);
+        this.collectReleasedBuffers();
         this.updateFps();
         System.getInstance().services.render.notifyPresent("d3d9");
         frameCapture.onFrameEnd(); // harness CaptureBus frame boundary (D3D9)
@@ -2508,17 +2766,32 @@ export class D3D9Device {
     /** Task A perf: subsystem counters not tracked on the API hot path. */
     collectSubsystemPerf(): {
         stateTracker: ReturnType<D3D9StateTracker["getMetrics"]>;
-        backend: ReturnType<D3D9BackendExecutor["getMetrics"]>;
+        backend: ReturnType<D3D9BackendExecutor["getMetrics"]> & Record<string, number>;
+        geometryStaging: ReturnType<GuestStagingPool["getStats"]> | null;
     } {
         return {
             stateTracker: this.stateTracker.getMetrics(),
-            backend: this.backendExecutor.getMetrics(),
+            backend: { ...this.backendExecutor.getMetrics(), geometryReadOnlyLocks: this.geometryReadOnlyLocks, geometryWriteLocks: this.geometryWriteLocks },
+            geometryStaging: this.guestStagingPool?.getStats() ?? null,
         };
     }
 
     resetSubsystemPerf(): void {
+        this.guestStagingPool?.resetStats();
+        this.geometryReadOnlyLocks = 0; this.geometryWriteLocks = 0;
         this.stateTracker.resetMetrics();
         this.backendExecutor.resetMetrics();
+    }
+
+    disposeTransientResources(): void {
+        this.backendExecutor.disposeUploadStaging();
+        this.guestStagingPool?.dispose();
+        this.guestStagingPool = null;
+        this.framePool.dispose();
+        this.vbPool?.dispose();
+        this.vbPool = null;
+        this.surfaceBlitter?.dispose();
+        this.surfaceBlitter = null;
     }
 
     /** HARNESS/dbg (dbg.d3dArenaStats): this device's WASM-arena verify-only drain counters. */
@@ -2589,7 +2862,7 @@ export class D3D9Device {
 
     private getPipelineId(): number {
         const key = this.buildPipelineKey();
-        const cacheKey = this.blendCacheKey(key);
+        const cacheKey = `${this.blendCacheKey(key)}|stride${this.stateTracker.getStreamSource()?.stride ?? 0}|${this.streamLayoutKey}`;
         if (this.currentPipelineKey !== cacheKey || this.currentPipelineId === null) {
             this.currentPipelineKey = cacheKey;
             this.currentPipelineId = this.resolvePipelineId(key, "triangle-list", false);
@@ -2597,11 +2870,9 @@ export class D3D9Device {
         return this.currentPipelineId ?? 0;
     }
 
-    private getPipelineIdForTopology(topology: "triangle-list" | "line-list", forceCullNone: boolean = false): number {
-        const topologyOffset = topology === "line-list" ? 0x1000000 : 0;
-        const cullOffset = forceCullNone ? 0x2000000 : 0;
-        const key = this.buildPipelineKey(topologyOffset, cullOffset);
-        return this.resolvePipelineId(key, topology, forceCullNone);
+    private getPipelineIdForTopology(topology: "triangle-list" | "line-list", forceCullNone: boolean = false, stride?: number): number {
+        const key = this.buildPipelineKey();
+        return this.resolvePipelineId(key, topology, forceCullNone, undefined, stride);
     }
 
     /**
@@ -2611,7 +2882,7 @@ export class D3D9Device {
      * never back-face-culls points).
      */
     private getPointSpritePipelineId(syntheticFvf: number): number {
-        const key = this.buildPipelineKey(0, 0x2000000);
+        const key = this.buildPipelineKey();
         return this.resolvePipelineId(key, "triangle-list", true, syntheticFvf);
     }
 
@@ -2620,10 +2891,15 @@ export class D3D9Device {
         topology: "triangle-list" | "line-list",
         forceCullNone: boolean = false,
         fvfOverride?: number,
+        strideOverride?: number,
     ): number {
         // Synthetic-FVF pipelines (point sprites) get their own cache namespace so they never
         // alias the game's decl/FVF pipelines that hash to the same numeric key.
-        const cacheKey = fvfOverride !== undefined ? `ps${fvfOverride}|${this.blendCacheKey(key)}` : this.blendCacheKey(key);
+        const effectiveStride = strideOverride ?? this.stateTracker.getStreamSource()?.stride;
+        const layoutKey = fvfOverride !== undefined ? `ps${fvfOverride}` : `stride${effectiveStride ?? 0}`;
+        // Topology/cull overrides must not be added to the render-state bitfield:
+        // those bits already encode lighting and depth enable/write.
+        const cacheKey = `${this.blendCacheKey(key)}|${layoutKey}|${topology}|${forceCullNone}|${this.streamLayoutKey}`;
         const cachedId = this.pipelineCache.get(cacheKey);
         if (cachedId !== undefined) {
             d3d9PerfBackendInc("pipelineCacheHits");
@@ -2644,10 +2920,9 @@ export class D3D9Device {
         const declElements = this.activeVertexDecl > 0
             ? (this.vsDeclRegistry.get(this.activeVertexDecl) ?? null)
             : null;
-        const streamSource = this.stateTracker.getStreamSource();
-
         let shaderModule: GPUShaderModule;
         let vertexBufferLayout: GPUVertexBufferLayout;
+        let vertexBufferLayouts: (GPUVertexBufferLayout | null)[] | null = null;
         let hasTexture: boolean;
 
         const alphaTest = this.getAlphaTest();
@@ -2664,15 +2939,27 @@ export class D3D9Device {
             // FFP + vertex declaration path: build shader and layout from declaration data.
             const built = buildShaderFromDecl(declElements, alphaTest, lit);
             shaderModule = gpuDevice.createShaderModule({ code: built.wgsl });
-            const stride = streamSource?.stride ?? built.arrayStride;
+            const stride = effectiveStride ?? built.arrayStride;
             vertexBufferLayout = { arrayStride: stride || 16, attributes: built.attributes };
             hasTexture = built.hasTexture;
+            vertexBufferLayouts = [];
+            for (let i = 0; i < built.attributes.length; i++) {
+                const slot = built.attributeStreams[i];
+                while (vertexBufferLayouts.length <= slot) vertexBufferLayouts.push(null);
+                let layout = vertexBufferLayouts[slot];
+                if (!layout) {
+                    const derivedStride = Math.max(...declElements.filter(e => e.stream === slot).map(e => e.offset + d3dDeclTypeToGpu(e.type).byteSize));
+                    layout = { arrayStride: slot === 0 ? (effectiveStride ?? derivedStride) : (this.streamStrides[slot] || derivedStride), attributes: [] };
+                    vertexBufferLayouts[slot] = layout;
+                }
+                (layout.attributes as GPUVertexAttribute[]).push(built.attributes[i]);
+            }
         } else {
             // FFP + FVF path.
             const fvf = this.stateTracker.getFVF();
             const layout = buildVertexLayout(fvf);
             shaderModule = gpuDevice.createShaderModule({ code: buildShader(fvf, alphaTest, lit) });
-            vertexBufferLayout = { arrayStride: layout.arrayStride, attributes: layout.attributes };
+            vertexBufferLayout = { arrayStride: effectiveStride ?? layout.arrayStride, attributes: layout.attributes };
             hasTexture = layout.hasTexture;
         }
 
@@ -2691,7 +2978,7 @@ export class D3D9Device {
             vertex: {
                 module: shaderModule,
                 entryPoint: "vs_main",
-                buffers: [vertexBufferLayout],
+                buffers: vertexBufferLayouts ?? [vertexBufferLayout],
             },
             fragment: {
                 module: shaderModule,
@@ -2786,7 +3073,7 @@ export class D3D9Device {
             return built;
         }
 
-        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:cm${cubeMask}:pj${projKey}`;
+        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:cm${cubeMask}:pj${projKey}:${this.streamLayoutKey}`;
         const cached = this.progPipelineCache.get(cacheKey);
         if (cached !== undefined) {
             d3d9PerfBackendInc("progPipelineCacheHits");
@@ -2818,7 +3105,10 @@ export class D3D9Device {
         projectedStages: number,
     ): number {
         try {
-            const link = linkProgram({ vs, ps, declElements, streamStride: stride, alphaTest, cubeMask, projectedStages });
+            // UP draws supply their own stream-zero stride.
+            const streamStrides = this.streamStrides.slice();
+            if (stride !== null) streamStrides[0] = stride;
+            const link = linkProgram({ vs, ps, declElements, streamStride: stride, streamStrides, alphaTest, cubeMask, projectedStages });
             const gpuDevice = this.backend.getDevice()!;
             const format = this.backend.getFormat()!;
             const module = gpuDevice.createShaderModule({ code: link.wgsl });
@@ -2840,10 +3130,7 @@ export class D3D9Device {
                 vertex: {
                     module,
                     entryPoint: "vs_main",
-                    buffers: [{
-                        arrayStride: (stride && stride > 0) ? stride : link.arrayStride,
-                        attributes: link.vertexAttributes,
-                    }],
+                    buffers: link.vertexBuffers,
                 },
                 fragment: { module, entryPoint: "fs_main", targets: [buildColorTargetState(format, this.getRS)] },
                 primitive: { topology, frontFace: "cw", cullMode },
@@ -2894,6 +3181,26 @@ export class D3D9Device {
             if (flags & D3DTTFF_PROJECTED) key |= (1 << stage);
         }
         return key;
+    }
+
+    /** Freeze FFP state before subsequent texture/transform/light setters change it. */
+    private captureFixedFunctionState(): number {
+        const frame = this.commandRecorder.getCurrentFrame();
+        const index = frame.drawStateCount;
+        const size = this.backendExecutor.getCanvasSize();
+        const rt = this.currentRtIndex;
+        const block = this.buildFfpUniformBlock(
+            rt === null ? size.width : this.textures.getWidth(rt),
+            rt === null ? size.height : this.textures.getHeight(rt),
+        );
+        const state = frame.nextDrawState(block.length, 0);
+        state.fixedFunction = true;
+        state.vsConst.set(block);
+        state.textures.fill(null);
+        state.textures[0] = this.resolveCurrentTexture();
+        state.sampler = this.resolveStageSampler(0);
+        this.lastCaptureIndex = -1;
+        return index;
     }
 
     /** Snapshot the current VS/PS constants + bound textures for one draw. */
@@ -3974,10 +4281,11 @@ const D3DDECLTYPE_D3DCOLOR    = 4;  // stored as BGRA bytes
 function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest | null = null, litRequested = false): {
     wgsl: string;
     attributes: GPUVertexAttribute[];
+    attributeStreams: number[];
     arrayStride: number;
     hasTexture: boolean;
 } {
-    const s0 = elements.filter(e => e.stream === 0);
+    const s0 = elements;
 
     // Find the key semantic elements we care about.
     const posElem = s0.find(e => e.usage === DECLUSAGE_POSITION_FFP || e.usage === DECLUSAGE_POSITIONT_FFP) ?? null;
@@ -3992,6 +4300,7 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
         return {
             wgsl: buildShader(D3DFVF_XYZ),
             attributes: layout.attributes,
+            attributeStreams: [0],
             arrayStride: layout.arrayStride,
             hasTexture: false,
         };
@@ -4068,5 +4377,5 @@ function buildShaderFromDecl(elements: RawVertexElement[], alphaTest: AlphaTest 
         alphaTest,
     });
 
-    return { wgsl, attributes, arrayStride, hasTexture: hasTex };
+    return { wgsl, attributes, attributeStreams: [posElem, hasNormal ? normElem : null, colElem, specElem, texElem].filter(e => e !== null).map(e => e!.stream), arrayStride, hasTexture: hasTex };
 }

@@ -900,8 +900,9 @@ export const dbg = {
     },
     /** Correlate the hot JIT blocks to guest addr + module:rva (delegates to the
      *  diagnostics global). Reveals exactly which compiled block is spinning. */
-    hotJit(durationMs = 2000, intervalMs = 5, top = 20): void {
-        (globalThis as any).dumpHotJitBlocks?.(durationMs, intervalMs, top);
+    async hotJit(durationMs = 2000, intervalMs = 5, top = 20): Promise<unknown> {
+        const rows = await (globalThis as any).dumpHotJitBlocks?.(durationMs, intervalMs, top);
+        return rows ? { rows, topEips: (rows.topEips ?? []).slice(0, Math.min(top, 256)) } : null;
     },
     /** Emit hot-blocks INTO the active trace as a UserTiming mark (Level-3 self-symbolizing trace). */
     hotMark(durationMs = 3000, intervalMs = 5): void {
@@ -1386,6 +1387,12 @@ export const dbg = {
                 for (const [k, v] of Object.entries(sub.backend)) {
                     backendExtra[k] = (backendExtra[k] ?? 0) + v;
                 }
+                if (sub.geometryStaging) {
+                    for (const [k, v] of Object.entries(sub.geometryStaging)) {
+                        const key = `geometryStaging_${k}`;
+                        backendExtra[key] = (backendExtra[key] ?? 0) + v;
+                    }
+                }
             }
             for (const [k, v] of Object.entries(backendExtra)) {
                 snap.backend[k] = (snap.backend[k] ?? 0) + v;
@@ -1414,7 +1421,7 @@ export const dbg = {
         try {
             let devIdx = 0;
             for (const dev of devices.values()) {
-                const dump = (dev as { dumpShaders?: () => unknown }).dumpShaders?.();
+                const dump = (dev as { dumpShaders?: (full?: boolean) => unknown }).dumpShaders?.(full);
                 if (!dump) continue;
                 const d = dump as {
                     vs: Array<Record<string, unknown>>;
@@ -1754,7 +1761,7 @@ export const dbg = {
      *  a buffer the game thinks is playing with a frozen SAB cursor → notifications
      *  never fire; or zero PostThreadMessage(0x400) → audio streaming thread never
      *  serviced. Logs JSON. */
-    audio(resetStats = 0): void {
+    audio(resetStats = 0): unknown {
         try {
             const sys = System.getInstance();
             const ds = sys.process?.getModule?.('dsound') as any;
@@ -1782,6 +1789,7 @@ export const dbg = {
                 statsReset: !!resetStats,
             };
             console.log(`[dbg][audio][JSON] ${JSON.stringify(out)}`);
+            return out;
         } catch (e) { console.warn('[dbg] audio err', e); }
     },
     /** Toggle sole-runnable Sleep virtual-time credit (NFSU audio pump cadence fix).

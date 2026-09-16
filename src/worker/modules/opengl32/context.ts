@@ -41,6 +41,11 @@ export interface GLClearCommand {
     r: number; g: number; b: number; a: number;
     depth: number;
     stencil: number;
+    depthMask: boolean;
+    stencilWriteMask: number;
+    colorMaskR: boolean; colorMaskG: boolean; colorMaskB: boolean; colorMaskA: boolean;
+    scissorEnabled: boolean;
+    scissorX: number; scissorY: number; scissorW: number; scissorH: number;
 }
 
 export interface GLDrawCommand {

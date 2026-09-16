@@ -28,6 +28,8 @@ import { videoEngine } from "../../video/video-engine";
 import { libHleManager } from "./hle-lib/lib-hle-manager";
 import { hookRegistry } from "./hooks";
 import { resetSehDispatchState } from "./seh-dispatch";
+import { resetNativeQsort } from "../modules/crt-qsort";
+import { resetNativeCBsearch } from "../modules/crt-cbsearch";
 import { namedObjects } from "../modules/kernel32/named-objects";
 
 /**
@@ -618,6 +620,12 @@ export class System {
         if (this.process) {
             await this.process.reset();
         }
+
+        // Native CRT routines share executable allocations across DLL aliases.
+        // Invalidate them once after memory reset, before any module republishes
+        // its exports; otherwise the first module can publish an old address.
+        resetNativeQsort();
+        resetNativeCBsearch();
 
         // Recreate vtables after memory reset (memory at 0x03000000+ gets zeroed)
         // Modules that use vtables need to recreate them after process.reset()

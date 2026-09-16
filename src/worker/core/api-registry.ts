@@ -291,6 +291,14 @@ export class APIRegistry {
         return undefined;
     }
 
+    /** Ordinals belong to one DLL; never resolve them through another module. */
+    public getExportNameByOrdinal(dllName: string, ordinal: number): string | undefined {
+        const dll = dllName.toLowerCase().replace(/\.dll$/, "");
+        const functions = this.modules.get(dll)?.functions;
+        return functions?.find(f => f.ordinal === ordinal)?.name
+            ?? functions?.find(f => f.name.toLowerCase() === `ord_${ordinal}`)?.name;
+    }
+
     /**
      * Returns argument count for a function by ordinal
      */

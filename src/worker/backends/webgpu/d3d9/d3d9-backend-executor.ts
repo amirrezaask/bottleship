@@ -5,6 +5,7 @@
  * and enable potential backend switching in the future.
  */
 
+import { GeometryUploadBatch } from "./geometry-upload-batch";
 import { WebGPUBackend } from "../webgpu-backend";
 import { RenderFrame, RenderCommandType, ProgrammableDrawState } from "../render-frame";
 import { frameProfiler } from "../../../core/frame-profiler";
@@ -34,7 +35,9 @@ const PROG_CACHE_N = 64;          // material-keyed programmable bind-group cach
 const PROG_CONST_CACHE_N = 64;    // frame-local per-draw constant dynamic-offset cache slots
 
 /** A growable per-frame uniform ring written at 256-aligned offsets. */
-class UniformArena {
+export class UniformArena {
+    static readonly MAX_BYTES = 16 * 1024 * 1024;
+    private staging = new Float32Array(0);
     buffer: GPUBuffer | null = null;
     private capacity = 0;
     private cursor = 0;
@@ -44,9 +47,11 @@ class UniformArena {
     /** Ensure capacity (recreate if needed) and reset the write cursor. */
     begin(needed: number): void {
         const want = Math.max(needed, 256);
+        if (want > UniformArena.MAX_BYTES) throw new Error("Uniform arena capacity exceeded");
         if (!this.buffer || this.capacity < want) {
             this.buffer?.destroy();
-            this.capacity = alignUp(want * 2, UNIFORM_ALIGN);
+            this.capacity = Math.min(UniformArena.MAX_BYTES, alignUp(want * 2, UNIFORM_ALIGN));
+            this.staging = new Float32Array(this.capacity / 4);
             this.buffer = this.device.createBuffer({
                 label: this.label,
                 size: this.capacity,
@@ -58,16 +63,20 @@ class UniformArena {
 
     /** Bump-write the first `floatLen` floats of `data` (zero-alloc), returning the
      *  256-aligned byte offset used as the per-draw dynamic offset. */
-    write(queue: GPUQueue, data: Float32Array, floatLen: number): number {
+    write(_queue: GPUQueue, data: Float32Array, floatLen: number): number {
         const size = Math.max(16, floatLen * 4);
         const offset = this.cursor;
-        if (floatLen > 0) {
-            // Typed-array overload: dataOffset and size are in ELEMENTS, not bytes.
-            queue.writeBuffer(this.buffer!, offset, data, 0, floatLen);
-        }
+        if (offset + size > this.capacity) throw new Error("Uniform arena write exceeded capacity");
+        if (floatLen > 0) this.staging.set(data.subarray(0, floatLen), offset / 4);
         this.cursor = alignUp(offset + size, UNIFORM_ALIGN);
         return offset;
     }
+
+    flush(queue: GPUQueue): void {
+        if (this.cursor) queue.writeBuffer(this.buffer!, 0, this.staging, 0, this.cursor / 4);
+    }
+
+    dispose(): void { this.buffer?.destroy(); this.buffer = null; this.staging = new Float32Array(0); this.capacity = 0; this.cursor = 0; }
 }
 
 export interface UniformData {
@@ -92,6 +101,7 @@ export class D3D9BackendExecutor {
     // Optimization caches
     private currentPipelineId: number | null = null;
     private bindGroupCache: Map<string, { bindGroup: GPUBindGroup; textureView: GPUTextureView | null }> = new Map();
+    private geometryUploads: GeometryUploadBatch | null = null;
     private uniformBuffer: GPUBuffer | null = null;
     private uniformBufferSize = 0;
     private uniformData: Float32Array = new Float32Array(20);
@@ -231,14 +241,22 @@ export class D3D9BackendExecutor {
     /**
      * Get performance metrics
      */
-    getMetrics(): typeof this.metrics {
-        return { ...this.metrics };
+    getMetrics(): typeof this.metrics & Partial<ReturnType<GeometryUploadBatch["getStats"]>> {
+        return { ...this.metrics, ...this.geometryUploads?.getStats() };
     }
 
     /**
      * Reset performance metrics
      */
+    disposeUploadStaging(): void {
+        this.geometryUploads?.dispose(); this.geometryUploads = null;
+        this.vsArena?.dispose(); this.vsArena = null;
+        this.psArena?.dispose(); this.psArena = null;
+        this.progCacheLen = 0;
+    }
+
     resetMetrics(): void {
+        this.geometryUploads?.resetStats();
         this.metrics.pipelineSets = 0;
         this.metrics.bindGroupSets = 0;
         this.metrics.bindGroupSetSkips = 0;
@@ -375,9 +393,11 @@ export class D3D9BackendExecutor {
         this.resetRenderPassBindCache();
 
         try {
-            // Upload queued data
-            for (let i = 0; i < frame.uploadBuffers.length; i++) {
-                queue.writeBuffer(frame.uploadBuffers[i], 0, frame.uploadData[i] as any);
+            // Queue the copies before drawing; staging reuse is ordered on this queue.
+            if (frame.uploadBuffers.length) {
+                this.geometryUploads ??= new GeometryUploadBatch(device);
+                this.geometryUploads.upload(queue, frame.uploadBuffers, frame.uploadData,
+                    frame.uploadOffsets, frame.uploadSources, frame.uploadCopySizes);
             }
 
             // Pre-size the programmable per-draw uniform arenas for this frame.
@@ -460,7 +480,8 @@ export class D3D9BackendExecutor {
                                 const v = ds.viewport;
                                 renderPass.setViewport(v.x, v.y, v.width, v.height, v.minZ, v.maxZ);
                             }
-                            this.bindProgrammable(renderPass, queue, ds);
+                            if (ds.fixedFunction) this.bindFixedFunction(renderPass, queue, ds);
+                            else this.bindProgrammable(renderPass, queue, ds);
                         }
                         break;
                     }
@@ -502,6 +523,12 @@ export class D3D9BackendExecutor {
             }
 
             renderPass.end();
+            // All draws have distinct arena offsets. Publish them with one write per
+            // arena before submitting this pass; later batches cannot replace them.
+            if (frame.drawStateCount > 0) {
+                this.vsArena!.flush(queue);
+                this.psArena!.flush(queue);
+            }
 
             // Composite overlays on top of the main scene: video plane first, then GDI.
             // (Swap-chain path only — RT passes never composite overlays or present.)
@@ -675,6 +702,11 @@ export class D3D9BackendExecutor {
         return { width: canvas.width, height: canvas.height };
     }
 
+    getBackBufferTexture(): GPUTexture {
+        this.ensureOffscreenTarget();
+        return this.offscreenTexture!;
+    }
+
     private ensureOffscreenTarget(): void {
         const device = this.backend.getDevice()!;
         const format = this.backend.getFormat()!;
@@ -697,7 +729,7 @@ export class D3D9BackendExecutor {
         this.offscreenTexture = device.createTexture({
             size: { width: size.width, height: size.height, depthOrArrayLayers: 1 },
             format,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
         });
         this.offscreenView = this.offscreenTexture.createView();
 
@@ -838,6 +870,28 @@ export class D3D9BackendExecutor {
      * Build and bind the programmable bind group for one draw: per-draw VS/PS
      * constant blocks (written into the frame arenas) plus bound textures.
      */
+    private bindFixedFunction(
+        renderPass: GPURenderPassEncoder,
+        queue: GPUQueue,
+        ds: ProgrammableDrawState,
+    ): void {
+        const pipelineId = this.currentPipelineId!;
+        // Distinct arena offsets prevent later queue writes from changing earlier draws.
+        const offset = this.vsArena!.write(queue, ds.vsConst, ds.vsLen);
+        const entries: GPUBindGroupEntry[] = [{
+            binding: 0,
+            resource: { buffer: this.vsArena!.buffer!, offset, size: ds.vsLen * 4 },
+        }];
+        if (this.pipelineInfo[pipelineId]?.hasTexture) {
+            entries.push({ binding: 1, resource: ds.sampler ?? this.getSampler() });
+            entries.push({ binding: 2, resource: ds.textures[0] ?? this.getFallbackTextureView() });
+        }
+        const group = this.backend.getDevice()!.createBindGroup({
+            layout: this.pipelines[pipelineId].getBindGroupLayout(0), entries,
+        });
+        this.setBindGroup0(renderPass, group);
+    }
+
     private bindProgrammable(
         renderPass: GPURenderPassEncoder,
         queue: GPUQueue,

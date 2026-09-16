@@ -877,7 +877,9 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
         } else if (uMapType === 2) {
             // Virtual key to unshifted character
             if (uCode >= 0x30 && uCode <= 0x39) return uCode; // 0-9
-            if (uCode >= 0x41 && uCode <= 0x5A) return uCode + 32; // a-z (lowercase)
+            // MAPVK_VK_TO_CHAR always returns uppercase A-Z, unlike ToAscii.
+            // RenderWare compares these codes with uppercase action bindings.
+            if (uCode >= 0x41 && uCode <= 0x5A) return uCode;
             if (uCode === 0x20) return 0x20; // Space
             const oemChar: Record<number, number> = {
                 0xBA: 0x3B, 0xBB: 0x3D, 0xBC: 0x2C, 0xBD: 0x2D,

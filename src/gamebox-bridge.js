@@ -161,11 +161,13 @@ export function installGameBoxBridge(worker, closeAudio) {
         ).join('');
       const gameId = `app:gamebox-${await hash(saveNamespace)}`;
       const cacheKey = `gamebox-${await hash(url.pathname)}.gaf`;
+      const hostedGame = /^\/assets\/([a-z0-9][a-z0-9-]{0,63})\/[^/]+\/[^/]+\.gaf$/.exec(url.pathname);
       worker.postMessage({
         type: 'gamebox_configure',
         gameId,
         cacheKey,
         lowestGraphics: lowestGraphics === true,
+        ...(hostedGame ? { sharedBlobBase: `/shared/games/${hostedGame[1]}/blobs/` } : {}),
         ...(jitConfigOverrides === undefined ? {} : { jitConfigOverrides }),
         ...(preparedTrustStore === undefined ? {} : { preparedTrustStore }),
       });

@@ -109,11 +109,13 @@ describe('GameBox bridge profile RPC', () => {
     };
 
     await (globalThis as any).window.GameBoxBottleShip.start({
-      gameUrl: '/assets/fixture.wgb',
+      gameUrl: '/assets/fixture/v1/game.gaf',
       saveNamespace: 'fixture',
       aotUrl: '/assets/fixture/aot.json',
     });
     expect(order).toEqual(['loadApp', 'aot']);
+    expect(worker.requests.find(request => request.type === 'gamebox_configure'))
+      .toMatchObject({sharedBlobBase: '/shared/games/fixture/blobs/'});
   });
 
   test('rejects immediately when the worker fails during a request', async () => {

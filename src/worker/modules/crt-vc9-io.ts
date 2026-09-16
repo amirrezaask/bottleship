@@ -17,6 +17,7 @@ export interface Vc9IoHost {
     fseek(filePtr: number, offset: number, origin: number): number;
     ftell(filePtr: number): number;
     filelength(fd: number): number;
+    fileModifiedTime?(fd: number): number;
     fileStreams: Map<number, { fd: number; handle: VfsFileHandle; ungetChar: number }>;
     malloc(size: number): number;
     writeCString(ptr: number, value: string): void;
@@ -35,7 +36,10 @@ function parseFilespec(filespec: string): { dir: string; pattern: string } {
     const normalized = filespec.replace(/\//g, "\\");
     const slash = normalized.lastIndexOf("\\");
     if (slash < 0) return { dir: ".", pattern: normalized };
-    return { dir: normalized.slice(0, slash) || ".", pattern: normalized.slice(slash + 1) };
+    const dir = slash === 2 && normalized[1] === ":"
+        ? normalized.slice(0, 3)
+        : normalized.slice(0, slash) || ".";
+    return { dir, pattern: normalized.slice(slash + 1) };
 }
 
 function matchWildcard(name: string, pattern: string): boolean {
@@ -76,11 +80,13 @@ function fillStat64(structPtr: number, size: number, host: Vc9IoHost): void {
     Mem.writeUint32(structPtr + 36, 0);
 }
 
-/** struct _stat — st_mode at +4, st_size at +20 (32-bit MSVCRT). */
-function fillStat32(structPtr: number, size: number, host: Vc9IoHost): void {
-    host.memset(structPtr, 0, 48);
-    Mem.writeUint32(structPtr + 4, 0x8000 | 0x0100);
+/** VC6 struct _stat: 36 bytes, 32-bit times; st_mode is a WORD at +6. */
+function fillStat32(structPtr: number, size: number, host: Vc9IoHost, modifiedTime: number): void {
+    host.memset(structPtr, 0, 36);
+    Mem.writeUint16(structPtr + 6, 0x8000 | 0x0100);
+    Mem.writeUint16(structPtr + 8, 1);
     Mem.writeUint32(structPtr + 20, size >>> 0);
+    for (const offset of [24, 28, 32]) Mem.writeUint32(structPtr + offset, modifiedTime);
 }
 
 /** struct _finddata_t — size at +16, name[260] at +20. */
@@ -152,7 +158,7 @@ export function registerVc9IoExports(exports: Record<string, ThunkImplementation
             host.setErrno(9);
             return -1;
         }
-        fillStat32(structPtr, len, host);
+        fillStat32(structPtr, len, host, host.fileModifiedTime?.(fd) ?? 1577836800);
         return 0;
     };
 

@@ -298,11 +298,12 @@ function buildGetProcPointerCacheKey(hModule: number, lpProcName: number): strin
  * Resolve a thunked DLL export by name, creating an on-demand stub when needed.
  * Used by GetProcAddress and boot-time warmup for dynamic-only exports.
  */
-function resolveThunkedExportAddress(
+export function resolveThunkedExportAddress(
     dispatcher: any,
     dllName: string,
     exportName: string,
     verbose = false,
+    moduleScoped = false,
 ): number {
     const system = System.getInstance();
     const apiRegistry = APIRegistry.getInstance();
@@ -314,12 +315,15 @@ function resolveThunkedExportAddress(
 
     const byQualifiedName = tg.getExportAddress(`${dllName}:${exportName}`);
     if (byQualifiedName !== undefined) return byQualifiedName >>> 0;
-    const byShortName = tg.getExportAddress(exportName);
-    if (byShortName !== undefined) return byShortName >>> 0;
+    if (!moduleScoped) {
+        const byShortName = tg.getExportAddress(exportName);
+        if (byShortName !== undefined) return byShortName >>> 0;
+    }
 
     const inApi = apiRegistry.hasExportedFunction(dllName, exportName);
     const pendingKey = `${dllName}:${exportName}`.toLowerCase();
     const hasPending = !!dispatcher?.pendingRegistrations?.has(pendingKey);
+    if (moduleScoped && !inApi && !hasPending) return 0;
     if (!apiRegistry.hasModule(dllName) && !hasPending) return 0;
 
     const argCount = apiRegistry.getArgCount(dllName, exportName);
@@ -1296,7 +1300,9 @@ function initModuleFunctions(): void {
         if (system.process?.dispatcher) {
             const dispatcher = system.process.dispatcher as any;
 
-            if (!isMainExeDebugCrtProbe) {
+            // A global ord_N alias can name a different DLL and stack signature.
+            // GTA SA's dsound ordinal 11 must not call ws2_32's ordinal 11.
+            if (!isMainExeDebugCrtProbe && !isOrdinal) {
                 const direct = dispatcher.thunkGenerator?.getExportAddress(procName);
                 if (direct !== undefined) {
                     address = direct >>> 0;
@@ -1314,7 +1320,10 @@ function initModuleFunctions(): void {
                     if (dataAddr !== undefined) {
                         address = dataAddr >>> 0;
                     } else {
-                        address = resolveThunkedExportAddress(dispatcher, dllName, procName, verbose);
+                        const exportName = isOrdinal
+                            ? apiRegistry.getExportNameByOrdinal(dllName, ordinal) ?? procName
+                            : procName;
+                        address = resolveThunkedExportAddress(dispatcher, dllName, exportName, verbose, isOrdinal);
                     }
                 }
 

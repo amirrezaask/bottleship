@@ -9,6 +9,8 @@ import { GameboxCatalog, type GameboxMarker, type GameboxTrustStore } from "./ga
 export interface GameboxLoadOptions {
     /** Bounded local public-key map for authenticating signed prepared catalogs. */
     trustStore?: GameboxTrustStore;
+    /** Same-origin game-scoped transport; signed catalog blob identities stay unchanged. */
+    sharedBlobBase?: string;
 }
 
 function configuredTrustStore(): GameboxTrustStore | undefined {
@@ -266,7 +268,8 @@ export class WgbLoader {
         });
         try {
             await archive.init();
-            return await this.loadFromArchive(archive, onStage, options?.trustStore ?? configuredTrustStore());
+            return await this.loadFromArchive(archive, onStage, options?.trustStore ?? configuredTrustStore(),
+                options?.sharedBlobBase ?? (globalThis as { __GAMEBOX_SHARED_BLOB_BASE?: string }).__GAMEBOX_SHARED_BLOB_BASE);
         } catch (error) { archive.close(); throw error; }
     }
 
@@ -371,12 +374,12 @@ export class WgbLoader {
         return this.fromSource(new BlobSource(blob), undefined, options);
     }
 
-    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void, trustStore?: GameboxTrustStore): Promise<WgbBundle> {
+    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void, trustStore?: GameboxTrustStore, sharedBlobBase?: string): Promise<WgbBundle> {
         const manifest = await readManifest(archive);
 
         onStage?.(`Loading ${manifest.entrypoint.split(/[\\/]/).pop() ?? "game"}`);
         const gamebox = manifest.gamebox === undefined ? undefined :
-            await GameboxCatalog.open(archive, manifest.gamebox, manifest.rom ?? "assets", trustStore);
+            await GameboxCatalog.open(archive, manifest.gamebox, manifest.rom ?? "assets", trustStore, sharedBlobBase);
         if (gamebox && manifest.entrypoint !== `assets/${gamebox.entrypoint}`) throw new Error("GameBox entrypoint binding mismatch");
         const entrypointBytes = gamebox ? undefined : await readEntrypointBytes(archive, manifest.entrypoint);
 

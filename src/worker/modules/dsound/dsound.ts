@@ -69,7 +69,7 @@ import {
 import { ensureAudioStatsSab } from "../audio-stats-sab";
 
 const DS_OK = 0;
-const DSERR_INVALIDPARAM = 0x88780007;
+const DSERR_INVALIDPARAM = 0x80070057; // E_INVALIDARG
 const DSBPLAY_LOOPING = 0x00000001;
 const DSBSTATUS_PLAYING = 0x00000001;
 const DSBSTATUS_BUFFERLOST = 0x00000002;
@@ -88,6 +88,9 @@ const DSBCAPS_CTRLFREQUENCY = 0x00000020;
 const DSBCAPS_CTRLPAN = 0x00000040;
 const DSBCAPS_CTRLVOLUME = 0x00000080;
 const DSBCAPS_CTRLPOSITIONNOTIFY = 0x00000100;
+const DSBCAPS_CTRLFX = 0x00000200;
+const DSFXR_UNKNOWN = 5;
+const MAX_EFFECT_DESCRIPTORS = 64;
 const DSERR_UNSUPPORTED = 0x80004001;
 const DSERR_INVALIDCALL = 0x88780032;
 const DSERR_CONTROLUNAVAIL = 0x8878001e;
@@ -2097,9 +2100,43 @@ export class DSound implements IModule {
             buffer.bufferLost = false;
             return DS_OK;
         };
-        this.exports["idirectsoundbuffer8_setfx"] = () => DS_OK;
-        this.exports["idirectsoundbuffer8_acquireresources"] = () => DS_OK;
-        this.exports["idirectsoundbuffer8_getobjectinpath"] = () => DS_OK;
+        this.exports["idirectsoundbuffer8_setfx"] = (_ctx, mem, args) => {
+            const buffer = this.getBuffer(args[0]);
+            const count = args[1] >>> 0, descriptors = args[2] >>> 0, results = args[3] >>> 0;
+            if (!buffer) return DSERR_INVALIDPARAM;
+            if (!(buffer.flags & DSBCAPS_CTRLFX)) return DSERR_CONTROLUNAVAIL;
+            if (buffer.isPlaying || buffer.lockOffset !== undefined) return DSERR_INVALIDCALL;
+            if (!count) return descriptors || results ? DSERR_INVALIDPARAM : DS_OK;
+            if (count > MAX_EFFECT_DESCRIPTORS || !descriptors || descriptors > mem.length - count * 32
+                || (results && results > mem.length - count * 4)) return DSERR_INVALIDPARAM;
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            for (let i = 0; i < count; i++) {
+                const at = descriptors + i * 32;
+                if (view.getUint32(at, true) !== 32 || (view.getUint32(at + 4, true) & ~3)
+                    || view.getUint32(at + 24, true) || view.getUint32(at + 28, true)) return DSERR_INVALIDPARAM;
+            }
+            // No DMO effects are implemented. Success promises retrievable COM
+            // objects; GTA's vehicle EQ path immediately dereferences them.
+            // Report unsupported effects so the game's native fallback can run.
+            if (results) for (let i = 0; i < count; i++) view.setUint32(results + i * 4, DSFXR_UNKNOWN, true);
+            this.recordLife("fx-unavailable", buffer.id, undefined, `count=${count}`);
+            return E_NOINTERFACE;
+        };
+        this.exports["idirectsoundbuffer8_acquireresources"] = (_ctx, _mem, args) => {
+            if (!this.getBuffer(args[0]) || args[2] || args[3] || (args[1] & ~3)) return DSERR_INVALIDPARAM;
+            return DS_OK; // The supported effect chain is empty.
+        };
+        this.exports["idirectsoundbuffer8_getobjectinpath"] = (_ctx, mem, args) => {
+            const output = args[4] >>> 0;
+            if (!output || output > mem.length - 4) return DSERR_INVALIDPARAM;
+            new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(output, 0, true);
+            const buffer = this.getBuffer(args[0]);
+            const objectGuid = args[1] >>> 0, interfaceGuid = args[3] >>> 0;
+            if (!buffer || !objectGuid || objectGuid > mem.length - 16
+                || !interfaceGuid || interfaceGuid > mem.length - 16) return DSERR_INVALIDPARAM;
+            if (!(buffer.flags & DSBCAPS_CTRLFX)) return DSERR_CONTROLUNAVAIL;
+            return DSERR_OBJECTNOTFOUND;
+        };
 
         this.exports["idirectsoundcapture_createcapturebuffer"] = (ctx, mem, args) => {
             const descPtr = args[1] >>> 0;

@@ -72,7 +72,7 @@ export class ModuleRegistry {
     private nextDllBase = DLL_BASE_START;
 
     private normalizeModuleLookupKey(name: string): string {
-        return name.toLowerCase().replace(/\.(dll|exe)$/i, '');
+        return name.toLowerCase().replace(/\//g, '\\').replace(/\.(dll|exe)$/i, '');
     }
 
     /**
@@ -112,7 +112,7 @@ export class ModuleRegistry {
      * Get module by name (case-insensitive, handles .dll extension)
      */
     getByName(name: string): LoadedPEModule | undefined {
-        const nameLower = name.toLowerCase();
+        const nameLower = name.toLowerCase().replace(/\//g, '\\');
         // A ".dll" request must not resolve to the main EXE. The EXE is keyed by its
         // bare basename (e.g. "hl" from hl.exe), which collides with a game DLL of the
         // same basename ("hl.dll" → "hl"). Without this guard, LoadLibrary("…\hl.dll")
@@ -130,6 +130,15 @@ export class ModuleRegistry {
         if (lastSlash >= 0) {
             const basename = this.normalizeModuleLookupKey(nameLower.substring(lastSlash + 1));
             return acceptable(this.modules.get(basename));
+        }
+        // The reverse order matters too: LoadLibrary(fullPath) can precede an
+        // import of its basename. Reusing that image preserves DLL global state
+        // (Serious Sam's input and player logic share Entities.dll this way).
+        const basename = this.normalizeModuleLookupKey(nameLower);
+        for (const [key, module] of this.modules) {
+            if (key.substring(key.lastIndexOf('\\') + 1) === basename && acceptable(module)) {
+                return module;
+            }
         }
         return undefined;
     }

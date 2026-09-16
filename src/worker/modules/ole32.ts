@@ -772,13 +772,16 @@ export class Ole32 implements IModule {
             const objAddr = this.createBlowfishObject(mem, view, ppv);
             if (objAddr) return S_OK;
             return REGDB_E_CLASSNOTREG;
-        } else if (clsidNormalized === "47d4d946-62e8-11cf-93bc-444553540000") {
+        } else if (clsidNormalized === "47d4d946-62e8-11cf-93bc-444553540000"
+            || clsidNormalized === "3901cc3f-84b5-4fa4-ba35-aa8172b8a09b") {
             const dsoundModule = this.process.modules.get("dsound") as { exports?: { directsoundcreate8?: Function; directsoundcreate?: Function } } | undefined;
-            // Preserve the interface generation: IID_IDirectSound8 → DS8 (enforces the DX8
-            // 3D-buffer rules), any other IID (IID_IDirectSound / IUnknown) → legacy, which
-            // skips those rules. Getting this wrong makes legacy titles (Max Payne) hit the
-            // DS8-only CTRL3D+CTRLPAN rejection and crash — see dsound CreateSoundBuffer.
-            const wantsDs8 = iidNormalized === "c50a7e93-f395-4834-9ef6-7fa99de50966";
+            // Preserve the interface generation: CLSID_DirectSound8 or IID_IDirectSound8 →
+            // DS8 (enforces the DX8 3D-buffer rules), otherwise use legacy DirectSound.
+            // EAX.dll creates CLSID_DirectSound8 and wraps the result for GTA: San Andreas.
+            // Getting this wrong makes legacy titles (Max Payne) hit the DS8-only
+            // CTRL3D+CTRLPAN rejection and crash — see dsound CreateSoundBuffer.
+            const wantsDs8 = clsidNormalized === "3901cc3f-84b5-4fa4-ba35-aa8172b8a09b"
+                || iidNormalized === "c50a7e93-f395-4834-9ef6-7fa99de50966";
             const creator = wantsDs8 ? dsoundModule?.exports?.directsoundcreate8 : dsoundModule?.exports?.directsoundcreate;
             if (creator) {
                 Logger.log(LogCategory.COM, `CoCreateInstance: DirectSound CLSID via DirectSoundCreate${wantsDs8 ? "8" : ""} (IID=${iidStr})`);

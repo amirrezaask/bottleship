@@ -80,6 +80,8 @@ export class FilterGraphObject extends BaseComObject {
     videoOwnerHwnd: number = 0;
     /** Set once EC_COMPLETE has been posted; reset by RenderFile for graph reuse. */
     completionNotified = false;
+    /** DirectShow's GetEvent removes EC_COMPLETE from the graph's event queue. */
+    completionEventConsumed = false;
 
     // Playback timer — TimerWheel id, 0 = none scheduled (TimerWheel ids start at 1).
     private playbackTimer: number = 0;
@@ -238,6 +240,7 @@ export class FilterGraphObject extends BaseComObject {
         this.audioPrerollTime = 0;
         this.seekTimeFormat = TIME_FORMAT_MEDIA_TIME;
         this.completionNotified = false;
+        this.completionEventConsumed = false;
         this.videoOwnerHwnd = 0;
         this.state = FilterState.STOPPED;
     }

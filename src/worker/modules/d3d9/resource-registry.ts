@@ -48,8 +48,13 @@ export const textureMeta: Map<number, TextureMeta> = new Map();
 export const surfaceMeta: Map<number, SurfaceMeta> = new Map();
 export const vertexBufferMeta: Map<number, BufferMeta> = new Map();
 export const indexBufferMeta: Map<number, BufferMeta> = new Map();
+/** Explicit COM reference counts for resource objects with owned guest/GPU storage. */
+export const resourceRefCounts: Map<number, number> = new Map();
 /** Per-device bound depth/stencil surface COM pointer (0 = none). */
 export const deviceBoundDepthStencil: Map<number, number> = new Map();
+/** One device-owned implicit swap-chain surface and at most four RT bindings. */
+export const deviceBackBuffers: Map<number, number> = new Map();
+export const deviceRenderTargets: Map<number, number[]> = new Map();
 
 /** 2D texture COM ptr -> mip level -> stable IDirect3DSurface9 COM ptr. */
 export const textureLevelSurfaces: Map<number, Map<number, number>> = new Map();
@@ -177,7 +182,10 @@ export function clearResourceRegistry(): void {
     surfaceMeta.clear();
     vertexBufferMeta.clear();
     indexBufferMeta.clear();
+    resourceRefCounts.clear();
     deviceBoundDepthStencil.clear();
+    deviceBackBuffers.clear();
+    deviceRenderTargets.clear();
     textureLevelSurfaces.clear();
     cubeFaceSurfaces.clear();
 }

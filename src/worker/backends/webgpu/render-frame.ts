@@ -21,6 +21,8 @@ export type RenderClear = {
  * bound textures, rather than a single frame-wide snapshot.
  */
 export interface ProgrammableDrawState {
+    /** Fixed-function draws store their complete uniform block in vsConst. */
+    fixedFunction?: boolean;
     /** Reused VS constant scratch (grows on demand); only the first `vsLen` floats are valid. */
     vsConst: Float32Array;
     /** Uint32 view over vsConst for bit-exact copy/hash without per-draw view allocation. */
@@ -58,8 +60,12 @@ export class RenderFrame {
     commandD: number[] = [];
 
     bufferRefs: GPUBuffer[] = [];
+    readonly referencedBuffers = new Set<GPUBuffer>();
     uploadBuffers: GPUBuffer[] = [];
     uploadData: Uint8Array[] = [];
+    uploadOffsets: number[] = [];
+    uploadSources: (GPUBuffer | null)[] = [];
+    uploadCopySizes: number[] = [];
     temporaryBuffers: GPUBuffer[] = [];
     /** Buffers acquired from a reuse pool (DrawPrimitiveUP vertex data). Unlike
      *  temporaryBuffers, these are NOT destroyed at frame end — the owner returns
@@ -79,13 +85,19 @@ export class RenderFrame {
         this.commandC.length = 0;
         this.commandD.length = 0;
         this.bufferRefs.length = 0;
+        this.referencedBuffers.clear();
         this.uploadBuffers.length = 0;
         this.uploadData.length = 0;
+        this.uploadOffsets.length = 0;
+        this.uploadSources.length = 0;
+        this.uploadCopySizes.length = 0;
         this.temporaryBuffers.length = 0;
         this.pooledBuffers.length = 0;
-        // Rewind the draw-state pool without dropping the slots (keeps their
-        // constant scratch + texture arrays for reuse). Stale texture refs in
-        // slots beyond drawStateCount are overwritten on reuse by nextDrawState's filler.
+        // Keep scratch storage, but don't retain texture resources from old scenes.
+        for (let i = 0; i < this.drawStateCount; i++) {
+            this.drawStates[i].textures.fill(null);
+            this.drawStates[i].sampler = null;
+        }
         this.drawStateCount = 0;
     }
 
@@ -107,6 +119,7 @@ export class RenderFrame {
     pushSetVertexBuffer(buffer: GPUBuffer, offset: number, size: number, slot = 0): void {
         const index = this.bufferRefs.length;
         this.bufferRefs.push(buffer);
+        this.referencedBuffers.add(buffer);
         this.commandTypes.push(RenderCommandType.SetVertexBuffer);
         this.commandA.push(index);
         this.commandB.push(offset);
@@ -125,6 +138,7 @@ export class RenderFrame {
     pushSetIndexBuffer(buffer: GPUBuffer, format: "uint16" | "uint32"): void {
         const index = this.bufferRefs.length;
         this.bufferRefs.push(buffer);
+        this.referencedBuffers.add(buffer);
         this.commandTypes.push(RenderCommandType.SetIndexBuffer);
         this.commandA.push(index);
         this.commandB.push(format === "uint16" ? 16 : 32);
@@ -178,6 +192,8 @@ export class RenderFrame {
         }
         s.vsLen = vsLen;
         s.psLen = psLen;
+        s.fixedFunction = false;
+        s.viewport = undefined;
         s.vsVersion = undefined;
         s.psVersion = undefined;
         this.drawStateCount++;
@@ -199,11 +215,18 @@ export class RenderFrame {
         this.commandD.push(0);
     }
 
-    queueUpload(buffer: GPUBuffer, data: Uint8Array): void {
+    queueUpload(buffer: GPUBuffer, data: Uint8Array, offset = 0, source: GPUBuffer | null = null, copySize = 0): void {
+        this.uploadOffsets.push(offset);
+        this.uploadSources.push(source);
+        this.uploadCopySizes.push(copySize);
         this.uploadBuffers.push(buffer);
         // IMPORTANT: Make a copy! The source data may be a view into a shared
         // conversion buffer that gets overwritten by subsequent DrawPrimitiveUP calls.
-        this.uploadData.push(new Uint8Array(data));
+        // A triangle of uint16 indices is six bytes. WebGPU requires four-byte
+        // upload sizes, so pad the snapshot, never the guest buffer or draw count.
+        const snapshot = new Uint8Array(Math.ceil(data.byteLength / 4) * 4);
+        snapshot.set(data);
+        this.uploadData.push(snapshot);
     }
 
     registerTemporaryBuffer(buffer: GPUBuffer): void {
@@ -242,5 +265,14 @@ export class RenderFramePool {
         this.nextIndex = (this.nextIndex + 1) % this.frames.length;
         frame.reset();
         return frame;
+    }
+
+    dispose(): void {
+        for (const frame of this.frames) {
+            frame.releaseTemporaryBuffers();
+            for (const buffer of frame.pooledBuffers) buffer.destroy();
+            frame.reset();
+            frame.drawStates.length = 0;
+        }
     }
 }

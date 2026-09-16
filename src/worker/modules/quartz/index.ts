@@ -713,10 +713,13 @@ export class Quartz implements IModule {
             if (!fg) return E_FAIL;
             // args[1] = lEventCode, args[2] = lParam1, args[3] = lParam2, args[4] = msTimeout
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-            if (fg.state === FilterState.COMPLETED) {
+            if (fg.state === FilterState.COMPLETED && !fg.completionEventConsumed) {
                 if (args[1]) view.setUint32(args[1], EC_COMPLETE, true);
                 if (args[2]) view.setUint32(args[2], 0, true);
                 if (args[3]) view.setUint32(args[3], 0, true);
+                // DirectShow GetEvent dequeues the event. Returning EC_COMPLETE forever
+                // makes callers that drain the queue spin indefinitely (GTA: San Andreas).
+                fg.completionEventConsumed = true;
                 return S_OK;
             }
             return E_FAIL; // No event available

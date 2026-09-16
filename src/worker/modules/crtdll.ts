@@ -19,7 +19,7 @@ import { EmulatorConfig } from "../core/emulator-config-manager";
 import { asBufferSource } from "../../dom-buffer";
 import { hypercallDataManager } from "../core/cpu/hypercall-data";
 import { LARGE_IO_TRACE_ENABLED, traceLargeRead } from "../core/diagnostics/large-io-trace";
-import { ensureNativeQsort, resetNativeQsort } from "./crt-qsort";
+import { ensureNativeQsort } from "./crt-qsort";
 
 const formatUnknownError = (err: unknown): string => {
     const forceString = (value: unknown): string => {
@@ -229,7 +229,6 @@ export class Crtdll implements IModule {
         this.localeAddr = 0;
         this.adjustFdivAddr = 0;
         this.qsortCodeAddr = 0;
-        resetNativeQsort();
 
         this.ensureRuntimeStorage();
         this.registerDataExports();

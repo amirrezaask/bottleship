@@ -25,7 +25,10 @@ export class VertexBufferStore {
     private lockedPtrs: Int32Array;    // -1 = not locked
     private lockedSizes: Uint32Array;
     private lockedOffsets: Uint32Array;
+    private lockedReadOnly: Uint8Array;
     private guestPtrs: Int32Array;     // HEAP backing for Lock/Unlock
+    private dirtyStarts: Uint32Array;
+    private dirtyEnds: Uint32Array;
     private dirtyFlags: Uint8Array;    // Boolean as byte
     private generations: Uint16Array;
 
@@ -41,8 +44,11 @@ export class VertexBufferStore {
         this.lockedPtrs = new Int32Array(initialCapacity).fill(-1);
         this.lockedSizes = new Uint32Array(initialCapacity);
         this.lockedOffsets = new Uint32Array(initialCapacity);
+        this.lockedReadOnly = new Uint8Array(initialCapacity);
         this.guestPtrs = new Int32Array(initialCapacity).fill(-1);
         this.dirtyFlags = new Uint8Array(initialCapacity);
+        this.dirtyStarts = new Uint32Array(initialCapacity);
+        this.dirtyEnds = new Uint32Array(initialCapacity);
         this.generations = new Uint16Array(initialCapacity);
     }
 
@@ -66,6 +72,8 @@ export class VertexBufferStore {
         this.lockedOffsets[index] = 0;
         this.guestPtrs[index] = guestPtr;
         this.dirtyFlags[index] = 1;
+        this.dirtyStarts[index] = 0;
+        this.dirtyEnds[index] = size;
 
         const gen = this.generations[index];
         const packed = (gen << 16) | index;
@@ -118,15 +126,23 @@ export class VertexBufferStore {
 
     // Setters
     setGpuBuffer(index: number, buffer: GPUBuffer): void { this.gpuBuffers[index] = buffer; }
-    setDirty(index: number, dirty: boolean): void { this.dirtyFlags[index] = dirty ? 1 : 0; }
+    setGuestPtr(index: number, guestPtr: number): void { this.guestPtrs[index] = guestPtr; }
+    getDirtyStart(index: number): number { return this.dirtyStarts[index]; }
+    getDirtyEnd(index: number): number { return this.dirtyEnds[index]; }
+    setDirty(index: number, dirty: boolean): void {
+        this.dirtyFlags[index] = dirty ? 1 : 0;
+        this.dirtyStarts[index] = dirty ? 0 : this.sizes[index];
+        this.dirtyEnds[index] = dirty ? this.sizes[index] : 0;
+    }
 
     // Lock operations — returns guest pointer for the locked region
-    lock(index: number, offset: number, size: number): number {
+    lock(index: number, offset: number, size: number, readOnly = false): number {
         const guestBase = this.guestPtrs[index];
         if (guestBase < 0) return -1;
         this.lockedPtrs[index] = guestBase + offset;
         this.lockedSizes[index] = size;
         this.lockedOffsets[index] = offset;
+        this.lockedReadOnly[index] = readOnly ? 1 : 0;
         return guestBase + offset;
     }
 
@@ -136,13 +152,16 @@ export class VertexBufferStore {
         const size = this.lockedSizes[index];
         const offset = this.lockedOffsets[index];
         const data = this.data[index];
-        if (data) {
-            data.set(memory.subarray(guestBase + offset, guestBase + offset + size), offset);
+        if (!this.lockedReadOnly[index]) {
+            if (data) data.set(memory.subarray(guestBase + offset, guestBase + offset + size), offset);
+            this.dirtyStarts[index] = Math.min(this.dirtyStarts[index], offset);
+            this.dirtyEnds[index] = Math.max(this.dirtyEnds[index], offset + size);
+            this.dirtyFlags[index] = 1;
         }
+        this.lockedReadOnly[index] = 0;
         this.lockedPtrs[index] = -1;
         this.lockedSizes[index] = 0;
         this.lockedOffsets[index] = 0;
-        this.dirtyFlags[index] = 1;
     }
 
     // Batch upload all dirty buffers
@@ -157,7 +176,7 @@ export class VertexBufferStore {
                     });
                 }
                 queue.writeBuffer(this.gpuBuffers[i]!, 0, this.data[i]!);
-                this.dirtyFlags[i] = 0;
+                this.setDirty(i, false);
                 uploaded++;
             }
         }
@@ -195,6 +214,10 @@ export class VertexBufferStore {
         newLockedOffsets.set(this.lockedOffsets);
         this.lockedOffsets = newLockedOffsets;
 
+        const newLockedReadOnly = new Uint8Array(newCapacity);
+        newLockedReadOnly.set(this.lockedReadOnly);
+        this.lockedReadOnly = newLockedReadOnly;
+
         const newGuestPtrs = new Int32Array(newCapacity).fill(-1);
         newGuestPtrs.set(this.guestPtrs);
         this.guestPtrs = newGuestPtrs;
@@ -202,6 +225,8 @@ export class VertexBufferStore {
         const newDirtyFlags = new Uint8Array(newCapacity);
         newDirtyFlags.set(this.dirtyFlags);
         this.dirtyFlags = newDirtyFlags;
+        const starts = new Uint32Array(newCapacity); starts.set(this.dirtyStarts); this.dirtyStarts = starts;
+        const ends = new Uint32Array(newCapacity); ends.set(this.dirtyEnds); this.dirtyEnds = ends;
 
         const newGenerations = new Uint16Array(newCapacity);
         newGenerations.set(this.generations);
@@ -261,7 +286,10 @@ export class IndexBufferStore {
     private lockedPtrs: Int32Array;
     private lockedSizes: Uint32Array;
     private lockedOffsets: Uint32Array;
+    private lockedReadOnly: Uint8Array;
     private guestPtrs: Int32Array;
+    private dirtyStarts: Uint32Array;
+    private dirtyEnds: Uint32Array;
     private dirtyFlags: Uint8Array;
     private generations: Uint16Array;
 
@@ -276,8 +304,11 @@ export class IndexBufferStore {
         this.lockedPtrs = new Int32Array(initialCapacity).fill(-1);
         this.lockedSizes = new Uint32Array(initialCapacity);
         this.lockedOffsets = new Uint32Array(initialCapacity);
+        this.lockedReadOnly = new Uint8Array(initialCapacity);
         this.guestPtrs = new Int32Array(initialCapacity).fill(-1);
         this.dirtyFlags = new Uint8Array(initialCapacity);
+        this.dirtyStarts = new Uint32Array(initialCapacity);
+        this.dirtyEnds = new Uint32Array(initialCapacity);
         this.generations = new Uint16Array(initialCapacity);
     }
 
@@ -301,6 +332,8 @@ export class IndexBufferStore {
         this.lockedOffsets[index] = 0;
         this.guestPtrs[index] = guestPtr;
         this.dirtyFlags[index] = 1;
+        this.dirtyStarts[index] = 0;
+        this.dirtyEnds[index] = size;
 
         const gen = this.generations[index];
         const packed = (gen << 16) | index;
@@ -350,14 +383,22 @@ export class IndexBufferStore {
     isDirty(index: number): boolean { return this.dirtyFlags[index] !== 0; }
 
     setGpuBuffer(index: number, buffer: GPUBuffer): void { this.gpuBuffers[index] = buffer; }
-    setDirty(index: number, dirty: boolean): void { this.dirtyFlags[index] = dirty ? 1 : 0; }
+    setGuestPtr(index: number, guestPtr: number): void { this.guestPtrs[index] = guestPtr; }
+    getDirtyStart(index: number): number { return this.dirtyStarts[index]; }
+    getDirtyEnd(index: number): number { return this.dirtyEnds[index]; }
+    setDirty(index: number, dirty: boolean): void {
+        this.dirtyFlags[index] = dirty ? 1 : 0;
+        this.dirtyStarts[index] = dirty ? 0 : this.sizes[index];
+        this.dirtyEnds[index] = dirty ? this.sizes[index] : 0;
+    }
 
-    lock(index: number, offset: number, size: number): number {
+    lock(index: number, offset: number, size: number, readOnly = false): number {
         const guestBase = this.guestPtrs[index];
         if (guestBase < 0) return -1;
         this.lockedPtrs[index] = guestBase + offset;
         this.lockedSizes[index] = size;
         this.lockedOffsets[index] = offset;
+        this.lockedReadOnly[index] = readOnly ? 1 : 0;
         return guestBase + offset;
     }
 
@@ -367,13 +408,16 @@ export class IndexBufferStore {
         const size = this.lockedSizes[index];
         const offset = this.lockedOffsets[index];
         const data = this.data[index];
-        if (data) {
-            data.set(memory.subarray(guestBase + offset, guestBase + offset + size), offset);
+        if (!this.lockedReadOnly[index]) {
+            if (data) data.set(memory.subarray(guestBase + offset, guestBase + offset + size), offset);
+            this.dirtyStarts[index] = Math.min(this.dirtyStarts[index], offset);
+            this.dirtyEnds[index] = Math.max(this.dirtyEnds[index], offset + size);
+            this.dirtyFlags[index] = 1;
         }
+        this.lockedReadOnly[index] = 0;
         this.lockedPtrs[index] = -1;
         this.lockedSizes[index] = 0;
         this.lockedOffsets[index] = 0;
-        this.dirtyFlags[index] = 1;
     }
 
     uploadDirty(device: GPUDevice, queue: GPUQueue): number {
@@ -387,7 +431,7 @@ export class IndexBufferStore {
                     });
                 }
                 queue.writeBuffer(this.gpuBuffers[i]!, 0, this.data[i]!);
-                this.dirtyFlags[i] = 0;
+                this.setDirty(i, false);
                 uploaded++;
             }
         }
@@ -425,6 +469,10 @@ export class IndexBufferStore {
         newLockedOffsets.set(this.lockedOffsets);
         this.lockedOffsets = newLockedOffsets;
 
+        const newLockedReadOnly = new Uint8Array(newCapacity);
+        newLockedReadOnly.set(this.lockedReadOnly);
+        this.lockedReadOnly = newLockedReadOnly;
+
         const newGuestPtrs = new Int32Array(newCapacity).fill(-1);
         newGuestPtrs.set(this.guestPtrs);
         this.guestPtrs = newGuestPtrs;
@@ -432,6 +480,8 @@ export class IndexBufferStore {
         const newDirtyFlags = new Uint8Array(newCapacity);
         newDirtyFlags.set(this.dirtyFlags);
         this.dirtyFlags = newDirtyFlags;
+        const starts = new Uint32Array(newCapacity); starts.set(this.dirtyStarts); this.dirtyStarts = starts;
+        const ends = new Uint32Array(newCapacity); ends.set(this.dirtyEnds); this.dirtyEnds = ends;
 
         const newGenerations = new Uint16Array(newCapacity);
         newGenerations.set(this.generations);
@@ -608,12 +658,14 @@ export class TextureStore {
     isDirty(index: number): boolean { return this.dirtyFlags[index] !== 0; }
     isLocked(index: number): boolean { return this.lockedPtrs[index] !== -1; }
     getLockedPtr(index: number): number { return this.lockedPtrs[index]; }
+    getGuestPtr(index: number): number { return this.guestPtrs[index]; }
 
     setGpuTexture(index: number, texture: GPUTexture, view: GPUTextureView): void {
         this.gpuTextures[index] = texture;
         this.views[index] = view;
     }
     setDirty(index: number, dirty: boolean): void { this.dirtyFlags[index] = dirty ? 1 : 0; }
+    setGuestPtr(index: number, guestPtr: number): void { this.guestPtrs[index] = guestPtr; }
     markRenderTarget(index: number): void { this.rtFlags[index] = 1; }
     isRenderTarget(index: number): boolean { return this.rtFlags[index] !== 0; }
     markCube(index: number): void { this.cubeFlags[index] = 1; }

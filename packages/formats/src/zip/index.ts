@@ -43,6 +43,8 @@ export interface ZipEntryPrefetchRange {
 
 export interface ZipEntry {
     name: string;
+    /** ZIP's DOS local timestamp, interpreted consistently as UTC seconds. */
+    modifiedTime?: number;
     compressedSize: number;
     uncompressedSize: number;
     compression: number;
@@ -455,6 +457,14 @@ export class ZipArchive {
 
             const flags = view.getUint16(offset + 8, true);
             const compression = view.getUint16(offset + 10, true);
+            const dosTime = view.getUint16(offset + 12, true);
+            const dosDate = view.getUint16(offset + 14, true);
+            const month = (dosDate >>> 5) & 15;
+            const day = dosDate & 31;
+            const modifiedTime = month >= 1 && month <= 12 && day >= 1 && day <= 31
+                ? Date.UTC(1980 + (dosDate >>> 9), month - 1, day,
+                    dosTime >>> 11, (dosTime >>> 5) & 63, (dosTime & 31) * 2) / 1000
+                : undefined;
             const compressedSize = view.getUint32(offset + 20, true);
             const uncompressedSize = view.getUint32(offset + 24, true);
             const nameLen = view.getUint16(offset + 28, true);
@@ -472,6 +482,7 @@ export class ZipArchive {
 
             this.entries.set(name, {
                 name,
+                modifiedTime,
                 compressedSize,
                 uncompressedSize,
                 compression,

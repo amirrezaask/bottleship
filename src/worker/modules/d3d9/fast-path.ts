@@ -299,12 +299,11 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
         return device.captureStateBlockData(block);
     }, { trivial: true });
 
-    // Resource AddRef/Release — our COM objects are never reference-freed (dummy
-    // refcounts: AddRef→2, Release→1). Hot in the per-frame texture/surface churn
-    // (NFSU: ~94K Texture AddRef + ~94K Release / interval). Trivial constant returns.
+    // Texture/surface lifetime is still process-scoped. Buffers are excluded:
+    // their Release implementations reclaim substantial guest/GPU allocations.
     const addRefFn = () => 2;
     const releaseFn = () => 1;
-    for (const prefix of ['IDirect3DTexture9', 'IDirect3DCubeTexture9', 'IDirect3DSurface9', 'IDirect3DVertexBuffer9', 'IDirect3DIndexBuffer9']) {
+    for (const prefix of ['IDirect3DTexture9', 'IDirect3DCubeTexture9', 'IDirect3DSurface9']) {
         dispatcher.registerFastPath('d3d9', `${prefix}_AddRef`, addRefFn, { trivial: true });
         dispatcher.registerFastPath('d3d9', `${prefix}_Release`, releaseFn, { trivial: true });
     }
@@ -579,13 +578,11 @@ export function registerFastPathD3D9Functions(dispatcher: any): void {
             });
     }
 
-    // ── COM AddRef/Release → zero-crossing constant-return stubs ─────────────
-    // Our COM resources are never reference-freed (dummy refcounts, see the FastPath
-    // block above, which stays as a safety net). Patch the stub itself to
-    // `mov eax, N; ret 4` — no trap, no ring, no JS. Kill-switch: __noComRefStubs.
+    // ── Process-scoped texture/surface AddRef/Release constant stubs ─────────
+    // Buffers must trap into their real refcount/destruction path. Kill-switch: __noComRefStubs.
     if (typeof dispatcher.registerConstantReturnStub === 'function'
         && !(globalThis as any).__noComRefStubs) {
-        for (const prefix of ['IDirect3DTexture9', 'IDirect3DCubeTexture9', 'IDirect3DSurface9', 'IDirect3DVertexBuffer9', 'IDirect3DIndexBuffer9']) {
+        for (const prefix of ['IDirect3DTexture9', 'IDirect3DCubeTexture9', 'IDirect3DSurface9']) {
             dispatcher.registerConstantReturnStub('d3d9', `${prefix}_AddRef`, 2, 4);
             dispatcher.registerConstantReturnStub('d3d9', `${prefix}_Release`, 1, 4);
         }

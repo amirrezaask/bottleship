@@ -8,6 +8,7 @@ import {
   GAMEBOX_FILESYSTEM_PROFILE_PATH,
   GAMEBOX_FILESYSTEM_PRIORITY_PATH,
   GameboxCatalog,
+  gameboxBlobTransport,
   verifyGameboxSignature,
   verifyRuntimeCatalogSignature,
 } from '../../src/worker/runtime/filesystem/gamebox-catalog';
@@ -178,6 +179,68 @@ async function fixture(
 }
 
 describe('prepared transport catalog', () => {
+  test('game-scoped transport rejects cross-origin and ambiguous paths', () => {
+    const blob = '/shared/blobs/' + 'a'.repeat(64);
+    expect(gameboxBlobTransport(blob)).toBe(blob);
+    expect(gameboxBlobTransport(blob, '/shared/games/gta-sa/blobs/'))
+      .toBe('/shared/games/gta-sa/blobs/' + 'a'.repeat(64));
+    for (const base of ['https://other.test/', '//other.test/', '/shared/games/../blobs/',
+      '/shared/games/a%2fb/blobs/', '/shared/games/a/blobs/?x=', '/shared/blobs/'])
+      expect(() => gameboxBlobTransport(blob, base)).toThrow('transport');
+    expect(() => gameboxBlobTransport('/shared/blobs/../secret')).toThrow('identity');
+  });
+
+  test('thin source and external artifacts use scoped bounded reads without changing identities', async () => {
+    const value = await fixture(async (catalog, bytes) => {
+      const sourceHash = await hash(bytes);
+      catalog.formatVersion = 2;
+      catalog.files[0].blob = `/shared/blobs/${sourceHash}`;
+      catalog.externalArtifacts = [{path: 'gamebox/optimized/module.wasm', sourceHash,
+        sourceBytes: bytes.length, blob: `/shared/blobs/${sourceHash}`}];
+    });
+    const originalFetch = globalThis.fetch;
+    const originalXhr = globalThis.XMLHttpRequest;
+    const requests: string[] = [];
+    globalThis.XMLHttpRequest = class {
+      status = 206;
+      responseType = '';
+      response: ArrayBuffer = new ArrayBuffer(0);
+      private start = 0;
+      private end = 0;
+      open(_method: string, url: string, async: boolean) { expect(async).toBe(false); requests.push(url); }
+      setRequestHeader(name: string, value: string) {
+        expect(name.toLowerCase()).toBe('range');
+        const match = /^bytes=(\d+)-(\d+)$/.exec(value)!;
+        this.start = Number(match[1]); this.end = Number(match[2]);
+      }
+      send() { this.response = value.bytes.slice(this.start, this.end + 1).buffer; }
+      getResponseHeader(name: string) {
+        if (name.toLowerCase() === 'content-range') return `bytes ${this.start}-${this.end}/${value.bytes.length}`;
+        if (name.toLowerCase() === 'content-length') return String(this.end - this.start + 1);
+        return null;
+      }
+    } as unknown as typeof XMLHttpRequest;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push(String(url));
+      const range = /^bytes=(\d+)-(\d+)$/.exec(new Headers(init?.headers).get('range') ?? '');
+      if (!range) throw new Error('Expected bounded range');
+      const start = Number(range[1]), end = Number(range[2]);
+      return new Response(value.bytes.slice(start, end + 1), {status: 206, headers: {
+        'content-range': `bytes ${start}-${end}/${value.bytes.length}`,
+        'content-length': String(end - start + 1),
+      }});
+    }) as typeof fetch;
+    try {
+      const catalog = await GameboxCatalog.open(value.archive, value.marker, 'assets', undefined,
+        '/shared/games/gta-sa/blobs/');
+      expect(await catalog.image('GAME.EXE')!.source.readRange(0, 16)).toEqual(value.bytes.slice(0, 16));
+      expect(await value.archive.readEntry(value.archive.getEntry('gamebox/optimized/module.wasm')!))
+        .toEqual(value.bytes);
+      expect(requests.length).toBeGreaterThan(0);
+      for (const url of requests) expect(new URL(url).pathname)
+        .toBe('/shared/games/gta-sa/blobs/' + await hash(value.bytes));
+    } finally { globalThis.fetch = originalFetch; globalThis.XMLHttpRequest = originalXhr; value.archive.close(); }
+  });
   test('mounts a thin title catalog over an immutable shared blob', async () => {
     const value = await fixture(async (catalog, bytes) => {
       const sourceHash = await hash(bytes);

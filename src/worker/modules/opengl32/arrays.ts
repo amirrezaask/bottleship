@@ -201,7 +201,7 @@ export function createArrayExports(ctx: OpenGLContext): Record<string, ThunkImpl
         for (let j = 0; j < count; j++) {
             let index = 0;
             switch (type) {
-                case GL_UNSIGNED_BYTE: index = mem[mem.byteOffset + indicesPtr + j]; break;
+                case GL_UNSIGNED_BYTE: index = mem[indicesPtr + j]; break;
                 case GL_UNSIGNED_SHORT: index = view.getUint16(indicesPtr + j * 2, true); break;
                 case GL_UNSIGNED_INT: index = view.getUint32(indicesPtr + j * 4, true); break;
             }

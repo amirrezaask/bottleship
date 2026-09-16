@@ -8,6 +8,7 @@
  * - offscreen rendering + present to swapchain
  */
 
+import { clearDrawCommand, clearMask, clearNeedsDraw } from "./clear-command";
 import { OpenGLFrameInput } from "./opengl-types";
 import { OpenGLPipelineConfig, pipelineConfigKey } from "./opengl-pipeline-factory";
 import { EmulatorConfig } from "../../../core/emulator-config-manager";
@@ -222,13 +223,15 @@ export class OpenGLBackendExecutor {
             return renderPass;
         };
 
-        for (const command of input.commands) {
+        for (const original of input.commands) {
+            const command = original.type === GLDrawCommandType.CLEAR && clearNeedsDraw(original, renderW, renderH)
+                ? clearDrawCommand(original, renderW, renderH) : original;
             switch (command.type) {
                 case GLDrawCommandType.CLEAR: {
                     endPass();
                     if (this.encodeClearPass(
                         encoder,
-                        command.mask,
+                        clearMask(command),
                         command.r,
                         command.g,
                         command.b,
@@ -599,7 +602,7 @@ export class OpenGLBackendExecutor {
     private countDrawCommands(commands: GLCommand[]): number {
         let count = 0;
         for (const cmd of commands) {
-            if (cmd.type === GLDrawCommandType.DRAW) count++;
+            if (cmd.type === GLDrawCommandType.DRAW || cmd.type === GLDrawCommandType.CLEAR) count++;
         }
         return count;
     }
@@ -607,6 +610,7 @@ export class OpenGLBackendExecutor {
     private estimateVertexBytes(commands: GLCommand[]): number {
         let totalVertices = 0;
         for (const cmd of commands) {
+            if (cmd.type === GLDrawCommandType.CLEAR) { totalVertices += 6; continue; }
             if (cmd.type !== GLDrawCommandType.DRAW) continue;
             let count = cmd.vertCount;
             if (cmd.mode === GL_LINE_LOOP) count += 1;
@@ -1081,8 +1085,8 @@ export class OpenGLBackendExecutor {
         // OpenGL scissor origin is lower-left, WebGPU scissor origin is top-left.
         const x = this.clampInt(sx, 0, screenW);
         const y = this.clampInt(screenH - (sy + sh), 0, screenH);
-        const w = this.clampInt(sw, 0, screenW - x);
-        const h = this.clampInt(sh, 0, screenH - y);
+        const w = Math.max(0, this.clampInt(sx + sw, 0, screenW) - x);
+        const h = Math.max(0, this.clampInt(screenH - sy, 0, screenH) - y);
         if (w <= 0 || h <= 0) {
             return false;
         }

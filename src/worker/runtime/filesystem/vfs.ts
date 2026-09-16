@@ -1072,6 +1072,7 @@ export class VirtualFileSystem {
 
   /** Synchronous write for CRT _write paths — buffers to overlay and schedules OPFS flush. */
   writeSync(handle: VfsFileHandle, data: Uint8Array): number {
+    this.invalidateReadWindow(handle);
     if (!this.overlay || data.length === 0) {
       return data.length === 0 ? 0 : -1;
     }
@@ -1297,6 +1298,14 @@ export class VirtualFileSystem {
     if (gameBoxFilesystemProfile.isRunning())
       gameBoxFilesystemProfile.recordStat(path, 'unknown', result > 0);
     return result;
+  }
+
+  /** Metadata-only lookup; reading a timestamp never loads the file payload. */
+  getFileModifiedTime(path: string): number {
+    const full = this.resolvePath(path);
+    const entry = this.romIndex.get(this.relRomPath(full).toLowerCase());
+    // Match the existing Win32 file metadata fallback when no time is stored.
+    return entry?.modifiedTime ?? 1577836800;
   }
 
   private romUncompressedSize(fullPath: string): number {
@@ -2796,39 +2805,31 @@ class OpfsOverlay {
   }
 
   private async flushWriteBuffer(entry: WriterCacheEntry): Promise<void> {
-    if (entry.flushInFlight) {
-      await entry.flushInFlight;
-      return;
+    // Detach synchronously, even when an older flush is still opening/writing the
+    // OPFS stream. CRT callers cannot await: their next seek/write replaces this
+    // buffer immediately. Waiting before detaching silently loses backpatches.
+    if (entry.flushTimer !== null) {
+      clearTimeout(entry.flushTimer);
+      entry.flushTimer = null;
     }
+    const bufferToWrite = entry.memoryBuffer;
+    const offsetToWrite = entry.bufferOffset;
+    entry.bufferOffset += bufferToWrite.length;
+    entry.memoryBuffer = new Uint8Array(0);
 
-    const run = (async () => {
-      if (entry.memoryBuffer.length === 0) {
-        if (entry.replaceExisting) {
-          await this.ensureWriter(entry);
-        }
-        return;
-      }
-
-      if (entry.flushTimer !== null) {
-        clearTimeout(entry.flushTimer);
-        entry.flushTimer = null;
-      }
-
-      const bufferToWrite = entry.memoryBuffer;
-      const offsetToWrite = entry.bufferOffset;
-
-      entry.bufferOffset += entry.memoryBuffer.length;
-      entry.memoryBuffer = new Uint8Array(0);
-
+    const doFlush = async () => {
+      if (bufferToWrite.length === 0 && !entry.replaceExisting) return;
+      // Opening the stream belongs to the same queue as writes, so concurrent
+      // flushes cannot open competing replacement streams.
       await this.ensureWriter(entry);
-      const doFlush = async () => {
+      if (bufferToWrite.length > 0) {
         await entry.writer!.seek(offsetToWrite);
         await entry.writer!.write(asArrayBuffer(bufferToWrite.buffer));
         entry.lastUsed = performance.now();
-      };
-      entry.queue = entry.queue.then(doFlush, doFlush);
-      await entry.queue;
-    })();
+      }
+    };
+    const run = entry.queue.then(doFlush);
+    entry.queue = run;
 
     entry.flushInFlight = run;
     try {

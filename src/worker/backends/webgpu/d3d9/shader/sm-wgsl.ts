@@ -148,7 +148,7 @@ function matrixResult(instr: SmInstruction, ctx: ShaderCtx, rows: number, dim: n
     const rowExprs: string[] = [];
     for (let r = 0; r < 4; r++) {
         if (r < rows) {
-            const cReg = ctx.readReg({ type: base.type, num: base.num + r, relative: base.relative });
+            const cReg = ctx.readReg({ ...base, num: base.num + r });
             rowExprs.push(dim === 4
                 ? `dot(${s0}, ${cReg})`
                 : `dot((${s0}).xyz, (${cReg}).xyz)`);

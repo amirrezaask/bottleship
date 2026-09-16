@@ -32,6 +32,31 @@ describe('ThunkDispatcher — instantiation', () => {
     });
 });
 
+describe('unimplemented API scheduler return boundary', () => {
+    for (const cleanup of [0, 24]) {
+        it(`preserves generated RET cleanup=${cleanup} when no implementation is registered`, () => {
+            const d = mkDispatcher();
+            const { dv } = bindMemory(d);
+            const esp = 0x200;
+            dv.setUint32(esp, 0x4cad4c, true);
+            d.thunkGenerator = { getStubById: () => ({
+                dllName: 'd3d9', functionName: 'IDirect3DDevice9_StretchRect',
+                argCount: 6, stackCleanupBytes: cleanup,
+            }) };
+            const cpu = { reg32: [0, 0, 0, 0, esp] };
+            expect(d._slowPathMissingImplementation(0x5e4, cpu, 'unknown')).toBe(cleanup);
+            expect(d.lastExpectedEspAfterReturn).toBe(esp + 4 + cleanup);
+            expect(d.lastThunkIdAfterReturn).toBe(0x5e4);
+            expect(d.lastThunkName).toBe('d3d9:IDirect3DDevice9_StretchRect');
+            expect(cpu.reg32[4]).toBe(esp); // actual RET or scheduler owns the pop
+            expect(dv.getUint32(esp, true)).toBe(0x4cad4c);
+            expect(d._slowPathHandleThunkError(0x5e4, 'StretchRect', new Error('GPU upload rejected'), cpu, esp)).toBe(cleanup);
+            expect(d.lastExpectedEspAfterReturn).toBe(esp + 4 + cleanup);
+            expect(cpu.reg32[4]).toBe(esp);
+        });
+    }
+});
+
 describe('ThunkDispatcher.redirectStackToSpinLoop (async-park step b)', () => {
     it('overwrites [esp] with spinLoopAddress and returns the original return address', () => {
         const d = mkDispatcher();

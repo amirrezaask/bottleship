@@ -22,6 +22,8 @@ export interface SmRegister {
     num: number;
     /** Constant-relative addressing (c[a0.x + num]) — SM1.x implies a0. */
     relative: boolean;
+    /** SM2+ address component; SM1 implicitly uses a0.x. */
+    relativeComponent?: number;
 }
 
 export interface SmDest {
@@ -249,7 +251,15 @@ export function parseShader(tokens: Uint32Array): SmProgram {
             const srcToken = tokens[i++] >>> 0;
             const operand = decodeSrc(srcToken);
             // SM2+ relative addressing consumes an extra token (the rel register).
-            if (major >= 2 && operand.reg.relative) i++;
+            if (major >= 2 && operand.reg.relative) {
+                // Instruction length counts DWORDs, including the address token.
+                if (++s >= srcCount || i >= tokens.length) throw new Error("Missing relative address token");
+                const address = decodeSrc(tokens[i++] >>> 0);
+                if (address.reg.type !== RegType.ADDR || address.reg.num !== 0) {
+                    throw new Error("Unsupported relative address register");
+                }
+                operand.reg.relativeComponent = address.swizzle & 3;
+            }
             trackReg(operand.reg);
             if (operand.reg.type === RegType.SAMPLER) samplersUsed.add(operand.reg.num);
             src.push(operand);

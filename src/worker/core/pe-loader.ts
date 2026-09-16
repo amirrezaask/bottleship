@@ -11,6 +11,8 @@ import { EMU_NATIVE_VIDEO_DLLS, VIDEO_DLL_NAMES } from './cpu/emulator-config';
 import { hypercallDataManager } from './cpu/hypercall-data';
 import { libHleManager } from './hle-lib/lib-hle-manager';
 import { hookRegistry } from './hooks';
+import { applySanAndreasTimingFix, applySanAndreasGraphicsDefault } from './game-fixes/gta-san-andreas-timing';
+import { EmulatorConfig } from './emulator-config-manager';
 import { Galaxy } from '../modules/galaxy';
 import { normalizeDllBaseName, resolveThunkedDllAlias } from './dll-aliases';
 import { installCw3220Stdio } from '../modules/cw3220/cw3220-stdio';
@@ -830,6 +832,14 @@ export class PELoader {
 
   private runModuleHooks(module: LoadedPEModule | null, label: string): void {
     if (!module) return;
+    const v86 = System.getInstance().process?.v86;
+    if (applySanAndreasTimingFix(module, this.memory, v86?.cpu ?? v86?.v86?.cpu ?? null)) {
+      Logger.info(LogCategory.SYSTEM, '[San Andreas] Removed secondary frame delay; native 30 FPS limiter retained');
+    }
+    if (applySanAndreasGraphicsDefault(module, this.memory, v86?.cpu ?? v86?.v86?.cpu ?? null,
+        EmulatorConfig.getInstance().lowestGraphics)) {
+      Logger.info(LogCategory.SYSTEM, '[San Andreas] Native default FX quality set to Low');
+    }
     try {
       libHleManager.onModuleLoaded(module);
     } catch (e) {

@@ -67,8 +67,8 @@ export class D3D9CommandRecorder {
     /**
      * Queue a buffer upload for the current frame
      */
-    queueUpload(buffer: GPUBuffer, data: Uint8Array): void {
-        this.frame.queueUpload(buffer, data);
+    queueUpload(buffer: GPUBuffer, data: Uint8Array, offset = 0, source: GPUBuffer | null = null, copySize = 0): void {
+        this.frame.queueUpload(buffer, data, offset, source, copySize);
     }
 
     /**

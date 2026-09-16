@@ -204,6 +204,12 @@ export function createStateExports(ctx: OpenGLContext): Record<string, ThunkImpl
                 mask: args[0] >>> 0,
                 r: ctx.clearR, g: ctx.clearG, b: ctx.clearB, a: ctx.clearA,
                 depth: ctx.clearDepth, stencil: ctx.clearStencil,
+                depthMask: ctx.depthMask, stencilWriteMask: ctx.stencilWriteMask,
+                colorMaskR: ctx.colorMaskR, colorMaskG: ctx.colorMaskG,
+                colorMaskB: ctx.colorMaskB, colorMaskA: ctx.colorMaskA,
+                scissorEnabled: ctx.enableFlags.has(0x0C11),
+                scissorX: ctx.scissorX, scissorY: ctx.scissorY,
+                scissorW: ctx.scissorW, scissorH: ctx.scissorH,
             });
             ctx.frameSnapshot.clearCalls++;
             return 0;

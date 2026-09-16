@@ -266,10 +266,21 @@ function sharedBlob(value: unknown, sourceHash: string): string | undefined {
     throw new Error('Invalid GameBox shared blob identity');
   return value;
 }
+/** Route verified CAS identities through the hosting game's authorization endpoint.
+ * Only the transport path changes; hash/signature/chunk checks and bounded reads remain. */
+export function gameboxBlobTransport(blob: string, base?: string): string {
+  if (!/^\/shared\/blobs\/[0-9a-f]{64}$/.test(blob))
+    throw new Error('Invalid GameBox shared blob identity');
+  if (base === undefined) return blob;
+  if (typeof base !== 'string' || !/^\/shared\/games\/[a-z0-9][a-z0-9-]{0,63}\/blobs\/$/.test(base))
+    throw new Error('Invalid GameBox shared blob transport');
+  return base + blob.slice('/shared/blobs/'.length);
+}
 function registerExternalArtifacts(
   archive: ZipArchive,
   value: unknown,
   formatVersion: unknown,
+  sharedBlobBase?: string,
 ): void {
   if (value === undefined) return;
   if (formatVersion !== 2 || !Array.isArray(value) || value.length > 4096)
@@ -289,7 +300,7 @@ function registerExternalArtifacts(
       throw new Error('Invalid external artifact binding');
     archive.registerExternalStoredEntry(
       path,
-      SyncHttpRangeSource.fromKnownSize(blob, sourceBytes),
+      SyncHttpRangeSource.fromKnownSize(gameboxBlobTransport(blob, sharedBlobBase), sourceBytes),
     );
   }
 }
@@ -874,6 +885,7 @@ export class GameboxCatalog {
     markerValue: unknown,
     romRoot: string,
     trustStore?: GameboxTrustStore,
+    sharedBlobBase?: string,
   ): Promise<GameboxCatalog> {
     const marker = record(markerValue);
     if (
@@ -898,7 +910,7 @@ export class GameboxCatalog {
     ) {
       throw new Error('Invalid GameBox catalog identity or file count');
     }
-    registerExternalArtifacts(archive, catalog.externalArtifacts, catalog.formatVersion);
+    registerExternalArtifacts(archive, catalog.externalArtifacts, catalog.formatVersion, sharedBlobBase);
     const sourceFormatVersion =
       catalog.sourceFormatVersion === undefined
         ? undefined
@@ -963,7 +975,7 @@ export class GameboxCatalog {
       if (blob)
         archive.registerExternalStoredEntry(
           `assets/${path}`,
-          SyncHttpRangeSource.fromKnownSize(blob, sourceBytes),
+          SyncHttpRangeSource.fromKnownSize(gameboxBlobTransport(blob, sharedBlobBase), sourceBytes),
         );
       const entry = archive.getEntry(`assets/${path}`);
       if (

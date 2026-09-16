@@ -1259,6 +1259,14 @@ export function sehOnCatchCompletion(cpu: any): void {
     if (!mem) return;
     const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
 
+    // Catch dispatch temporarily removes the catching frame while its funclet
+    // runs. Normal continuation is back inside that function, so reinstall it.
+    // Otherwise a later, independent try/catch in the same function disappears
+    // from the chain (Serious Sam: optional console history, then game settings).
+    if (rec.pRN >= 4 && rec.pRN + 12 <= mem.length) {
+        dv.setUint32(tebAddr, rec.pRN, true);
+    }
+
     // Restore PRN_STACK (CallCatchBlock's __finally: PRN_STACK(pRN) = saveESP).
     if (rec.savedTryEsp && rec.pRN >= 4 && rec.pRN + 4 <= mem.length) {
         guardStackWrite((rec.pRN - 4) >>> 0, 4, 'seh:prnStackRestore', rec.savedTryEsp);

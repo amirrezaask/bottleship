@@ -20,6 +20,7 @@
 
 const MIN_BUCKET = 256;
 const MAX_FREE_PER_BUCKET = 64;
+const MAX_FREE_BYTES = 16 * 1024 * 1024;
 
 /** Round up to the next power of two, with a 256 B floor. */
 function bucketFor(size: number): number {
@@ -32,6 +33,7 @@ export class DynamicVbPool {
     private device: GPUDevice;
     /** capacity (pow2 bytes) -> stack of free buffers of exactly that capacity. */
     private free = new Map<number, GPUBuffer[]>();
+    private freeBytes = 0;
 
     // Telemetry (read via the device for diagnostics if needed).
     acquires = 0;
@@ -39,7 +41,7 @@ export class DynamicVbPool {
     releases = 0;
     destroys = 0;
 
-    constructor(device: GPUDevice) {
+    constructor(device: GPUDevice, private readonly indexCapable = false) {
         this.device = device;
     }
 
@@ -49,12 +51,14 @@ export class DynamicVbPool {
         const cap = bucketFor(size);
         const list = this.free.get(cap);
         if (list && list.length > 0) {
+            this.freeBytes -= cap;
             return list.pop()!;
         }
         this.creates++;
         return this.device.createBuffer({
             size: cap,
-            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC
+                | (this.indexCapable ? GPUBufferUsage.INDEX : 0),
         });
     }
 
@@ -67,12 +71,13 @@ export class DynamicVbPool {
             list = [];
             this.free.set(cap, list);
         }
-        if (list.length >= MAX_FREE_PER_BUCKET) {
+        if (list.length >= MAX_FREE_PER_BUCKET || this.freeBytes + cap > MAX_FREE_BYTES) {
             this.destroys++;
             buffer.destroy();
             return;
         }
         list.push(buffer);
+        this.freeBytes += cap;
     }
 
     /** Drop and destroy all pooled buffers (device teardown / reset). */
@@ -81,5 +86,6 @@ export class DynamicVbPool {
             for (const b of list) b.destroy();
         }
         this.free.clear();
+        this.freeBytes = 0;
     }
 }

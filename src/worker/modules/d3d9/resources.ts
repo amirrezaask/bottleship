@@ -19,6 +19,9 @@ import {
     precreateTextureLevelSurfaces,
     precreateCubeFaceSurfaces,
     clearTextureSubresourceSurfaces,
+    resourceRefCounts,
+    vertexBufferMeta,
+    indexBufferMeta,
     type SurfaceMeta,
 } from './resource-registry';
 import { getD3DTextureLayout } from '../../backends/webgpu/shared/texture-formats';
@@ -61,6 +64,27 @@ function resolveDevicePtr(deviceInstance: unknown): number {
     return 0;
 }
 
+function addResourceRef(resourcePtr: number): number {
+    const count = (resourceRefCounts.get(resourcePtr) ?? 1) + 1;
+    resourceRefCounts.set(resourcePtr, count);
+    return count;
+}
+
+function releaseResourceRef(resourcePtr: number, destroy: () => void): number {
+    const count = resourceRefCounts.get(resourcePtr) ?? 1;
+    if (count > 1) {
+        resourceRefCounts.set(resourcePtr, count - 1);
+        return count - 1;
+    }
+
+    resourceRefCounts.delete(resourcePtr);
+    destroy();
+    resourceToDevice.delete(resourcePtr);
+    // Keep the tiny COM shell allocated. A bound resource may defer backing-store
+    // destruction until Present; recycling this pointer before then would alias handles.
+    return 0;
+}
+
 function computeLockRectOffset(format: number, width: number, height: number, pitch: number, left: number, top: number): number {
     const layout = getD3DTextureLayout(format, width, height);
     if (layout.compressed) {
@@ -76,6 +100,41 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
     const D3D_OK = 0;
     const D3DERR_INVALIDCALL = 0x8876086c;
 
+    exports['IDirect3DVertexBuffer9_AddRef'] = (_ctx, _mem, args) =>
+        addResourceRef(args[0] >>> 0);
+    exports['IDirect3DVertexBuffer9_Release'] = (_ctx, _mem, args) => {
+        const ptr = args[0] >>> 0;
+        const device = resourceToDevice.get(ptr);
+        return releaseResourceRef(ptr, () => {
+            vertexBufferMeta.delete(ptr);
+            device?.releaseVertexBuffer(ptr);
+        });
+    };
+    exports['IDirect3DIndexBuffer9_AddRef'] = (_ctx, _mem, args) =>
+        addResourceRef(args[0] >>> 0);
+    exports['IDirect3DIndexBuffer9_Release'] = (_ctx, _mem, args) => {
+        const ptr = args[0] >>> 0;
+        const device = resourceToDevice.get(ptr);
+        return releaseResourceRef(ptr, () => {
+            indexBufferMeta.delete(ptr);
+            device?.releaseIndexBuffer(ptr);
+        });
+    };
+    for (const [name, registry, type, bytes] of [
+        ['IDirect3DVertexBuffer9_GetDesc', vertexBufferMeta, 6, 24],
+        ['IDirect3DIndexBuffer9_GetDesc', indexBufferMeta, 7, 20],
+    ] as const) {
+        exports[name] = (_ctx, mem, args) => {
+            const meta = registry.get(args[0] >>> 0);
+            const output = args[1] >>> 0;
+            if (!meta || !output || output > mem.length - bytes) return D3DERR_INVALIDCALL;
+            const fields = [type === 6 ? 100 : meta.format!, type, meta.usage, meta.pool, meta.size];
+            if (type === 6) fields.push(meta.fvf ?? 0);
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            for (let i = 0; i < fields.length; i++) view.setUint32(output + i * 4, fields[i], true);
+            return D3D_OK;
+        };
+    }
     exports['IDirect3DDevice9_CreateVertexBuffer'] = (ctx, mem, args) => {
         const pDevice = args[0];
         const Length = args[1];
@@ -109,6 +168,8 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
         resourceToDevice.set(vbPtr, device);
+        resourceRefCounts.set(vbPtr, 1);
+        vertexBufferMeta.set(vbPtr, { size: Length, usage: Usage, pool: Pool, fvf: FVF });
 
         Mem.writeUint32(ppVertexBuffer, vbPtr);
 
@@ -148,6 +209,8 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
         resourceToDevice.set(ibPtr, device);
+        resourceRefCounts.set(ibPtr, 1);
+        indexBufferMeta.set(ibPtr, { size: Length, usage: Usage, pool: Pool, format: Format });
 
         Mem.writeUint32(ppIndexBuffer, ibPtr);
 
@@ -364,7 +427,7 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
 
         Logger.verbose(LogCategory.D3D9, `VertexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
 
-        const dataPtr = device.lockVertexBuffer(pVertexBuffer, OffsetToLock, SizeToLock);
+        const dataPtr = device.lockVertexBuffer(pVertexBuffer, OffsetToLock, SizeToLock, Flags);
         if (dataPtr === 0) {
             Logger.error(LogCategory.D3D9, `VertexBuffer::Lock failed for 0x${pVertexBuffer.toString(16)}`);
             if (ppbData) Mem.writeUint32(ppbData, 0);
@@ -409,7 +472,7 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
 
         Logger.verbose(LogCategory.D3D9, `IndexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
 
-        const dataPtr = device.lockIndexBuffer(pIndexBuffer, OffsetToLock, SizeToLock);
+        const dataPtr = device.lockIndexBuffer(pIndexBuffer, OffsetToLock, SizeToLock, Flags);
         if (dataPtr === 0) {
             Logger.error(LogCategory.D3D9, `IndexBuffer::Lock failed for 0x${pIndexBuffer.toString(16)}`);
             if (ppbData) Mem.writeUint32(ppbData, 0);

@@ -1801,6 +1801,20 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         if (flAllocationType & MEM_RESERVE) {
             reservedPages.set(address, alignedSize);
             Logger.verbose(LogCategory.KERNEL32, `VirtualAlloc: Reserved ${alignedSize} bytes at 0x${address.toString(16)}`);
+
+            // MemoryManager commits HEAP pages so ordinary heap allocations are immediately
+            // usable. A reserve-only VirtualAlloc is different: the pages must remain
+            // inaccessible until the guest commits them. Some engines deliberately reserve
+            // PAGE_NOACCESS stream buffers and populate pages from their access-violation
+            // handler. Leaving these pages present silently exposes zeroes and bypasses that
+            // handler entirely.
+            if (!(flAllocationType & MEM_COMMIT)) {
+                const ptm = process.pageTableManager;
+                if (ptm?.isPagingEnabled()) {
+                    ptm.decommitPages(address, alignedSize);
+                    decommittedPages.set(address, alignedSize);
+                }
+            }
         }
 
         const trackedSize = virtualAllocRegions.get(address) ?? 0;
@@ -1887,6 +1901,12 @@ export const exports: Record<string, ThunkImplementation> = (() => {
                 Logger.warn(LogCategory.KERNEL32,
                     `VirtualFree(MEM_RELEASE): 0x${lpAddress.toString(16)} missing from allocations map`);
             } else {
+                // A released VirtualAlloc range must fault until allocated again.
+                // In particular, do not leave a stream's PAGE_READONLY mappings
+                // behind when this shared allocator later reuses its VA for malloc.
+                // MemoryManager recommits non-present pages for the new owner.
+                const ptm = process.pageTableManager;
+                if (ptm?.isPagingEnabled()) ptm.decommitPages(lpAddress, trackedSize);
                 freeHeapBlock(process, lpAddress);
             }
 
@@ -2671,4 +2691,3 @@ export function registerFastPathHeapFunctions(dispatcher: any): void {
     dispatcher.registerFastPath('kernel32', 'HeapFree', heapFreeFastPath, { trivial: true });
     Logger.log(LogCategory.KERNEL32, 'Registered fast path for heap functions');
 }
-

@@ -166,6 +166,7 @@ interface SehFaultSignature {
 
 /** Per-dispatch context for nested SEH/C++ exception dispatch. */
 interface SehDispatchContext {
+  ownerThreadId: number;
   generation: number;
   startEsp: number;
   scratchAddr: number;
@@ -442,7 +443,7 @@ export class ThunkDispatcher {
   private sehStackTop = 0;
   private sehDispatchStack: SehDispatchContext[] = [];
   private sehDispatchGeneration = 0;
-  private sehRuntimePinned = false;
+  private readonly sehRuntimePinnedOwners = new Set<number>();
   private unhandledExceptionFilterAddr = 0;
   private callbackStubPoolBase = 0;
   private callbackStubPoolEnd = 0;
@@ -1874,9 +1875,9 @@ export class ThunkDispatcher {
     }
     let argCount = this.argCountsTable[functionId];
     if (!impl) {
-      this._slowPathMissingImplementation(functionId, cpu, thunkName);
+      const cleanup = this._slowPathMissingImplementation(functionId, cpu, thunkName);
       if (profileThunk) profiler.endAsync(thunkName);
-      this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, 0);
+      this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, cleanup);
       if (sampleProfiler) profiler.end('thunk_dispatch');
       return;
     }
@@ -1957,9 +1958,9 @@ export class ThunkDispatcher {
           true,
         );
       }
-      this._slowPathHandleThunkError(functionId, thunkName, e, cpu);
+      const cleanup = this._slowPathHandleThunkError(functionId, thunkName, e, cpu, espAtEntry);
       if (profileThunk) profiler.endAsync(thunkName);
-      this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, 0);
+      this.setBoundaryAndNotify(cpu, ThunkBoundaryKind.THUNK_STUB, cleanup);
       if (sampleProfiler) profiler.end('thunk_dispatch');
       const dur = frameProfiler.endTimer('thunk', thunkStart);
       frameProfiler.recordThunk(thunkName, dur);
@@ -4815,13 +4816,14 @@ export class ThunkDispatcher {
   notifySehHandlerCaught(targetFrame: number): void {
     if (this.sehDispatchStack.length === 0) return;
     const top = this.sehDispatchStack[this.sehDispatchStack.length - 1];
+    if (top.ownerThreadId !== this.ensureScheduler().getCurrentThreadId()) return;
     Logger.warn(
       LogCategory.SYSTEM,
       `SEH dispatch: RtlUnwind(targetFrame=0x${targetFrame.toString(16)}) during active dispatch ` +
         `(gen=${top.generation}) — handler caught, popping context`,
     );
     this.sehDispatchStack.pop();
-    this._leaveSehCriticalRuntime('rtlunwind_caught', top.generation);
+    this._leaveSehCriticalRuntime('rtlunwind_caught', top.generation, top.ownerThreadId);
   }
 
   /** Update cached SEH scratch area address (called after THUNK_DATA allocation). */
@@ -4881,30 +4883,26 @@ export class ThunkDispatcher {
     const ownerThreadId = sched.getCurrentThreadId();
     this._registerSehTransientRanges();
     sched.enterCriticalRuntime('seh_dispatch', ownerThreadId >>> 0, generation >>> 0);
-    if (!this.sehRuntimePinned) {
-      sched.pinCurrentThread();
-      this.sehRuntimePinned = true;
+    if (!this.sehRuntimePinnedOwners.has(ownerThreadId)) {
+      sched.pinThread(ownerThreadId);
+      this.sehRuntimePinnedOwners.add(ownerThreadId);
     }
   }
 
-  private _leaveSehCriticalRuntime(reason: string, generation: number): void {
+  private _leaveSehCriticalRuntime(reason: string, generation: number, ownerThreadId: number): void {
     const sched = this.ensureScheduler();
-    const ownerThreadId = sched.getCurrentThreadId();
     sched.exitCriticalRuntime('seh_dispatch', ownerThreadId >>> 0, generation >>> 0, reason);
-
-    // If there's still an outer dispatch context on the stack, re-enter critical runtime
-    // with its generation. The scheduler's activeCriticalRuntime is a single slot, so
-    // exiting the inner context clears it — we must restore the outer context's protection.
-    if (this.sehDispatchStack.length > 0) {
-      const outer = this.sehDispatchStack[this.sehDispatchStack.length - 1];
-      sched.enterCriticalRuntime('seh_dispatch', ownerThreadId >>> 0, outer.generation >>> 0);
-      // Keep transient ranges and pin active
+    if (!this.sehDispatchStack.some(ctx => ctx.ownerThreadId === ownerThreadId) &&
+        this.sehRuntimePinnedOwners.delete(ownerThreadId)) {
+      sched.unpinThread(ownerThreadId);
+    }
+    // An async fault handler may park its owner while a different thread runs.
+    // Restore the outer context's owner, never infer it from the current thread.
+    const outer = this.sehDispatchStack.at(-1);
+    if (outer) {
+      sched.enterCriticalRuntime('seh_dispatch', outer.ownerThreadId, outer.generation);
     } else {
       this._clearSehTransientRanges();
-      if (this.sehRuntimePinned) {
-        sched.unpinCurrentThread();
-        this.sehRuntimePinned = false;
-      }
     }
   }
 
@@ -4921,7 +4919,8 @@ export class ThunkDispatcher {
     const espNow = cpu.reg32[4] >>> 0;
     while (this.sehDispatchStack.length > 0) {
       const top = this.sehDispatchStack[this.sehDispatchStack.length - 1];
-      if (top.startEsp !== 0 && espNow > top.startEsp) {
+      if (top.ownerThreadId === this.ensureScheduler().getCurrentThreadId() &&
+          top.startEsp !== 0 && espNow > top.startEsp) {
         Logger.warn(
           LogCategory.SYSTEM,
           `SEH dispatch abort: non-local transition detected ` +
@@ -4929,7 +4928,7 @@ export class ThunkDispatcher {
             `dispatchStartEsp=0x${top.startEsp.toString(16)} gen=${top.generation} depth=${this.sehDispatchStack.length})`,
         );
         this.sehDispatchStack.pop();
-        this._leaveSehCriticalRuntime('non_local_jump', top.generation);
+        this._leaveSehCriticalRuntime('non_local_jump', top.generation, top.ownerThreadId);
       } else {
         break;
       }
@@ -4941,7 +4940,7 @@ export class ThunkDispatcher {
     // Pop all contexts
     while (this.sehDispatchStack.length > 0) {
       const ctx = this.sehDispatchStack.pop()!;
-      this._leaveSehCriticalRuntime(reason, ctx.generation);
+      this._leaveSehCriticalRuntime(reason, ctx.generation, ctx.ownerThreadId);
     }
     Logger.log(
       LogCategory.SYSTEM,
@@ -5472,7 +5471,7 @@ export class ThunkDispatcher {
     // Pop the topmost dispatch context — read results from its scratchAddr
     const ctx = this.sehDispatchStack.pop();
     if (ctx) {
-      this._leaveSehCriticalRuntime('dispatch_result', ctx.generation);
+      this._leaveSehCriticalRuntime('dispatch_result', ctx.generation, ctx.ownerThreadId);
       Logger.log(
         LogCategory.SYSTEM,
         `SEH dispatch result: popped gen=${ctx.generation}, remaining depth=${this.sehDispatchStack.length}`,
@@ -5513,16 +5512,25 @@ export class ThunkDispatcher {
       cpu.reg32[0] = view.getUint32(ctxBase + 0xb0, true); // EAX
       cpu.reg32[5] = view.getUint32(ctxBase + 0xb4, true); // EBP
       const ctxEip = view.getUint32(ctxBase + 0xb8, true); // EIP from CONTEXT
+      const ctxEsp = view.getUint32(ctxBase + 0xc4, true);
+      const returnEsp = (ctxEsp - 4) >>> 0;
+      if (ctxEsp < 4 || ctxEsp > this.memLength) {
+        Logger.error(LogCategory.SYSTEM, 'SEH continuation has an invalid stack pointer');
+        if (esp + 4 <= this.memLength) view.setUint32(esp, PF_HALT_TARGET, true);
+        return;
+      }
+      cpu.flags[0] = view.getUint32(ctxBase + 0xc0, true);
+      if (cpu.flags_changed) cpu.flags_changed[0] = 0;
 
       Logger.warn(
         LogCategory.SYSTEM,
         `SEH dispatch: handler returned ContinueExecution, retrying EIP=0x${ctxEip.toString(16)}`,
       );
-      // Write restored EIP at [ESP] so RET pops it → retries the instruction
-      if (esp + 4 <= this.memLength) {
-        guardStackWrite(esp, 4, 'thunk:sehContinueExec', ctxEip);
-        view.setUint32(esp, ctxEip, true);
-      }
+      // The dispatch trampoline ran below the faulting stack. Its final RET
+      // must resume at CONTEXT.Esp, not leave that temporary stack in use.
+      guardStackWrite(returnEsp, 4, 'thunk:sehContinueExec', ctxEip);
+      view.setUint32(returnEsp, ctxEip, true);
+      cpu.reg32[4] = returnEsp;
     } else {
       // Unhandled — all handlers returned ContinueSearch.
       // Try UnhandledExceptionFilter before halting.
@@ -5641,6 +5649,7 @@ export class ThunkDispatcher {
     view.setUint32(ctxBase + 0xb0, savedEax, true); // EAX
     view.setUint32(ctxBase + 0xb4, regs[5], true); // EBP
     view.setUint32(ctxBase + 0xb8, faultingEip, true); // EIP
+    view.setUint32(ctxBase + 0xc0, view.getUint32(esp + 20, true), true); // fault-time EFLAGS
     view.setUint32(ctxBase + 0xc4, preFaultEsp, true); // ESP
 
     // Build EXCEPTION_POINTERS
@@ -5740,14 +5749,15 @@ export class ThunkDispatcher {
       const preFaultEsp = (esp + 24) >>> 0;
       while (this.sehDispatchStack.length > 0) {
         const staleTop = this.sehDispatchStack[this.sehDispatchStack.length - 1];
-        if (staleTop.startEsp !== 0 && preFaultEsp > staleTop.startEsp) {
+        if (staleTop.ownerThreadId === this.ensureScheduler().getCurrentThreadId() &&
+            staleTop.startEsp !== 0 && preFaultEsp > staleTop.startEsp) {
           Logger.warn(
             LogCategory.SYSTEM,
             `SEH dispatch stale: #PF at ESP=0x${preFaultEsp.toString(16)} above dispatch ESP=0x${staleTop.startEsp.toString(16)} ` +
               `(gen=${staleTop.generation}) — handler caught, popping context`,
           );
           this.sehDispatchStack.pop();
-          this._leaveSehCriticalRuntime('stale_context_at_fault', staleTop.generation);
+          this._leaveSehCriticalRuntime('stale_context_at_fault', staleTop.generation, staleTop.ownerThreadId);
         } else {
           break;
         }
@@ -6278,6 +6288,7 @@ export class ThunkDispatcher {
     view.setUint32(ctxBase + 0xb0, savedEax, true); // EAX
     view.setUint32(ctxBase + 0xb4, regs[5], true); // EBP
     view.setUint32(ctxBase + 0xb8, faultingEip, true); // EIP
+    view.setUint32(ctxBase + 0xc0, view.getUint32(esp + 20, true), true); // fault-time EFLAGS
     view.setUint32(ctxBase + 0xc4, preFaultEsp, true); // ESP
 
     // --- Build EXCEPTION_POINTERS ---
@@ -6337,6 +6348,7 @@ export class ThunkDispatcher {
     this.sehDispatchGeneration = (this.sehDispatchGeneration + 1) >>> 0;
     const dispatchCtx: SehDispatchContext = {
       generation: this.sehDispatchGeneration,
+      ownerThreadId: this.ensureScheduler().getCurrentThreadId(),
       startEsp: dispatchEsp,
       scratchAddr,
       lastFaultSignature: {
@@ -6524,6 +6536,7 @@ export class ThunkDispatcher {
     this.sehDispatchGeneration = (this.sehDispatchGeneration + 1) >>> 0;
     const dispatchCtx: SehDispatchContext = {
       generation: this.sehDispatchGeneration,
+      ownerThreadId: this.ensureScheduler().getCurrentThreadId(),
       startEsp: dispatchEsp,
       scratchAddr,
       lastFaultSignature: null,
@@ -7424,7 +7437,7 @@ export class ThunkDispatcher {
     return null;
   }
 
-  private _slowPathMissingImplementation(functionId: number, cpu: any, name: string): void {
+  private _slowPathMissingImplementation(functionId: number, cpu: any, name: string): number {
     const stub = this.thunkGenerator.getStubById(functionId);
     const esp = cpu.reg32[4];
     const argCount = stub?.argCount ?? this.argCountsTable[functionId] ?? 0;
@@ -7467,11 +7480,30 @@ export class ThunkDispatcher {
       );
     }
     cpu.reg32[0] = returnValue;
+    // A missing host implementation still returns through the generated RET N.
+    // The scheduler must save the same post-return ESP as that stub; using zero
+    // leaves stdcall arguments on the stack whenever this boundary switches threads.
+    const cleanup = stub?.stackCleanupBytes
+      ?? this.resolveThunkCleanup(functionId, argCount, `missing:${name}`);
+    this.lastThunkId = functionId;
+    this.lastThunkName = stub ? `${stub.dllName}:${stub.functionName}` : name;
+    this.lastExpectedEspAfterReturn = esp + 4 + cleanup;
+    this.lastThunkIdAfterReturn = functionId;
+    this.lastThunkNameAfterReturn = this.lastThunkName;
+    this.winApiRing.recordReturnValue(returnValue);
+    return cleanup;
   }
 
-  private _slowPathHandleThunkError(id: number, name: string, e: any, cpu: any): void {
+  private _slowPathHandleThunkError(id: number, name: string, e: any, cpu: any, esp: number): number {
     Logger.error(LogCategory.THUNK, `Error executing thunk ${name} (ID ${id}): ${e}`);
     cpu.reg32[0] = 0;
+    const stub = this.thunkGenerator?.getStubById(id);
+    const cleanup = stub?.stackCleanupBytes ?? this.resolveThunkCleanup(id, this.argCountsTable[id], `error:${name}`);
+    this.lastExpectedEspAfterReturn = esp + 4 + cleanup;
+    this.lastThunkIdAfterReturn = id;
+    this.lastThunkNameAfterReturn = name;
+    this.winApiRing.recordReturnValue(0);
+    return cleanup;
   }
 
   private _slowPathInvalidReturnPreCall(id: number, name: string, esp: number, cpu: any): void {
@@ -7857,19 +7889,17 @@ export class ThunkDispatcher {
     this.profilerSampleCounter = 0;
     this.nextChecksumAt = 0;
     this.checksumInProgress = false;
-    if (this.sehRuntimePinned) {
-      try {
-        this.ensureScheduler().unpinCurrentThread();
-      } catch {}
-      this.sehRuntimePinned = false;
+    for (const owner of this.sehRuntimePinnedOwners) {
+      try { this.ensureScheduler().unpinThread(owner); } catch {}
     }
+    this.sehRuntimePinnedOwners.clear();
     try {
       this._clearSehTransientRanges();
     } catch {}
     try {
       while (this.sehDispatchStack.length > 0) {
         const ctx = this.sehDispatchStack.pop()!;
-        const tid = this.ensureScheduler().getCurrentThreadId();
+        const tid = ctx.ownerThreadId;
         this.ensureScheduler().exitCriticalRuntime(
           'seh_dispatch',
           tid >>> 0,

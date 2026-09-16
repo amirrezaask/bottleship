@@ -98,6 +98,14 @@ export function setWriteMapBase(base: number, size: number, writable: boolean): 
 export class AddressSpace {
     private regions: RegionEntry[] = [];
     private nextRegionId = 1;
+    // Conservative high-water bound, including released regions until reset.
+    // Wild FPO scratch values must not scan every heap allocation at each thunk.
+    private regionEndBound = 0;
+    // Exact queries repeat at API boundaries (including FPO scratch registers).
+    // Keep a fixed-size cache; every region mutation invalidates all entries.
+    private readonly rangeCache = new Array<{
+        address: number; size: number; perms: string; valid: boolean;
+    } | undefined>(64);
     private mem8: Uint8Array | null = null;
     private layoutBucketMap: Map<RegionKind, RegionEntry> = new Map();
 
@@ -118,7 +126,9 @@ export class AddressSpace {
     }
 
     reset(): void {
+        this.rangeCache.fill(undefined);
         this.regions = [];
+        this.regionEndBound = 0;
         this.nextRegionId = 1;
         this.layoutBucketMap.clear();
         this.ensureLowMemRegion(0x00100000);
@@ -142,6 +152,8 @@ export class AddressSpace {
         }
 
         this.regions.push(newEntry);
+        this.rangeCache.fill(undefined);
+        this.regionEndBound = Math.max(this.regionEndBound, newEntry.base + newEntry.size);
         if (entry.owner === "Layout") {
             this.layoutBucketMap.set(entry.kind, newEntry);
         }
@@ -156,6 +168,7 @@ export class AddressSpace {
         if (idx >= 0) {
             const released = this.regions[idx];
             this.regions.splice(idx, 1);
+            this.rangeCache.fill(undefined);
             bumpFastmemGeneration(FASTMEM_BUMP_ADDRESS_SPACE_RELEASE);
             // A released VA is no longer a known writable region — drop bit0.
             setWriteMapBase(released.base, released.size, false);
@@ -180,6 +193,7 @@ export class AddressSpace {
         const region = this.regions.find(r => r.base === base && r.size === size);
         if (!region) return false;
         region.perms = perms;
+        this.rangeCache.fill(undefined);
         bumpFastmemGeneration(FASTMEM_BUMP_ADDRESS_SPACE_PROTECT);
         // Re-derive bit0 from the new perms + kind (RO/NOACCESS ⇒ clear).
         setWriteMapBase(region.base, region.size, isWriteMapFastRegion(region.kind, perms));
@@ -292,7 +306,9 @@ export class AddressSpace {
         const existing = this.regions.find(region => region.kind === "LOW_MEM");
         if (existing) {
             existing.size = size;
+            this.regionEndBound = Math.max(this.regionEndBound, existing.base + size);
             existing.perms = "rw";
+            this.rangeCache.fill(undefined);
             return;
         }
 
@@ -310,21 +326,25 @@ export class AddressSpace {
     validateRange(address: number, size: number, requiredPerms: string = "rw"): boolean {
         if (address < 0 || size < 0) return false;
         const end = address + size;
-
+        if (end > this.regionEndBound) return false;
+        const slot = ((address >>> 2) ^ (address >>> 12)) & 63;
+        const cached = this.rangeCache[slot];
+        if (cached && cached.address === address && cached.size === size && cached.perms === requiredPerms)
+            return cached.valid;
+        let valid = false;
         for (const region of this.regions) {
             if (address >= region.base && end <= region.base + region.size) {
-                if (region.perms === "noaccess") return false;
-                if (requiredPerms.includes("w") && !region.perms.includes("w")) return false;
-                if (requiredPerms.includes("x") && !region.perms.includes("x")) return false;
-                return true;
+                valid = region.perms !== "noaccess"
+                    && (!requiredPerms.includes("w") || region.perms.includes("w"))
+                    && (!requiredPerms.includes("x") || region.perms.includes("x"));
+                break;
             }
         }
-
-
-        return false;
+        this.rangeCache[slot] = { address, size, perms: requiredPerms, valid };
+        return valid;
     }
 
-    getLayoutBucket(kind: RegionKind): RegionEntry | null {
+    getLayoutBucket(kind: RegionKind): Readonly<RegionEntry> | null {
         return this.layoutBucketMap.get(kind) ?? null;
     }
 
@@ -371,6 +391,8 @@ export class AddressSpace {
 
         const oldSize = bucket.size;
         bucket.size = requestedSize;
+        this.rangeCache.fill(undefined);
+        this.regionEndBound = Math.max(this.regionEndBound, newEnd);
 
         Logger.log(LogCategory.SYSTEM,
             `[AddressSpace] Expanded ${kind} bucket: 0x${bucket.base.toString(16)}..0x${newEnd.toString(16)} ` +
@@ -383,15 +405,15 @@ export class AddressSpace {
      * Find first region by kind (searches all regions, not just layout buckets)
      * Useful for finding THUNK_CODE region created by ThunkMemoryManager
      */
-    findRegionByKind(kind: RegionKind): RegionEntry | null {
+    findRegionByKind(kind: RegionKind): Readonly<RegionEntry> | null {
         return this.regions.find(region => region.kind === kind) ?? null;
     }
 
-    getRegion(address: number): RegionEntry | null {
+    getRegion(address: number): Readonly<RegionEntry> | null {
         return this.regions.find(region => address >= region.base && address < region.base + region.size) ?? null;
     }
 
-    getRegions(): RegionEntry[] {
+    getRegions(): Readonly<RegionEntry>[] {
         return [...this.regions];
     }
 
@@ -409,7 +431,7 @@ export class AddressSpace {
      * Layout buckets and MemoryManager sub-allocations are excluded — only "foreign"
      * non-allowOverlap regions (e.g. PE images mapped by PELoader) are returned.
      */
-    findBlockingRegion(base: number, size: number): RegionEntry | null {
+    findBlockingRegion(base: number, size: number): Readonly<RegionEntry> | null {
         const end = base + size;
         return this.regions.find(r =>
             !r.allowOverlap &&

@@ -185,6 +185,45 @@ describe("vs codegen", () => {
         expect(res.wgsl).toContain("clamp(a0 + 0, 0, 95)");
     });
 
+    test("SM2 bone-palette reads preserve instruction boundaries and address components", () => {
+        const vs = compileVertexShader(new Uint32Array([
+            version(false, 2, 1),
+            Op.DCL | (2 << 24), 0, dst(RegType.INPUT, 0),
+            Op.MOVA | (2 << 24), dst(RegType.ADDR, 0, 0x6), src(RegType.INPUT, 0),
+            Op.DP4 | (4 << 24), dst(RegType.RASTOUT, 0, 0x1), src(RegType.INPUT, 0),
+                src(RegType.CONST, 32, SWZ_IDENTITY, 0, true), src(RegType.ADDR, 0, 0x55),
+            Op.MOV | (3 << 24), dst(RegType.TEMP, 0),
+                src(RegType.CONST, 35, SWZ_IDENTITY, 0, true), src(RegType.ADDR, 0, 0xAA),
+            Op.MOV | (2 << 24), dst(RegType.RASTOUT, 0, 0xE), src(RegType.TEMP, 0),
+            END,
+        ]));
+        expect(vs.prog.instructions.map(i => i.opcode)).toEqual([Op.MOVA, Op.DP4, Op.MOV, Op.MOV]);
+        expect(vs.prog.instructions[1].src).toHaveLength(2);
+        expect(vs.prog.instructions[1].src[1].reg.relativeComponent).toBe(1);
+        expect(vs.prog.instructions[2].src[0].reg.relativeComponent).toBe(2);
+        expect(vs.analysis.constantCount).toBe(256);
+        const { wgsl } = linkProgram({ vs, ps: null, declElements: decl, streamStride: 20 });
+        expect(wgsl).toContain("a0.y = addr0.y;");
+        expect(wgsl).toContain("a0.z = addr0.z;");
+        expect(wgsl).not.toContain("a0.x =");
+        expect(wgsl).toContain("clamp(a0.y + 32, 0, 255)");
+        expect(wgsl).toContain("clamp(a0.z + 35, 0, 255)");
+        expect(wgsl).toContain("select(vec4<f32>(0.0)");
+    });
+
+    test("SM2 relative matrix rows keep the selected address component", () => {
+        const vs = compileVertexShader(new Uint32Array([
+            version(false, 2, 0),
+            Op.DCL | (2 << 24), 0, dst(RegType.INPUT, 0),
+            Op.MOVA | (2 << 24), dst(RegType.ADDR, 0, 0x8), src(RegType.INPUT, 0),
+            Op.M4x3 | (4 << 24), dst(RegType.RASTOUT, 0, 0x7), src(RegType.INPUT, 0),
+                src(RegType.CONST, 12, SWZ_IDENTITY, 0, true), src(RegType.ADDR, 0, 0xFF),
+            END,
+        ]));
+        const { wgsl } = linkProgram({ vs, ps: null, declElements: decl, streamStride: 20 });
+        for (const row of [12, 13, 14]) expect(wgsl).toContain(`clamp(a0.w + ${row}, 0, 255)`);
+    });
+
     test("links a VS-only program to a complete WGSL module", () => {
         const vs = compileVertexShader(buildVs());
         const res = linkProgram({ vs, ps: null, declElements: decl, streamStride: 20 });
@@ -252,6 +291,30 @@ describe("ps codegen", () => {
         const ps = compilePixelShader(psTokens);
         const res = linkProgram({ vs, ps, declElements: decl, streamStride: 20 });
         expect(res.wgsl).toContain("var tex1: texture_2d<f32>");
+        assertAllSampledTexturesDeclared(res.wgsl);
+    });
+
+    test("texm3x2pad and texm3x2tex lower to a dependent matrix sample", () => {
+        // MP2 bullet time: t0 supplies the sampled vector, while the original
+        // t1/t2 interpolants are the two matrix rows. Only stage 2 is sampled.
+        const psTokens = new Uint32Array([
+            version(true, 1, 1),
+            instr(Op.TEX), dst(RegType.TEXTURE, 0),
+            instr(Op.TEXM3x2PAD), dst(RegType.TEXTURE, 1), src(RegType.TEXTURE, 0),
+            instr(Op.TEXM3x2TEX), dst(RegType.TEXTURE, 2), src(RegType.TEXTURE, 0),
+            instr(Op.MOV), dst(RegType.TEMP, 0), src(RegType.TEXTURE, 2),
+            END,
+        ]);
+        const vs = compileVertexShader(buildVs());
+        const ps = compilePixelShader(psTokens);
+        const res = linkProgram({ vs, ps, declElements: decl, streamStride: 20 });
+
+        expect([...ps.analysis.samplers]).toEqual([0, 2]);
+        expect([...ps.analysis.readsTexcoord].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+        expect(res.wgsl).not.toContain("textureSample(tex1");
+        expect(res.wgsl).toContain("let _m3x2pad1 = dot((in.tex1).xyz, (t0).xyz)");
+        expect(res.wgsl).toContain("vec2<f32>(_m3x2pad1, dot((in.tex2).xyz, (t0).xyz))");
+        expect(res.wgsl).toContain("textureSample(tex2, samp, _m3x2coord2)");
         assertAllSampledTexturesDeclared(res.wgsl);
     });
 

@@ -1,3 +1,4 @@
+import { INPUT_EVENT_CAPACITY, INPUT_SNAPSHOT_WORDS, readInputTransition, discardInputTransitions } from "../../../input-event-queue";
 /**
  * InputManager - reads browser input from SharedArrayBuffer
  * and injects Windows messages into the message queue.
@@ -374,15 +375,29 @@ export class InputManager {
      * Poll input buffer and generate messages.
      * @param forceEnqueue - when true (e.g. from waitForMessage), enqueue WM_* even if no waiter yet, so pending input is not lost
      */
+    private readonly eventSnapshot = new Int32Array(INPUT_SNAPSHOT_WORDS);
+
     poll(forceEnqueue = false): void {
         if (!this.inputView) return;
+        const liveSeq = this.lastSeq;
+        for (let count = 0; count < INPUT_EVENT_CAPACITY; count++) {
+            if (!readInputTransition(this.inputView, this.eventSnapshot)) break;
+            this.pollSnapshot(this.eventSnapshot, forceEnqueue);
+        }
+        // Historical records omit wheel deltas. Consume the live snapshot even
+        // when its sequence matches the final queued release.
+        this.lastSeq = liveSeq;
+        this.pollSnapshot(this.inputView, forceEnqueue);
+    }
+
+    private pollSnapshot(inputView: Int32Array, forceEnqueue: boolean): void {
 
         // SAB input seqlock (reader/acquire side; writers = host App.tsx +
         // the worker injectors below, both bracket payload with begin/end so
         // seq goes even→odd→even per update). An ODD seq means a writer is
         // mid-update: skip and catch it on the next poll (state is level-based,
         // polled frequently — no spin needed). Even+unchanged means nothing new.
-        const seq = Atomics.load(this.inputView, INPUT_INDEX.seq);
+        const seq = Atomics.load(inputView, INPUT_INDEX.seq);
         if (seq & 1) return;
         if (seq === this.lastSeq) return;
 
@@ -390,18 +405,18 @@ export class InputManager {
         // if it moved, the snapshot was torn/superseded — bail WITHOUT advancing
         // lastSeq (the newer record is picked up next poll) and WITHOUT consuming
         // the destructive wheel delta.
-        const mouseX           = this.inputView[INPUT_INDEX.mouseX];
-        const mouseY           = this.inputView[INPUT_INDEX.mouseY];
-        const buttons          = this.inputView[INPUT_INDEX.buttons];
-        const mouseInside      = this.inputView[INPUT_INDEX.mouseInside] !== 0;
-        const gamepadConnected = this.inputView[INPUT_INDEX.gamepadConnected] === 1;
-        const gamepadButtons   = this.inputView[INPUT_INDEX.gamepadButtons];
-        const gamepadAxis0     = this.inputView[INPUT_INDEX.gamepadAxis0];
-        const gamepadAxis1     = this.inputView[INPUT_INDEX.gamepadAxis1];
-        const gamepadAxis2     = this.inputView[INPUT_INDEX.gamepadAxis2];
-        const gamepadAxis3     = this.inputView[INPUT_INDEX.gamepadAxis3];
+        const mouseX           = inputView[INPUT_INDEX.mouseX];
+        const mouseY           = inputView[INPUT_INDEX.mouseY];
+        const buttons          = inputView[INPUT_INDEX.buttons];
+        const mouseInside      = inputView[INPUT_INDEX.mouseInside] !== 0;
+        const gamepadConnected = inputView[INPUT_INDEX.gamepadConnected] === 1;
+        const gamepadButtons   = inputView[INPUT_INDEX.gamepadButtons];
+        const gamepadAxis0     = inputView[INPUT_INDEX.gamepadAxis0];
+        const gamepadAxis1     = inputView[INPUT_INDEX.gamepadAxis1];
+        const gamepadAxis2     = inputView[INPUT_INDEX.gamepadAxis2];
+        const gamepadAxis3     = inputView[INPUT_INDEX.gamepadAxis3];
 
-        if (Atomics.load(this.inputView, INPUT_INDEX.seq) !== seq) return;
+        if (Atomics.load(inputView, INPUT_INDEX.seq) !== seq) return;
         this.lastSeq = seq;
 
         // Commit path only (snapshot validated): consume the wheel DELTA slot
@@ -410,10 +425,14 @@ export class InputManager {
         // is skipped when there is no keyboard-target window (early return below),
         // and a stale delta would then be re-fed into the DInput accumulator on
         // EVERY seq bump (each mouse move) → endless weapon cycling in DInput games.
-        const mouseWheel       = Atomics.exchange(this.inputView, INPUT_INDEX.mouseWheel, 0);
+        const mouseWheel       = Atomics.exchange(inputView, INPUT_INDEX.mouseWheel, 0);
 
-        this.currentMouseX    = mouseX;
-        this.currentMouseY    = mouseY;
+        // SetCursorPos can warp the guest cursor without a browser pointer event.
+        // A keyboard-only snapshot must not undo that warp with old coordinates.
+        if (mouseX !== this.lastMouseX || mouseY !== this.lastMouseY || buttons !== this.lastButtons) {
+            this.currentMouseX = mouseX;
+            this.currentMouseY = mouseY;
+        }
         this.currentButtons   = buttons;
 
         // DirectInput mouse: accumulate wheel + buffer events.
@@ -452,7 +471,7 @@ export class InputManager {
         // This runs BEFORE targetWin check so keyStates are always current
         let keyboardChanged = false;
         for (let word = 0; word < KEY_BITFIELD_COUNT; word++) {
-            const curr = this.inputView[KEY_BITFIELD_BASE + word];
+            const curr = inputView[KEY_BITFIELD_BASE + word];
             const prev = this.prevKeyBitfield[word];
             if (curr !== prev) {
                 keyboardChanged = true;
@@ -497,7 +516,7 @@ export class InputManager {
         if (!targetWin) {
             // Save bitfield state even when no window
             for (let w = 0; w < KEY_BITFIELD_COUNT; w++) {
-                this.prevKeyBitfield[w] = this.inputView[KEY_BITFIELD_BASE + w];
+                this.prevKeyBitfield[w] = inputView[KEY_BITFIELD_BASE + w];
             }
             return;
         }
@@ -687,7 +706,7 @@ export class InputManager {
         if (keyboardChanged) {
             const newKeyEvents: Array<{ vk: number; pressed: boolean; lParam: number }> = [];
             for (let word = 0; word < KEY_BITFIELD_COUNT; word++) {
-                const curr = this.inputView[KEY_BITFIELD_BASE + word];
+                const curr = inputView[KEY_BITFIELD_BASE + word];
                 const prev = this.prevKeyBitfield[word];
                 if (curr === prev) continue;
                 const changed = curr ^ prev;
@@ -730,7 +749,7 @@ export class InputManager {
 
         // Update prevKeyBitfield
         for (let w = 0; w < KEY_BITFIELD_COUNT; w++) {
-            this.prevKeyBitfield[w] = this.inputView[KEY_BITFIELD_BASE + w];
+            this.prevKeyBitfield[w] = inputView[KEY_BITFIELD_BASE + w];
         }
 
     }
@@ -815,6 +834,7 @@ export class InputManager {
      * Reset input manager state - clear all last state values
      */
     reset(): void {
+        if (this.inputView) discardInputTransitions(this.inputView);
         this.lastSeq = 0;
         this.lastMouseX = 0;
         this.lastMouseY = 0;

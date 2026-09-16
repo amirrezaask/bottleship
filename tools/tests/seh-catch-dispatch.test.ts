@@ -347,6 +347,38 @@ beforeEach(() => {
 });
 
 describe("seh catch dispatch", () => {
+    test("an empty catch restores its frame for a subsequent independent catch", () => {
+        const type = buildTypeDescriptor(".PAD");
+        const throwInfo = buildThrowInfo(type, 0, 4, 0);
+        const frame = 0x10b000, savedEsp = 0x10afd0;
+        const firstCont = makeProbe({ kind: "stop", log: "first-continuation" });
+        const emptyCatch = alloc(6);
+        mem[emptyCatch] = 0xb8;
+        dv.setUint32(emptyCatch + 1, firstCont, true);
+        mem[emptyCatch + 5] = 0xc3;
+        const secondCont = makeProbe({ kind: "stop", log: "second-continuation" });
+        const secondCatch = makeProbe({ kind: "funclet-return", continuation: secondCont, log: "second-catch" });
+        const info = buildFuncInfo(
+            [[-1, 0], [-1, 0], [-1, 0], [-1, 0]],
+            [
+                { tryLow: 0, tryHigh: 0, catchHigh: 1, handlers: [{ adjectives: 0, pType: type, dispCatchObj: 0, addr: emptyCatch }] },
+                { tryLow: 2, tryHigh: 2, catchHigh: 3, handlers: [{ adjectives: 0, pType: type, dispCatchObj: 0, addr: secondCatch }] },
+            ],
+        );
+        buildEhFrame(frame, 0xffffffff, buildHandlerThunk(info), 0, savedEsp);
+        dv.setUint32(TEB, frame, true);
+        for (const state of [0, 2]) {
+            dv.setInt32(frame + 8, state, true);
+            cpu.reg32[4] = 0x109000;
+            cpu.instruction_pointer[0] = makeProbe({ kind: "throw-new", pObj: 0x109020, pThrow: throwInfo, log: `throw-${state}` });
+            run();
+            expect(dv.getUint32(TEB, true)).toBe(frame);
+            expect(cpu.reg32[4]).toBe(savedEsp);
+            expect(getActiveCatchRecords()).toEqual([]);
+        }
+        expect(log).toEqual(["throw-0", "first-continuation", "throw-2", "second-catch", "second-continuation"]);
+    });
+
     test("Max Payne chain: throw → catch#1 rethrow → catch#2 dtors+rethrow → catch#3 completes with CRT ESP/EBP", () => {
         const typeDesc = buildTypeDescriptor(".?AVX_Level@@");
         const objDtor = makeProbe({ kind: "dtor", log: "obj-dtor" });

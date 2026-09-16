@@ -640,6 +640,10 @@ export class Msvcrt implements IModule {
             fseek: (a: number, b: number, c: number) => this.fseek(a, b, c),
             ftell: (a: number) => this.ftell(a),
             filelength: (a: number) => this.filelength(a),
+            fileModifiedTime: (fd: number) => {
+                const handle = this.fds.get(fd);
+                return handle ? System.getInstance().fileSystem.getFileModifiedTime(handle.path) : 0;
+            },
             fileStreams: this.fileStreams,
             malloc: (n: number) => this.malloc(n),
             writeCString: (p: number, v: string) => this.writeCString(p, v),
@@ -1606,7 +1610,8 @@ export class Msvcrt implements IModule {
         }
         const vfs = System.getInstance().fileSystem;
         const want = count >>> 0;
-        const synced = vfs.readIntoSync(handle, mem, buffer, want);
+        const activeMem = Mem.getView() ?? mem;
+        const synced = vfs.readIntoSync(handle, activeMem, buffer, want);
         if (synced !== null) {
             return synced;
         }
@@ -1731,13 +1736,14 @@ export class Msvcrt implements IModule {
             return -1;
         }
         const size = vfs.getFileSize(path);
-        // Zero out struct _stat (48 bytes covers both 32-bit layouts)
-        this.memset(structPtr, 0, 48);
-        // MSVCRT struct _stat layout: st_dev(2) + st_ino(2) + st_mode(2) at offset 4
-        // Write as uint32 — upper 16 bits (st_nlink) stay 0
-        Mem.writeUint32(structPtr + 4, 0x8000 | 0x0100);
+        // VC6 _stat has 32-bit times and occupies exactly 36 bytes.
+        this.memset(structPtr, 0, 36);
+        Mem.writeUint16(structPtr + 6, 0x8000 | 0x0100);
+        Mem.writeUint16(structPtr + 8, 1);
         // st_size at offset 20 (uint32)
         Mem.writeUint32(structPtr + 20, size);
+        const modifiedTime = vfs.getFileModifiedTime(path);
+        for (const offset of [24, 28, 32]) Mem.writeUint32(structPtr + offset, modifiedTime);
         return 0;
     }
 
@@ -2536,19 +2542,23 @@ export class Msvcrt implements IModule {
 
     // ==================== High-level file I/O (FILE*) ====================
 
-    // Simple FILE* simulation: we use the fd number as the FILE* pointer value
-    // and store a mapping. Real FILE structs aren't needed since apps only pass
-    // the pointer back to us.
+    // FILE* state is backed by a zeroed 32-byte guest structure as well as this map.
+    // MSVC's ferror/feof/getc macros dereference FILE fields directly, so an opaque
+    // token outside guest RAM can report a false I/O error after an otherwise valid
+    // read. Borland/Watcom use a different 32-byte layout and opt into buffered getc.
     private fileStreams: Map<number, { fd: number; handle: VfsFileHandle; ungetChar: number; text: boolean; eof: boolean; err: boolean; structPtr?: number; bufPtr?: number }> = new Map();
-    private nextFilePtr = 0x70000000; // pseudo-pointer space for FILE*
+    private nextFilePtr = 0x70000000; // OOM-only opaque fallback
+    private static readonly MSVC_FILE_SIZE = 32;
+    private static readonly MSVC_FILE_FLAG_OFF = 12;
+    private static readonly MSVC_FILE_FD_OFF = 16;
+    private static readonly MSVC_IOREAD = 0x0001;
+    private static readonly MSVC_IOWRT = 0x0002;
+    private static readonly MSVC_IORW = 0x0080;
     /**
-     * When true, fopen hands out a REAL zeroed guest FILE struct instead of the
-     * 0x70000000 token. Borland/Watcom CRTs inline getc/putc, dereferencing FILE
-     * internals directly (Borland layout: level@+0, curp@+20); a bare token
-     * (which is outside guest RAM) makes those reads garbage and corrupts e.g.
-     * the LZSS decompressor's input stream. A zeroed struct keeps level<=0, so the
-     * inlined macro always falls through to _fgetc/_fputc, which our VFS handlers
-     * implement. Enabled via enableRealFileStructs() (see modules/cw3220).
+     * When true, fopen uses the Borland/Watcom FILE layout. Those CRTs inline
+     * getc/putc (level@+0, curp@+20), so the guest structure is also populated
+     * with a bounded read buffer. Enabled via enableRealFileStructs()
+     * (see modules/cw3220).
      */
     private useRealFileStructs = false;
     /** Borland CW3220/Turbo-C FILE layout (32-bit): int level, …, char *curp @ +20. */
@@ -2662,8 +2672,22 @@ export class Msvcrt implements IModule {
                 structPtr = undefined;
             }
         } else {
-            filePtr = this.nextFilePtr;
-            this.nextFilePtr += 4;
+            structPtr = this.malloc(Msvcrt.MSVC_FILE_SIZE) >>> 0;
+            if (structPtr) {
+                this.memset(structPtr, 0, Msvcrt.MSVC_FILE_SIZE);
+                const flag = mode.includes("+")
+                    ? Msvcrt.MSVC_IORW
+                    : mode.includes("w") || mode.includes("a")
+                        ? Msvcrt.MSVC_IOWRT
+                        : Msvcrt.MSVC_IOREAD;
+                Mem.writeUint32(structPtr + Msvcrt.MSVC_FILE_FLAG_OFF, flag);
+                Mem.writeUint32(structPtr + Msvcrt.MSVC_FILE_FD_OFF, fd);
+                filePtr = structPtr;
+            } else {
+                filePtr = this.nextFilePtr;
+                this.nextFilePtr += 4;
+                structPtr = undefined;
+            }
         }
         // Text mode (no "b") strips CRLF→LF on read, matching the MSVC CRT. SS2's config
         // files are CRLF; without this, fgets returns "...install.cfg\r\n" and the parsed
@@ -2694,7 +2718,8 @@ export class Msvcrt implements IModule {
         if (totalBytes === 0) return 0;
         const vfs = System.getInstance().fileSystem;
         const startPos = stream.handle.position;
-        const synced = vfs.readIntoSync(stream.handle, mem, bufPtr, totalBytes);
+        const activeMem = Mem.getView() ?? mem;
+        const synced = vfs.readIntoSync(stream.handle, activeMem, bufPtr, totalBytes);
         if (synced !== null) {
             if (LARGE_IO_TRACE_ENABLED) traceLargeRead('fread', stream.handle.path, stream.fd, startPos, totalBytes, synced);
             return Math.floor(synced / elemSize);
@@ -2943,8 +2968,22 @@ export class Msvcrt implements IModule {
                 structPtr = undefined;
             }
         } else {
-            filePtr = this.nextFilePtr;
-            this.nextFilePtr += 4;
+            structPtr = this.malloc(Msvcrt.MSVC_FILE_SIZE) >>> 0;
+            if (structPtr) {
+                this.memset(structPtr, 0, Msvcrt.MSVC_FILE_SIZE);
+                const flag = mode.includes("+")
+                    ? Msvcrt.MSVC_IORW
+                    : mode.includes("w") || mode.includes("a")
+                        ? Msvcrt.MSVC_IOWRT
+                        : Msvcrt.MSVC_IOREAD;
+                Mem.writeUint32(structPtr + Msvcrt.MSVC_FILE_FLAG_OFF, flag);
+                Mem.writeUint32(structPtr + Msvcrt.MSVC_FILE_FD_OFF, fd);
+                filePtr = structPtr;
+            } else {
+                filePtr = this.nextFilePtr;
+                this.nextFilePtr += 4;
+                structPtr = undefined;
+            }
         }
         const text = !mode.includes("b");
         this.fileStreams.set(filePtr, { fd, handle, ungetChar: -1, text, eof: false, err: false, structPtr });

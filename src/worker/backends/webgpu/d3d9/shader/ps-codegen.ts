@@ -61,6 +61,13 @@ export function analyzePs(prog: SmProgram): PsAnalysis {
             ins.dst.reg.type === RegType.TEXTURE) {
             samplers.add(ins.dst.reg.num);
         }
+        // Matrix-addressing destinations select iterated texture-coordinate
+        // rows even though TEXM3x2PAD does not write or sample its dst stage.
+        if (ins.dst && prog.major === 1 && !isPs14 &&
+            (ins.opcode === Op.TEXM3x2PAD || ins.opcode === Op.TEXM3x2TEX) &&
+            ins.dst.reg.type === RegType.TEXTURE) {
+            readsTexcoord.add(ins.dst.reg.num);
+        }
     }
 
     const defConsts = new Map<number, Float32Array>();
@@ -139,9 +146,15 @@ export function emitPsMain(prog: SmProgram, a: PsAnalysis, alphaTest: AlphaTest 
     }
     body.push("");
 
+    const textureState: TextureAddressState = {};
     let uid = 0;
     for (const ins of prog.instructions) {
-        if (emitTexOp(ins, prog, a, ctx, body, uid, cubeMask, projectedStages)) { uid++; continue; }
+        if (textureState.m3x2Pad &&
+            !(ins.opcode === Op.TEXM3x2TEX && ins.dst?.reg.type === RegType.TEXTURE &&
+              ins.dst.reg.num === textureState.m3x2Pad.stage + 1)) {
+            textureState.m3x2Pad = undefined;
+        }
+        if (emitTexOp(ins, prog, a, ctx, body, uid, cubeMask, projectedStages, textureState)) { uid++; continue; }
         if (!emitAlu(ins, ctx, body, uid++)) {
             body.push(`// unsupported PS opcode ${opName(ins.opcode)}`);
         }
@@ -156,6 +169,10 @@ export function emitPsMain(prog: SmProgram, a: PsAnalysis, alphaTest: AlphaTest 
     return `@fragment\nfn fs_main(in: Interp) -> @location(0) vec4<f32> {\n    ${body.join("\n    ")}\n}`;
 }
 
+interface TextureAddressState {
+    m3x2Pad?: { stage: number; value: string };
+}
+
 /** Handle texture-addressing opcodes; returns true if consumed. */
 function emitTexOp(
     ins: SmProgram["instructions"][number],
@@ -166,6 +183,7 @@ function emitTexOp(
     uid: number,
     cubeMask: number,
     projectedStages: number,
+    state: TextureAddressState,
 ): boolean {
     const ps1x13 = prog.major === 1 && !a.isPs14;
     const d = ins.dst;
@@ -243,13 +261,39 @@ function emitTexOp(
             emitStore(d, `textureSample(tex${stage}, samp, vec2<f32>(dot((${coord}).xyz, (${src}).xyz), 0.0))`, ctx, body, uid);
             return true;
         }
+        case Op.TEXM3x2PAD: {
+            if (!d) return true;
+            const stage = d.reg.num;
+            const src = srcExpr(ins.src[0] ?? defaultSrc(d.reg), ctx);
+            const value = `_m3x2pad${uid}`;
+            body.push(`// texm3x2pad (row ${stage})`);
+            body.push(`let ${value} = dot((in.${texField(stage)}).xyz, (${src}).xyz);`);
+            state.m3x2Pad = { stage, value };
+            return true;
+        }
+        case Op.TEXM3x2TEX: {
+            if (!d) return true;
+            const stage = d.reg.num;
+            const src = srcExpr(ins.src[0] ?? defaultSrc(d.reg), ctx);
+            const pad = state.m3x2Pad;
+            state.m3x2Pad = undefined;
+            const firstRow = stage > 0 ? stage - 1 : 0;
+            const firstValue = pad?.stage === firstRow
+                ? pad.value
+                : `dot((in.${texField(firstRow)}).xyz, (${src}).xyz)`;
+            const matrixCoord = `_m3x2coord${uid}`;
+            body.push(`// texm3x2tex (rows ${firstRow}, ${stage}; sample stage ${stage})`);
+            body.push(`let ${matrixCoord} = vec2<f32>(` +
+                `${firstValue}, ` +
+                `dot((in.${texField(stage)}).xyz, (${src}).xyz));`);
+            emitStore(d, `textureSample(tex${stage}, samp, ${matrixCoord})`, ctx, body, uid);
+            return true;
+        }
         case Op.TEXBEM:
         case Op.TEXBEML:
         case Op.TEXREG2AR:
         case Op.TEXREG2GB:
         case Op.TEXREG2RGB:
-        case Op.TEXM3x2TEX:
-        case Op.TEXM3x2PAD:
         case Op.TEXM3x2DEPTH:
         case Op.TEXM3x3:
         case Op.TEXM3x3PAD:
