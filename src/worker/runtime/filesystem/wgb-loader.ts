@@ -166,6 +166,17 @@ export interface WgbManifest {
         /** Skip video playback (BinkOpen/SmackOpen return stubs). For debugging video→menu transitions. */
         skipVideo?: boolean;
         /**
+         * Bounded startup key pulses for titles that intentionally bypass their native menu.
+         * The sequence is opt-in per bundle and is cancelled on game switch or stop.
+         */
+        startupInput?: {
+            virtualKey: number;
+            initialDelayMs: number;
+            intervalMs: number;
+            attempts: number;
+            holdMs?: number;
+        };
+        /**
          * Boot with strict x87 FPU (relaxed-FPU f64 fast path disabled → full 80-bit precision).
          * For titles precision-sensitive at the default PC=64 control word — e.g. OGG Vorbis / float
          * audio codecs whose MDCT/synthesis diverges under the f64 relaxed path and corrupts decode

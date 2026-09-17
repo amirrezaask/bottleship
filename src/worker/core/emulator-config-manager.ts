@@ -289,6 +289,15 @@ export class EmulatorConfig {
     // Skip video playback (BinkOpen/SmackOpen return stubs)
     public skipVideo = false;
 
+    // Optional bounded menu-bypass key sequence. Cleared for every bundle.
+    public startupInput: {
+        virtualKey: number;
+        initialDelayMs: number;
+        intervalMs: number;
+        attempts: number;
+        holdMs: number;
+    } | null = null;
+
     // Strict x87 FPU: boot with relaxed-FPU (f64 fast path) DISABLED so all FPU runs at
     // full 80-bit extended precision. For titles whose code is precision-sensitive at the
     // default PC=64 control word — e.g. OGG Vorbis / float audio codecs whose MDCT/synthesis
@@ -538,6 +547,42 @@ export class EmulatorConfig {
             Logger.log(LogCategory.SYSTEM, "EmulatorConfig: Video playback DISABLED (skipVideo=true)");
         }
 
+        // Apply a bounded, bundle-owned startup input sequence. This is intended for
+        // curated mini-games that should enter gameplay without exposing the base
+        // title's New Game / Load Game menu.
+        if (config.startupInput) {
+            const input = config.startupInput;
+            const values = [
+                input.virtualKey,
+                input.initialDelayMs,
+                input.intervalMs,
+                input.attempts,
+                input.holdMs ?? 150,
+            ];
+            if (
+                values.every(Number.isInteger) &&
+                input.virtualKey >= 1 && input.virtualKey <= 254 &&
+                input.initialDelayMs >= 0 && input.initialDelayMs <= 120_000 &&
+                input.intervalMs >= 250 && input.intervalMs <= 10_000 &&
+                input.attempts >= 1 && input.attempts <= 64 &&
+                (input.holdMs ?? 150) >= 50 && (input.holdMs ?? 150) <= 1_000
+            ) {
+                this.startupInput = {
+                    virtualKey: input.virtualKey,
+                    initialDelayMs: input.initialDelayMs,
+                    intervalMs: input.intervalMs,
+                    attempts: input.attempts,
+                    holdMs: input.holdMs ?? 150,
+                };
+                Logger.log(
+                    LogCategory.SYSTEM,
+                    `EmulatorConfig: bounded startup input enabled (${input.attempts} attempts)`,
+                );
+            } else {
+                Logger.warn(LogCategory.SYSTEM, "EmulatorConfig: ignored invalid startupInput");
+            }
+        }
+
         // Apply strict-FPU flag (boot with relaxed-FPU off → full 80-bit x87 precision).
         if (config.fpuStrict) {
             this.fpuStrict = true;
@@ -635,6 +680,7 @@ export class EmulatorConfig {
         this.ddrawCaps = { ...EMU_DDRAW_DEFAULT_CAPS };
         this.screenBackgroundColor = { ...DEFAULT_SCREEN_BACKGROUND };
         this.skipVideo = false;
+        this.startupInput = null;
         this.fpuStrict = false;
         this.disabledDlls = [];
         this.shellExecFake = [];

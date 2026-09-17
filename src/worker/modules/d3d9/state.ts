@@ -170,8 +170,7 @@ export function createStateExports(): Record<string, ThunkImplementation> {
         }
 
         Logger.verbose(LogCategory.D3D9, `SetFVF(0x${FVF.toString(16)})`);
-        device.setFVF(FVF);
-        return D3D_OK;
+        return device.setFVF(FVF);
     };
 
     exports['IDirect3DDevice9_SetStreamSource'] = (ctx, mem, args) => {

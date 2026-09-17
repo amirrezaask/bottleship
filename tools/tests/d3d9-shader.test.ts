@@ -240,6 +240,23 @@ describe("vs codegen", () => {
         expect(res.vsConstantCount).toBe(5);
     });
 
+    test("VS-only fragment honors the stage-zero MODULATE2X combiner", () => {
+        const vs = compileVertexShader(buildVs());
+        const res = linkProgram({
+            vs,
+            ps: null,
+            declElements: decl,
+            streamStride: 20,
+            fixedFunctionStage: {
+                colorOp: 5, colorArg1: 2, colorArg2: 0,
+                alphaOp: 4, alphaArg1: 2, alphaArg2: 0,
+            },
+        });
+        expect(res.wgsl).toContain("2.0 * textureSample(tex0");
+        expect(res.wgsl).toContain("textureSample(tex0");
+        expect(res.wgsl).toContain("in.col0");
+    });
+
     test("builds vertex attributes from the declaration", () => {
         const vs = compileVertexShader(buildVs());
         const res = linkProgram({ vs, ps: null, declElements: decl, streamStride: 20 });
@@ -292,6 +309,21 @@ describe("ps codegen", () => {
         const res = linkProgram({ vs, ps, declElements: decl, streamStride: 20 });
         expect(res.wgsl).toContain("var tex1: texture_2d<f32>");
         assertAllSampledTexturesDeclared(res.wgsl);
+    });
+
+    test("texreg2gb uses the previously sampled source register as dependent coordinates", () => {
+        const psTokens = new Uint32Array([
+            version(true, 1, 1),
+            instr(Op.TEX), dst(RegType.TEXTURE, 0),
+            instr(Op.TEXREG2GB), dst(RegType.TEXTURE, 1), src(RegType.TEXTURE, 0),
+            instr(Op.MOV), dst(RegType.TEMP, 0), src(RegType.TEXTURE, 1),
+            END,
+        ]);
+        const vs = compileVertexShader(buildVs());
+        const ps = compilePixelShader(psTokens);
+        const res = linkProgram({ vs, ps, declElements: decl, streamStride: 20 });
+        expect(res.wgsl).toContain("textureSample(tex1, samp, (t0).yz)");
+        expect(res.wgsl).not.toContain("textureSample(tex1, samp, (in.tex1).xy)");
     });
 
     test("texm3x2pad and texm3x2tex lower to a dependent matrix sample", () => {

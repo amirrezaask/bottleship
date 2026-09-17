@@ -16,6 +16,41 @@ describe("VFS asset ownership", () => {
         expect(wholeReads).toBe(0);
         expect(file.buffer).toBeUndefined();
     });
+    it("coalesces small sequential reads from external blobs within a shared bounded cache", () => {
+        const size = 17 * 1024 * 1024;
+        const reads: Array<[number, number]> = [];
+        const archive = {
+            isExternalEntry() { return true; },
+            readEntryRangeSync(_entry: ZipEntry, offset: number, length: number) {
+                reads.push([offset, length]);
+                return new Uint8Array(length).fill((offset / (256 * 1024)) & 0xff);
+            },
+        } as unknown as ZipArchive;
+        const vfs = new VirtualFileSystem();
+        vfs.mountRom(archive,"", new Map([["asset.dat",entry(size)]]));
+        const file = handle();
+        for (let index = 0; index < 128; index++) {
+            if (index % 2 === 0) {
+                const bytes = vfs.readSync(file, 4096);
+                expect(bytes?.byteLength).toBe(4096);
+                expect(bytes?.[0]).toBe(index < 64 ? 0 : 1);
+            } else {
+                const target = new Uint8Array(4096);
+                expect(vfs.readIntoSync(file, target, 0, target.length)).toBe(target.length);
+                expect(target[0]).toBe(index < 64 ? 0 : 1);
+            }
+        }
+        expect(reads).toEqual([[0, 256 * 1024], [256 * 1024, 256 * 1024]]);
+
+        // 65 distinct blocks exceed the fixed 16 MiB budget, evicting block zero.
+        for (let block = 2; block <= 64; block++) {
+            vfs.setPosition(file, block * 256 * 1024, 0);
+            expect(vfs.readSync(file, 1)?.[0]).toBe(block);
+        }
+        vfs.setPosition(file, 0, 0);
+        expect(vfs.readSync(file, 1)?.[0]).toBe(0);
+        expect(reads).toHaveLength(66);
+    });
     it("does not populate a new game's ROM cache with a late old-game read", async () => {
         let release!: () => void;
         const gate = new Promise<void>(resolve => { release = resolve; });

@@ -412,6 +412,79 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
         return D3DERR_NOTAVAILABLE;
     };
 
+    exports['IDirect3DDevice9_UpdateTexture'] = (_ctx, mem, args) => {
+        const pDevice = args[0] >>> 0;
+        const sourcePtr = args[1] >>> 0;
+        const destinationPtr = args[2] >>> 0;
+        const device = devices.get(pDevice);
+        const source = textureMeta.get(sourcePtr);
+        const destination = textureMeta.get(destinationPtr);
+        if (
+            !device || !source || !destination ||
+            resourceToDevice.get(sourcePtr) !== device ||
+            resourceToDevice.get(destinationPtr) !== device ||
+            source.width !== destination.width ||
+            source.height !== destination.height ||
+            source.format !== destination.format ||
+            !!source.isCube !== !!destination.isCube ||
+            source.levels < destination.levels ||
+            destination.levels > 32
+        ) {
+            return D3DERR_INVALIDCALL;
+        }
+
+        const copyLevel = (level: number, face: number): boolean => {
+            const dimensions = getTextureLevelDims(destination.width, destination.height, level);
+            const layout = getD3DTextureLayout(destination.format, dimensions.width, dimensions.height);
+            const sourceLock = face >= 0
+                ? device.lockCubeFace(sourcePtr, face, level)
+                : device.lockTexture(sourcePtr, level);
+            if (!sourceLock) return false;
+            const destinationLock = face >= 0
+                ? device.lockCubeFace(destinationPtr, face, level)
+                : device.lockTexture(destinationPtr, level);
+            if (!destinationLock) {
+                if (face >= 0) device.unlockCubeFace(sourcePtr, face, level, mem);
+                else device.unlockTexture(sourcePtr, level, mem);
+                return false;
+            }
+
+            let valid = sourceLock.pitch >= layout.pitch && destinationLock.pitch >= layout.pitch;
+            const rowBytes = layout.pitch;
+            for (let row = 0; valid && row < layout.rows; row++) {
+                const sourceStart = sourceLock.ptr + row * sourceLock.pitch;
+                const destinationStart = destinationLock.ptr + row * destinationLock.pitch;
+                if (
+                    sourceStart > mem.length - rowBytes ||
+                    destinationStart > mem.length - rowBytes
+                ) {
+                    valid = false;
+                    break;
+                }
+                mem.set(mem.subarray(sourceStart, sourceStart + rowBytes), destinationStart);
+            }
+
+            if (face >= 0) {
+                device.unlockCubeFace(sourcePtr, face, level, mem);
+                device.unlockCubeFace(destinationPtr, face, level, mem);
+            } else {
+                device.unlockTexture(sourcePtr, level, mem);
+                device.unlockTexture(destinationPtr, level, mem);
+            }
+            return valid;
+        };
+
+        const faces = destination.isCube ? 6 : 1;
+        for (let face = 0; face < faces; face++) {
+            for (let level = 0; level < destination.levels; level++) {
+                if (!copyLevel(level, destination.isCube ? face : -1)) {
+                    return D3DERR_INVALIDCALL;
+                }
+            }
+        }
+        return D3D_OK;
+    };
+
     exports['IDirect3DVertexBuffer9_Lock'] = (ctx, mem, args) => {
         const pVertexBuffer = args[0];
         const OffsetToLock = args[1];

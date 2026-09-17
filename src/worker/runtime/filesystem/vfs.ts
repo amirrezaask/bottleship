@@ -47,6 +47,14 @@ export class VirtualFileSystem {
   private romPrefix = 'assets';
   private readonly ROM_CACHE_MAX_BYTES = 64 * 1024 * 1024; // Whole small-file cache
   private readonly MAX_CACHE_ENTRY_SIZE = 4 * 1024 * 1024; // Larger assets always use ranges
+  /** Shared cache for thin-title blobs. Without this, every guest 4 KiB ReadFile
+   * becomes a synchronous service-worker request even during a sequential scan. */
+  private static readonly EXTERNAL_RANGE_BLOCK_BYTES = 256 * 1024;
+  private static readonly EXTERNAL_RANGE_CACHE_BYTES = 16 * 1024 * 1024;
+  private readonly externalRangeCache = new LruCache<string, Uint8Array>({
+    maxBytes: VirtualFileSystem.EXTERNAL_RANGE_CACHE_BYTES,
+    sizeOf: (value) => value.byteLength,
+  });
   private romIndex: Map<string, ZipEntry> = new Map();
   /**
    * All directory paths present in the ROM (lowercased, "/"-separated, no trailing
@@ -115,6 +123,7 @@ export class VirtualFileSystem {
     this.romIndex.clear();
     this.romDirs.clear();
     this.romCache.clear();
+    this.externalRangeCache.clear();
     this.romWhiteouts.clear();
     this.romLoadPromises.clear();
     this.romPinned.clear();
@@ -760,6 +769,44 @@ export class VirtualFileSystem {
     }
   }
 
+  /** Read a small external-blob range through one process-wide, bounded block cache.
+   * The cache is shared across files so opening many thin-title assets cannot
+   * multiply the memory budget. Large reads retain the existing direct path. */
+  private readExternalRangeCached(
+    entry: ZipEntry,
+    path: string,
+    offset: number,
+    length: number,
+  ): Uint8Array | null {
+    if (!this.romArchive || length <= 0 || length > VirtualFileSystem.EXTERNAL_RANGE_BLOCK_BYTES)
+      return null;
+    const available = Math.max(0, Math.min(length, entry.uncompressedSize - offset));
+    if (available === 0) return new Uint8Array();
+    const blockBytes = VirtualFileSystem.EXTERNAL_RANGE_BLOCK_BYTES;
+    const firstBlock = Math.floor(offset / blockBytes);
+    const lastBlock = Math.floor((offset + available - 1) / blockBytes);
+    const output = new Uint8Array(available);
+    for (let block = firstBlock; block <= lastBlock; block++) {
+      const key = `${path}:${block}`;
+      let bytes = this.externalRangeCache.get(key);
+      if (!bytes) {
+        const blockOffset = block * blockBytes;
+        const blockLength = Math.min(blockBytes, entry.uncompressedSize - blockOffset);
+        bytes = this.romArchive.readEntryRangeSync(entry, blockOffset, blockLength) ?? undefined;
+        if (!bytes || bytes.byteLength !== blockLength) return null;
+        this.externalRangeCache.set(key, bytes);
+      }
+      const blockOffset = block * blockBytes;
+      const copyStart = Math.max(offset, blockOffset);
+      const copyEnd = Math.min(offset + available, blockOffset + bytes.byteLength);
+      output.set(
+        bytes.subarray(copyStart - blockOffset, copyEnd - blockOffset),
+        copyStart - offset,
+      );
+    }
+    return output;
+  }
+
   /**
    * Synchronous version of read for fast-path scenarios (e.g. cached ROM files)
    */
@@ -787,7 +834,11 @@ export class VirtualFileSystem {
       // Large uncached STORED ROM entries: sync range read (BufferSource WGB cache).
       const entry = this.romIndex.get(rel);
       if (entry && this.romArchive && entry.compression === 0) {
-        const data = this.romArchive.readEntryRangeSync(entry, handle.position, length);
+        const isExternal = this.romArchive.isExternalEntry?.(entry) === true;
+        const data = isExternal
+          ? this.readExternalRangeCached(entry, rel, handle.position, length) ??
+            this.romArchive.readEntryRangeSync(entry, handle.position, length)
+          : this.romArchive.readEntryRangeSync(entry, handle.position, length);
         if (data) {
           handle.position += data.length;
           return data;
@@ -961,7 +1012,11 @@ export class VirtualFileSystem {
 
       const entry = this.romIndex.get(rel);
       if (entry && this.romArchive && entry.compression === 0) {
-        const data = this.romArchive.readEntryRangeSync(entry, handle.position, length);
+        const isExternal = this.romArchive.isExternalEntry?.(entry) === true;
+        const data = isExternal
+          ? this.readExternalRangeCached(entry, rel, handle.position, length) ??
+            this.romArchive.readEntryRangeSync(entry, handle.position, length)
+          : this.romArchive.readEntryRangeSync(entry, handle.position, length);
         if (data && data.length > 0) {
           target.set(data, targetOffset);
           handle.position += data.length;

@@ -367,6 +367,9 @@ let loadBundleChain: Promise<void> = Promise.resolve();
 let gameSessionActive = false;
 let registrySaveTimeout: number | null = null;
 let registrySaveGeneration = 0;
+let startupInputTimeout: number | null = null;
+let startupInputHeldKey: number | null = null;
+let startupInputGeneration = 0;
 /** do_tick liveness counter — incremented in the tick_hooks_before guard every v86 do_tick().
  *  If this stops advancing while is_running()===true, the v86 run loop itself died (next_tick
  *  not rescheduled); if it advances but EIP is frozen, cycle execution retired 0 (budget stuck). */
@@ -383,6 +386,47 @@ function cancelRegistryAutosave(): void {
     registrySaveTimeout = null;
   }
   System.getInstance().registry.setOnChange(null);
+}
+
+function cancelStartupInput(): void {
+  startupInputGeneration++;
+  if (startupInputTimeout !== null) {
+    clearTimeout(startupInputTimeout);
+    startupInputTimeout = null;
+  }
+  if (startupInputHeldKey !== null) {
+    System.getInstance().inputManager?.injectKey(startupInputHeldKey, false);
+    startupInputHeldKey = null;
+  }
+}
+
+function startStartupInput(): void {
+  cancelStartupInput();
+  const config = EmulatorConfig.getInstance().startupInput;
+  if (!config) return;
+  const generation = startupInputGeneration;
+  let remaining = config.attempts;
+  const pulse = (): void => {
+    if (generation !== startupInputGeneration || remaining <= 0 || !gameSessionActive) return;
+    const input = System.getInstance().inputManager;
+    if (!input?.injectKey(config.virtualKey, true)) {
+      startupInputTimeout = setTimeout(pulse, config.intervalMs) as unknown as number;
+      return;
+    }
+    startupInputHeldKey = config.virtualKey;
+    remaining--;
+    startupInputTimeout = setTimeout(() => {
+      if (generation !== startupInputGeneration) return;
+      input.injectKey(config.virtualKey, false);
+      startupInputHeldKey = null;
+      if (remaining > 0) {
+        startupInputTimeout = setTimeout(pulse, config.intervalMs) as unknown as number;
+      } else {
+        startupInputTimeout = null;
+      }
+    }, config.holdMs) as unknown as number;
+  };
+  startupInputTimeout = setTimeout(pulse, config.initialDelayMs) as unknown as number;
 }
 
 function installRegistryAutosave(gameId: string): void {
@@ -1401,6 +1445,7 @@ const prepareFullGameSwitch = async (): Promise<void> => {
 
   const system = System.getInstance();
   cancelRegistryAutosave();
+  cancelStartupInput();
   if (system.process?.v86) {
     isPaused = true;
     system.isPaused = true;
@@ -2152,6 +2197,7 @@ const loadBundleImpl = async (payload: {
     _prefetchController = new AbortController();
     if (!bundle.gamebox) system.fileSystem.startProgressivePrefetch(_prefetchController.signal);
     gameSessionActive = true;
+    startStartupInput();
   } catch (err) {
     bundleStartupCacheWindow = false;
     for (const request of pendingGameboxAot.splice(0)) {
@@ -3138,6 +3184,7 @@ async function gameboxStop(id: string) {
       );
     });
     cancelRegistryAutosave();
+    cancelStartupInput();
     await system.fileSystem.flushAll();
     const state = system.registry.serialize();
     if (state.gameId) {

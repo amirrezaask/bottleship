@@ -289,11 +289,24 @@ function emitTexOp(
             emitStore(d, `textureSample(tex${stage}, samp, ${matrixCoord})`, ctx, body, uid);
             return true;
         }
-        case Op.TEXBEM:
-        case Op.TEXBEML:
         case Op.TEXREG2AR:
         case Op.TEXREG2GB:
-        case Op.TEXREG2RGB:
+        case Op.TEXREG2RGB: {
+            if (!d) return true;
+            const stage = d.reg.num;
+            const source = srcExpr(ins.src[0] ?? defaultSrc(d.reg), ctx);
+            const isCube = ((cubeMask >> stage) & 1) !== 0;
+            const coord = ins.opcode === Op.TEXREG2AR
+                ? `vec2<f32>((${source}).w, (${source}).x)`
+                : ins.opcode === Op.TEXREG2GB
+                    ? `(${source}).yz`
+                    : isCube ? `(${source}).xyz` : `(${source}).xy`;
+            body.push(`// ${opName(ins.opcode)} (dependent sample from source register)`);
+            emitStore(d, `textureSample(tex${stage}, samp, ${coord})`, ctx, body, uid);
+            return true;
+        }
+        case Op.TEXBEM:
+        case Op.TEXBEML:
         case Op.TEXM3x2DEPTH:
         case Op.TEXM3x3:
         case Op.TEXM3x3PAD:

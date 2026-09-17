@@ -83,7 +83,13 @@ export function registerMilesCompatibility(
     const cm = ctx.process.dispatcher!.callbackManager;
     const [open, close, seek, read] = callbacks!;
     const frame = cm.saveSuspendedThunkContext(thunk, cleanup, 'Miles archive read');
-    const scratch = ctx.process.memory.alloc(65536);
+    const archiveReadChunkBytes = 64 * 1024;
+    const scratch = ctx.process.memory.alloc(archiveReadChunkBytes);
+    // Miles callers may provide encrypted archive callbacks rather than a host-visible
+    // filename. Keep the one-stream allocation bounded, but admit Vice City's largest
+    // 70.9 MiB radio archive. The previous 64 MiB ceiling made the game report a
+    // missing CD even though the installed file was present.
+    const maxArchiveStreamBytes = 80 * 1024 * 1024;
     let file = 0,
       size = 0,
       offset = 0,
@@ -100,7 +106,7 @@ export function registerMilesCompatibility(
       return null;
     };
     const next = (): void => {
-      const count = Math.min(65536, size - offset);
+      const count = Math.min(archiveReadChunkBytes, size - offset);
       invoke(read, [file, scratch, count], (result) => {
         if (result <= 0 || result > count) return shut(false);
         data.set(ctx.process.getCurrentMemory().subarray(scratch, scratch + result), offset);
@@ -118,7 +124,7 @@ export function registerMilesCompatibility(
         true,
       );
       invoke(seek, [file, 0, 2], (end) => {
-        if (end <= 0 || end > 64 * 1024 * 1024) return shut(false);
+        if (end <= 0 || end > maxArchiveStreamBytes) return shut(false);
         size = end;
         if (sizeOnly) return shut(true);
         data = new Uint8Array(size);

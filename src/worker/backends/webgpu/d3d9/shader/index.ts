@@ -96,6 +96,15 @@ export interface LinkResult {
     cubeMask: number;
 }
 
+export interface FixedFunctionStage {
+    colorOp: number;
+    colorArg1: number;
+    colorArg2: number;
+    alphaOp: number;
+    alphaArg1: number;
+    alphaArg2: number;
+}
+
 export interface LinkOptions {
     vs: CompiledVs;
     ps: CompiledPs | null;
@@ -116,6 +125,8 @@ export interface LinkOptions {
      *  the ps_1_1-1_3 / fixed-function projective texture divide (projected spotlights, planar
      *  reflections). SM2+ shaders project in-shader (texldp) and ignore this. */
     projectedStages?: number;
+    /** Stage-zero fixed-function combiner used when no pixel shader is bound. */
+    fixedFunctionStage?: FixedFunctionStage;
 }
 
 export function linkProgram(opts: LinkOptions): LinkResult {
@@ -209,7 +220,7 @@ export function linkProgram(opts: LinkOptions): LinkResult {
         const dftStage = hasTexture ? fragSamplers[0] : null;
         const dftCube = dftStage !== null && ((cubeMask >> dftStage) & 1) !== 0;
         const dftProjected = dftStage !== null && ((projectedStages >> dftStage) & 1) !== 0;
-        lines.push(emitDefaultFragment(interpColors[0], dftStage, alphaTest, dftCube, dftProjected));
+        lines.push(emitDefaultFragment(interpColors[0], dftStage, alphaTest, dftCube, dftProjected, opts.fixedFunctionStage));
     }
 
     return {
@@ -224,7 +235,7 @@ export function linkProgram(opts: LinkOptions): LinkResult {
     };
 }
 
-function emitDefaultFragment(hasColor: boolean, sampleStage: number | null, alphaTest: AlphaTest | null = null, sampleCube = false, projected = false): string {
+function emitDefaultFragment(hasColor: boolean, sampleStage: number | null, alphaTest: AlphaTest | null = null, sampleCube = false, projected = false, stage?: FixedFunctionStage): string {
     const col = hasColor ? `in.${colField(0)}` : `vec4<f32>(1.0)`;
     // D3DTTFF_PROJECTED on the sampled stage divides the coordinate by its .w component before
     // the fetch (the vertex shader places the projective q there) — see projectedStageKey.
@@ -235,9 +246,31 @@ function emitDefaultFragment(hasColor: boolean, sampleStage: number | null, alph
     const coord = sampleStage !== null
         ? (sampleCube ? `${tc}.xyz` : `${tc}.xy`)
         : "";
-    const ret = sampleStage !== null
-        ? `textureSample(tex${sampleStage}, samp, ${coord}) * ${col}`
-        : col;
+    const tex = sampleStage !== null
+        ? `textureSample(tex${sampleStage}, samp, ${coord})`
+        : `vec4<f32>(1.0)`;
+    const arg = (value: number | undefined): string => {
+        switch ((value ?? 0) & 0xf) {
+            case 2: return tex; // D3DTA_TEXTURE
+            case 0: // D3DTA_DIFFUSE
+            case 1: // D3DTA_CURRENT at stage zero
+            default: return col;
+        }
+    };
+    const combine = (op: number | undefined, a: string, b: string): string => {
+        switch (op) {
+            case 2: return a; // SELECTARG1
+            case 3: return b; // SELECTARG2
+            case 5: return `(2.0 * ${a} * ${b})`; // MODULATE2X
+            case 6: return `(4.0 * ${a} * ${b})`; // MODULATE4X
+            case 7: return `(${a} + ${b})`; // ADD
+            case 4: // MODULATE
+            default: return `(${a} * ${b})`;
+        }
+    };
+    const color = combine(stage?.colorOp, arg(stage?.colorArg1), arg(stage?.colorArg2));
+    const alpha = combine(stage?.alphaOp, arg(stage?.alphaArg1), arg(stage?.alphaArg2));
+    const ret = `vec4<f32>((${color}).rgb, (${alpha}).a)`;
     const atest = alphaTestSnippet(alphaTest, "_c.a");
     if (!atest) {
         return `@fragment\nfn fs_main(in: Interp) -> @location(0) vec4<f32> {\n    return ${ret};\n}`;

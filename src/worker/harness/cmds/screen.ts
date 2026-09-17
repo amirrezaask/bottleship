@@ -49,6 +49,14 @@ export function registerScreenCommands(svc: HarnessService): void {
         return active.getFrameLog(n);
     });
 
+    svc.register("rtPixels", async (args) => {
+        const index = args[0];
+        if (typeof index !== "number" || !Number.isSafeInteger(index) || index < -1) throw new HarnessError("rtPixels requires -1 or a non-negative texture index", HarnessErrorCode.BAD_ARGS);
+        const active: any = sys().services?.render?.getActive?.();
+        if (!active?.getRtPixels) throw new HarnessError("active presenter has no rtPixels (not D3D9)", HarnessErrorCode.UNSUPPORTED);
+        return active.getRtPixels(index);
+    });
+
     /** rtDebug() — D3D9 render-target diagnostics: recent SetRenderTarget surface→texture
      *  resolutions + which textures were created with D3DUSAGE_RENDERTARGET. */
     svc.register("rtDebug", () => {

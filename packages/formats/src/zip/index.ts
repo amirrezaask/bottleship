@@ -401,6 +401,11 @@ export class ZipArchive {
         return this.entries.get(name);
     }
 
+    /** Whether this logical STORED entry is backed by its own immutable source. */
+    isExternalEntry(entry: ZipEntry): boolean {
+        return this.externalSources.has(entry.name);
+    }
+
     listEntries(): ZipEntry[] {
         return Array.from(this.entries.values());
     }

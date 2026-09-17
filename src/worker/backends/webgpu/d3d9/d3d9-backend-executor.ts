@@ -707,6 +707,11 @@ export class D3D9BackendExecutor {
         return this.offscreenTexture!;
     }
 
+    getBackBufferDepthView(): GPUTextureView {
+        this.ensureOffscreenTarget();
+        return this.depthView!;
+    }
+
     private ensureOffscreenTarget(): void {
         const device = this.backend.getDevice()!;
         const format = this.backend.getFormat()!;

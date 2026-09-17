@@ -44,4 +44,43 @@ describe("EmulatorConfig manifest display modes", () => {
         expect(bpps.has(16)).toBe(true);
         expect(bpps.has(32)).toBe(true);
     });
+
+    test("accepts a bounded startup input sequence and clears it on reset", () => {
+        const cfg = EmulatorConfig.getInstance();
+        cfg.applyFromManifest(
+            minimalManifest({
+                startupInput: {
+                    virtualKey: 0x0d,
+                    initialDelayMs: 12_000,
+                    intervalMs: 2_000,
+                    attempts: 16,
+                    holdMs: 200,
+                },
+            }),
+        );
+        expect(cfg.startupInput).toEqual({
+            virtualKey: 0x0d,
+            initialDelayMs: 12_000,
+            intervalMs: 2_000,
+            attempts: 16,
+            holdMs: 200,
+        });
+        cfg.reset();
+        expect(cfg.startupInput).toBeNull();
+    });
+
+    test("rejects unbounded startup input sequences", () => {
+        const cfg = EmulatorConfig.getInstance();
+        cfg.applyFromManifest(
+            minimalManifest({
+                startupInput: {
+                    virtualKey: 0x0d,
+                    initialDelayMs: 0,
+                    intervalMs: 1,
+                    attempts: 10_000,
+                },
+            }),
+        );
+        expect(cfg.startupInput).toBeNull();
+    });
 });

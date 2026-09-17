@@ -1430,6 +1430,9 @@ export const dbg = {
                     projectedStages: number[];
                     projectedSetCount: number;
                     projectedFlagsSeen: number;
+                    activeDeclaration: unknown;
+                    activeFvf: number;
+                    activeVsConstants: number[];
                 };
                 const psSummary = d.ps.map(p => {
                     const { disasm, ...rest } = p;
@@ -1440,6 +1443,8 @@ export const dbg = {
                     projectedShaders: d.ps.filter(p => (p.projectedTex as number) > 0).length,
                     projectedStageKey: d.projectedStageKey, projectedStages: d.projectedStages,
                     projectedSetCount: d.projectedSetCount, projectedFlagsSeen: d.projectedFlagsSeen,
+                    activeDeclaration: d.activeDeclaration, activeFvf: d.activeFvf,
+                    activeVsConstants: d.activeVsConstants,
                     vs: d.vs, ps: psSummary,
                 })}`);
             }
