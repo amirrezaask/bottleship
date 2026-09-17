@@ -26,7 +26,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -44,5 +43,7 @@ jobs:
           name: windows-runtime-source-${{ github.sha }}
           path: evidence/
           if-no-files-found: error
+      - name: Require the exact CPU source pin (never substitute upstream HEAD)
+        run: git submodule update --init --recursive
       - name: Existing runtime contracts
         run: node --test tools/runtime-test/*.test.mjs
