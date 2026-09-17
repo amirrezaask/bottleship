@@ -9,18 +9,33 @@ on:
       - 'src/worker/modules/d3dx9/**'
       - 'src/worker/api/d3dx9.api.ts'
       - 'tools/windows-runtime/**'
+      - 'tools/reference/d3dx9/**'
       - '.github/workflows/windows-runtime.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
-
 concurrency:
   group: windows-runtime-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  runtime-evidence:
+  windows-samples:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 32-bit Windows cross compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-i686 binutils-mingw-w64-i686
+      - name: Compile original Direct3D 8, Direct3D 9 and DirectDraw 7 games
+        run: bash tools/windows-runtime/samples/build.sh "$GITHUB_WORKSPACE/evidence/windows-samples"
+      - name: Publish PE32 programs and import/byte identity receipts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-samples-${{ github.sha }}
+          path: evidence/windows-samples/
+          if-no-files-found: error
+  full-runtime-source:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -43,7 +58,7 @@ jobs:
           name: windows-runtime-source-${{ github.sha }}
           path: evidence/
           if-no-files-found: error
-      - name: Require the exact CPU source pin (never substitute upstream HEAD)
+      - name: Require exact CPU source pin; never replace it with upstream HEAD
         run: git submodule update --init --recursive
-      - name: Existing runtime contracts
+      - name: Existing x86 runtime contracts
         run: node --test tools/runtime-test/*.test.mjs
