@@ -1,0 +1,48 @@
+name: Windows runtime evidence
+
+on:
+  push:
+    branches: [perf/windows-runtime-20260918]
+  pull_request:
+    paths:
+      - 'src/worker/core/memory/**'
+      - 'src/worker/modules/d3dx9/**'
+      - 'src/worker/api/d3dx9.api.ts'
+      - 'tools/windows-runtime/**'
+      - '.github/workflows/windows-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: Preserve exact source receipt
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-sha.txt
+          git submodule status > evidence/submodules.txt
+          git archive --format=tar HEAD | gzip > evidence/runtime-source.tar.gz
+          node --version > evidence/node-version.txt
+          lscpu > evidence/cpu.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-source-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+      - name: Existing runtime contracts
+        run: node --test tools/runtime-test/*.test.mjs
