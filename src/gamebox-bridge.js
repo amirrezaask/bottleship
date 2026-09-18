@@ -96,7 +96,10 @@ export function installGameBoxBridge(worker, closeAudio) {
     }
     if (data.type === 'loading_progress') {
       if (exited || error) return;
-      publish(data.phase === 'done' ? 'Starting game…' : `Loading game: ${data.phase}`);
+      // The player observes progress directly. A repeated phase has no new
+      // bridge state and must not dispatch another cross-frame DOM event.
+      const nextStatus = data.phase === 'done' ? 'Starting game…' : `Loading game: ${data.phase}`;
+      if (status !== nextStatus) publish(nextStatus);
     }
     if (data.type === 'first_present' && !exited && !error) publish('Playing');
     if (data.type === 'error') {
