@@ -5,6 +5,7 @@ on:
     branches: [perf/windows-runtime-20260918]
   pull_request:
     paths:
+      - 'src/gamebox-bridge.js'
       - 'src/worker/core/memory/**'
       - 'src/worker/modules/d3dx9/**'
       - 'src/worker/api/d3dx9.api.ts'
@@ -20,6 +21,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  hle-kernels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.16.0'
+      - name: HLE conformance and allocation contracts (not guest execution)
+        run: |
+          mkdir -p evidence
+          node --experimental-vm-modules --test tools/windows-runtime/conformance.mjs | tee evidence/conformance.tap
+      - name: Paired baseline versus candidate real-source HLE benchmarks
+        run: node --experimental-vm-modules tools/windows-runtime/benchmark.mjs --assert-gain | tee evidence/benchmark.log
+      - name: Publish raw measurements even when an assertion fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hle-evidence-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
   windows-samples:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
