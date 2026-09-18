@@ -31,10 +31,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.16.0'
-      - name: HLE conformance and allocation contracts (not guest execution)
+      - name: HLE conformance, allocation and host-event contracts (not guest execution)
         run: |
           mkdir -p evidence
-          node --experimental-vm-modules --test tools/windows-runtime/conformance.mjs | tee evidence/conformance.tap
+          node --experimental-vm-modules --test tools/windows-runtime/conformance.mjs tools/windows-runtime/bridge.mjs | tee evidence/conformance.tap
       - name: Paired baseline versus candidate real-source HLE benchmarks
         run: node --experimental-vm-modules tools/windows-runtime/benchmark.mjs --assert-gain | tee evidence/benchmark.log
       - name: Publish raw measurements even when an assertion fails

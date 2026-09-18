@@ -43,6 +43,8 @@ export type DecodedImage = {
     height: number;
     rgba: Uint8Array;
     mipLevels: number;
+    sourceMipLevels: number;
+    imageFileFormat: number;
 };
 
 const DDS_MAGIC = 0x20534444; // "DDS "
@@ -418,20 +420,24 @@ export async function decodeImageBytes(data: Uint8Array): Promise<DecodedImage |
         let width: number;
         let height: number;
         let rgba: Uint8Array;
+        let imageFileFormat: number;
 
         if (data.length >= 4 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) {
+            imageFileFormat = 3; // D3DXIFF_PNG
             const bitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: 'image/png' }));
             width = bitmap.width;
             height = bitmap.height;
             rgba = await rgbaFromImageBitmap(bitmap);
             bitmap.close();
         } else if (data.length >= 2 && data[0] === 0xff && data[1] === 0xd8) {
+            imageFileFormat = 1; // D3DXIFF_JPG
             const bitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: 'image/jpeg' }));
             width = bitmap.width;
             height = bitmap.height;
             rgba = await rgbaFromImageBitmap(bitmap);
             bitmap.close();
         } else if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) {
+            imageFileFormat = 0; // D3DXIFF_BMP
             const bitmap = await createImageBitmap(new Blob([asBlobPart(data)], { type: 'image/bmp' }));
             width = bitmap.width;
             height = bitmap.height;
@@ -448,8 +454,11 @@ export async function decodeImageBytes(data: Uint8Array): Promise<DecodedImage |
                 height,
                 rgba,
                 mipLevels: dds.mipLevels,
+                sourceMipLevels: dds.mipLevels,
+                imageFileFormat: 4, // D3DXIFF_DDS
             };
         } else {
+            imageFileFormat = 2; // D3DXIFF_TGA
             const tga = decodeTGA(data);
             if (!tga) return null;
             width = tga.width;
@@ -464,6 +473,8 @@ export async function decodeImageBytes(data: Uint8Array): Promise<DecodedImage |
             height,
             rgba,
             mipLevels: computeMipLevels(width, height),
+            sourceMipLevels: 1,
+            imageFileFormat,
         };
     } catch (e) {
         Logger.warn(LogCategory.SYSTEM, `d3dx9: image decode failed: ${e}`);

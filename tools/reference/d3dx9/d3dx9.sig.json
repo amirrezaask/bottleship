@@ -1,0 +1,28 @@
+{
+  "module": "d3dx9",
+  "source": "Microsoft Learn Direct3D 9 function syntax; https://learn.microsoft.com/en-us/windows/win32/direct3d9/dx9-graphics-reference-d3dx-functions",
+  "functions": [
+    {"name":"D3DXCheckVersion","argCount":2,"signature":"BOOL D3DXCheckVersion(UINT D3DSDKVersion, UINT D3DXSDKVersion)"},
+    {"name":"D3DXCreateTextureFromFileA","argCount":3,"signature":"HRESULT D3DXCreateTextureFromFileA(device, filename, outTexture)"},
+    {"name":"D3DXCreateTextureFromFileW","argCount":3,"signature":"HRESULT D3DXCreateTextureFromFileW(device, filename, outTexture)"},
+    {"name":"D3DXCreateTextureFromFileInMemory","argCount":4,"signature":"HRESULT D3DXCreateTextureFromFileInMemory(device, source, size, outTexture)"},
+    {"name":"D3DXGetImageInfoFromFileA","argCount":2,"signature":"HRESULT D3DXGetImageInfoFromFileA(filename, outInfo)"},
+    {"name":"D3DXGetImageInfoFromFileW","argCount":2,"signature":"HRESULT D3DXGetImageInfoFromFileW(filename, outInfo)"},
+    {"name":"D3DXCreateFontA","argCount":12,"signature":"HRESULT D3DXCreateFontA(device, height, width, weight, mipLevels, italic, charSet, outputPrecision, quality, pitchAndFamily, faceName, outFont)"},
+    {"name":"D3DXCreateFontW","argCount":12,"signature":"HRESULT D3DXCreateFontW(device, height, width, weight, mipLevels, italic, charSet, outputPrecision, quality, pitchAndFamily, faceName, outFont)"},
+    {"name":"D3DXCreateFontIndirectA","argCount":3,"signature":"HRESULT D3DXCreateFontIndirectA(device, descriptor, outFont)"},
+    {"name":"D3DXCreateFontIndirectW","argCount":3,"signature":"HRESULT D3DXCreateFontIndirectW(device, descriptor, outFont)"},
+    {"name":"D3DXMatrixMultiplyTranspose","argCount":3,"signature":"D3DXMATRIX* D3DXMatrixMultiplyTranspose(out, a, b)"},
+    {"name":"D3DXMatrixTranspose","argCount":2,"signature":"D3DXMATRIX* D3DXMatrixTranspose(out, matrix)"},
+    {"name":"D3DXMatrixScaling","argCount":4,"signature":"D3DXMATRIX* D3DXMatrixScaling(out, x, y, z)"},
+    {"name":"D3DXMatrixRotationX","argCount":2,"signature":"D3DXMATRIX* D3DXMatrixRotationX(out, angle)"},
+    {"name":"D3DXMatrixRotationZ","argCount":2,"signature":"D3DXMATRIX* D3DXMatrixRotationZ(out, angle)"},
+    {"name":"D3DXMatrixPerspectiveFovRH","argCount":5,"signature":"D3DXMATRIX* D3DXMatrixPerspectiveFovRH(out, fov, aspect, nearZ, farZ)"},
+    {"name":"D3DXMatrixOrthoLH","argCount":5,"signature":"D3DXMATRIX* D3DXMatrixOrthoLH(out, width, height, nearZ, farZ)"},
+    {"name":"D3DXMatrixOrthoRH","argCount":5,"signature":"D3DXMATRIX* D3DXMatrixOrthoRH(out, width, height, nearZ, farZ)"},
+    {"name":"D3DXMatrixLookAtRH","argCount":4,"signature":"D3DXMATRIX* D3DXMatrixLookAtRH(out, eye, at, up)"},
+    {"name":"D3DXMatrixInverse","argCount":3,"signature":"D3DXMATRIX* D3DXMatrixInverse(out, determinant, matrix)"},
+    {"name":"D3DXVec3TransformNormal","argCount":3,"signature":"D3DXVECTOR3* D3DXVec3TransformNormal(out, vector, matrix)"},
+    {"name":"D3DXVec3Transform","argCount":3,"signature":"D3DXVECTOR4* D3DXVec3Transform(out, vector, matrix)"}
+  ]
+}
