@@ -498,7 +498,11 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             return D3DERR_INVALIDCALL;
         }
 
-        Logger.verbose(LogCategory.D3D9, `VertexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`);
+        // This API can run dozens of times per frame. Keep its detail available
+        // to opt-in verbose diagnostics without formatting a message on every lock.
+        Logger.verboseLazy(LogCategory.D3D9, () =>
+            `VertexBuffer::Lock(Offset=${OffsetToLock}, Size=${SizeToLock})`,
+        );
 
         const dataPtr = device.lockVertexBuffer(pVertexBuffer, OffsetToLock, SizeToLock, Flags);
         if (dataPtr === 0) {
@@ -506,7 +510,9 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             if (ppbData) Mem.writeUint32(ppbData, 0);
             return D3DERR_INVALIDCALL;
         }
-        Logger.log(LogCategory.D3D9, `VertexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`);
+        Logger.verboseLazy(LogCategory.D3D9, () =>
+            `VertexBuffer::Lock -> guest ptr 0x${dataPtr.toString(16)}`,
+        );
 
         if (ppbData) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);

@@ -1136,6 +1136,11 @@ export class InputManager {
     setMousePosition(x: number, y: number): void {
         this.currentMouseX = x | 0;
         this.currentMouseY = y | 0;
+        // DirectInput relative/button-buffer events follow physical movement,
+        // not a guest SetCursorPos warp. Start the next buffered interval at
+        // the warped position so poll() does not report the warp as mouse input.
+        this.dinputPrevMouseX = this.currentMouseX;
+        this.dinputPrevMouseY = this.currentMouseY;
     }
 
     /**

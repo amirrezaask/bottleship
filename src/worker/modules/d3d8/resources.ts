@@ -276,6 +276,13 @@ function lockRenderSurfaceRect(
     const isDiscard = (flags & D3DLOCK_DISCARD) !== 0;
     if (!ensureRenderSurfaceGuestMemory(surface)) return D3DERR_INVALIDCALL;
 
+    // Deferred FFP batches publish GPU authority when they flush. Drain prior
+    // draws before inspecting it, otherwise a Lock can skip readback and the
+    // queued terrain later overwrites sprites written through the CPU lock.
+    // DISCARD also orders prior draws before the replacement CPU contents.
+    adapter.flushProgrammablePending();
+    adapter.renderer.flush();
+
     const finish = (): number => {
         const offset = lockRectOffsetBits(surface, d3dFormat, surface.surfacePtr, pRect, mem);
         if (!offset) return D3DERR_INVALIDCALL;

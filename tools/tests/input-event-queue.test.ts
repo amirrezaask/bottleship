@@ -29,6 +29,9 @@ describe("input transitions while guest execution is busy", () => {
         f.manager.setDInputMouseBufferSize(32);
         f.manager.injectMoveAtScreen(100, 80);
         expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
+        const initialMovement = f.manager.drainDInputMouseEvents(32)
+            .filter(event => event.dwOfs < 8).map(event => [event.dwOfs, event.dwData]);
+        expect(initialMovement).toEqual([[0, 100], [4, 80]]);
         f.manager.injectButtonAtScreen(100, 80, 0, true);
         f.manager.injectButtonAtScreen(100, 80, 0, false);
         expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
@@ -36,16 +39,21 @@ describe("input transitions while guest execution is busy", () => {
         expect(f.manager.getDInputAccum()).toEqual({ x: 120, y: 60 });
         const events = f.manager.drainDInputMouseEvents(32);
         expect(events.filter(event => event.dwOfs < 8).map(event => [event.dwOfs, event.dwData]))
-            .toEqual([[0, 100], [4, 80], [0, 20], [4, -20]]);
+            .toEqual([[0, 20], [4, -20]]);
     });
     test("a harness click moves once and preserves a guest cursor warp", () => {
         const f = fixture();
+        f.manager.setDInputMouseBufferSize(32);
         f.manager.injectClickAtScreen(100, 80);
         expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
+        f.manager.drainDInputMouseEvents(32);
         f.manager.setMousePosition(320, 240);
         f.manager.injectClickAtScreen(330, 235);
         expect(f.manager.getDInputAccum()).toEqual({ x: 110, y: 75 });
         expect(f.manager.getMouseState()).toMatchObject({ x: 330, y: 235, buttons: 0 });
+        expect(f.manager.drainDInputMouseEvents(32)
+            .filter(event => event.dwOfs < 8).map(event => [event.dwOfs, event.dwData]))
+            .toEqual([[0, 10], [4, -5]]);
     });
     test("reset discards taps queued for the previous guest", () => {
         const f = fixture();

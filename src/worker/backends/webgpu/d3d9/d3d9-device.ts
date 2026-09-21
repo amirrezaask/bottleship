@@ -3285,6 +3285,8 @@ export class D3D9Device {
             }
             const zEnable = (stateBits >> 25) & 1;
             const zWrite = (stateBits >> 26) & 1;
+            const usePopwwDepthTest = zEnable !== 0
+                && System.getInstance().executableName.toLowerCase() === "pop2.exe";
 
             const pipeline = gpuDevice.createRenderPipeline({
                 layout: pipelineLayout,
@@ -3298,7 +3300,7 @@ export class D3D9Device {
                 depthStencil: {
                     format: "depth24plus",
                     depthWriteEnabled: zWrite !== 0,
-                    depthCompare: "always",
+                    depthCompare: usePopwwDepthTest ? "less-equal" : "always",
                 },
             });
             return this.backendExecutor.registerPipeline(pipeline, link.hasTexture, true);

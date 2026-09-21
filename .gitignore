@@ -4,8 +4,13 @@ bun.lockb
 
 # Build output
 dist/
+dist-*/
 build/
 *.local
+
+# Local experiment/runtime scratch
+.work/
+.runtime-*/
 # Rust crate build output (any crate under the repo)
 **/target/
 # Generated from bottleship-audio-worklet.ts by the vite audio-worklet plugin
