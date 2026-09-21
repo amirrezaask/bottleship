@@ -10,6 +10,9 @@ import { IModule } from "../core/module";
 import { Process } from "../core/process";
 import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import { Logger, LogCategory } from "../core/logger";
+import { System } from "../core/system";
+import { Marshaler } from "../core/memory/marshaler";
+import { WindowInfo, windows } from "./user32/shared-state";
 
 /** Fake HDRAWDIB handle — just a non-zero sentinel */
 let nextDrawDibHandle = 0xDD000001;
@@ -31,6 +34,56 @@ export class Msvfw32 implements IModule {
 
         // VideoForWindowsVersion() is the ordinal-2 import used by older games.
         this.exports["ord_2"] = () => 0x040003B6;
+
+        const createMciWindow = (mem: Uint8Array, args: number[], wide: boolean): number => {
+            const [parent, instance, style, fileNamePtr] = args;
+            const fileName = fileNamePtr
+                ? wide
+                    ? Marshaler.readWideString(mem, fileNamePtr)
+                    : Marshaler.readString(mem, fileNamePtr)
+                : "";
+            // MCIWnd is a child control. Even when skipVideo bypasses decoding,
+            // callers retain and message the returned HWND before destroying it.
+            // Returning the old generic-stub zero made Midtown Madness dereference
+            // a null control and crash during startup.
+            const hwnd = System.getInstance().windowManager.createWindow(
+                "MCIWndClass",
+                fileName,
+                style,
+                0,
+                0,
+                0,
+                1,
+                1,
+                parent,
+                0,
+                instance,
+                0,
+            );
+            if (!hwnd) return 0;
+            const info: WindowInfo = {
+                handle: hwnd,
+                title: fileName,
+                style,
+                exStyle: 0,
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                parent: parent || undefined,
+                children: [],
+                visible: (style & 0x10000000) !== 0,
+                wndProc: 0,
+                nativeClassName: "MCIWndClass",
+            };
+            windows.set(hwnd, info);
+            const parentWindow = parent ? windows.get(parent) : undefined;
+            if (parentWindow && !parentWindow.children.includes(hwnd)) parentWindow.children.push(hwnd);
+            Logger.log(LogCategory.SYSTEM, `[MSVFW32] MCIWndCreate${wide ? "W" : "A"}(\"${fileName}\") → 0x${hwnd.toString(16)}`);
+            return hwnd;
+        };
+        this.exports["MCIWndCreateA"] = (_ctx, mem, args) => createMciWindow(mem, args, false);
+        this.exports["MCIWndCreateW"] = (_ctx, mem, args) => createMciWindow(mem, args, true);
 
         // DrawDibOpen() → HDRAWDIB
         this.exports["DrawDibOpen"] = (_ctx, _mem, _args) => {

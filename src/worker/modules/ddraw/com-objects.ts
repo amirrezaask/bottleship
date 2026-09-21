@@ -29,6 +29,7 @@ import {
     IID_IDirect3DVertexBuffer,
     DDSCAPS_FLIP,
     DDSCAPS_PRIMARYSURFACE,
+    DDSCAPS_BACKBUFFER,
     D3DRENDERSTATE_LIGHTING,
     D3DRENDERSTATE_AMBIENT,
     D3DRENDERSTATE_DIFFUSEMATERIALSOURCE,
@@ -58,6 +59,7 @@ import {
     D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2,
 } from "./constants";
 import type { Rect } from "./helpers";
+import { DELTA_FORCE_3_SOURCE_SHA256 } from "../../core/game-fixes/delta-force-3";
 
 export { DirectDrawObject, DirectDrawClipperObject, DirectDrawPaletteObject } from "./com-objects-ddraw";
 
@@ -140,6 +142,10 @@ export interface BaseSurfaceState {
     surfacePtr: number;
     format: SurfaceFormat;
     attachedSurfaceAddr: number;
+    /** DirectDraw object that created this surface. The retained reference keeps
+     * IDirectDrawSurface::GetDDInterface valid after the app releases its own
+     * factory reference. */
+    ownerDirectDrawHandle?: number;
     gpuTexture?: GPUTexture;
     /** Single-mip (level 0) view — used for render attachments, clears, uploads, and sampling
      *  when there is no mip chain. */
@@ -321,6 +327,17 @@ export function isRenderSurface(state: DirectDrawSurfaceState): state is RenderS
  * DirectDraw Surface COM object implementation.
  */
 export class DirectDrawSurfaceObject extends BaseComObject {
+    /** Keep Land Warrior's retained display-chain aliases alive during mission setup. */
+    protected get leakOnZeroRef(): boolean {
+        const executable = System.getInstance().process?.moduleRegistry.getExecutableModule();
+        const caps = this.state?.caps ?? 0;
+        return executable?.isExecutable === true
+            && executable.baseAddress === 0x400000
+            && executable.name.toLowerCase().replace(/\.(?:exe|dll)$/, '') === 'dflw'
+            && executable.sourceHash?.toLowerCase() === DELTA_FORCE_3_SOURCE_SHA256
+            && (caps & DDSCAPS_FLIP) !== 0
+            && (caps & (DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) !== 0;
+    }
     private state: DirectDrawSurfaceState;
     // Cache for texture interface objects (COM Identity: same surface -> same texture interface)
     private cachedTexture2Handle: number = 0;
@@ -384,7 +401,9 @@ export class DirectDrawSurfaceObject extends BaseComObject {
     }
 
     release(): number {
-        if (this.refCount === 1) {
+        // Keep the attached backbuffer registered when the exact DF3 guard is
+        // retaining the primary at refcount zero.
+        if (this.refCount === 1 && !this.leakOnZeroRef) {
             this.releaseFlipChainAttached();
         }
 
@@ -545,6 +564,16 @@ export class DirectDrawSurfaceObject extends BaseComObject {
             } catch (e) {
                 // Ignore errors during cleanup
                 Logger.verbose(LogCategory.COM, `DirectDrawSurfaceObject: error unregistering from cache or releasing VRAM: ${e}`);
+            }
+        }
+
+        if (this.state.ownerDirectDrawHandle !== undefined) {
+            const ownerHandle = this.state.ownerDirectDrawHandle;
+            this.state.ownerDirectDrawHandle = undefined;
+            try {
+                SystemResourceProvider.getInstance().getComObject(ownerHandle)?.release();
+            } catch (e) {
+                Logger.verbose(LogCategory.COM, `DirectDrawSurfaceObject: error releasing owner DirectDraw: ${e}`);
             }
         }
 
@@ -1344,7 +1373,7 @@ export class Direct3DMaterial3Object extends BaseComObject {
 /**
  * Direct3DDevice7 COM object implementation.
  */
-/** D3DVIEWPORT2-style viewport data (Device7 SetViewport/GetViewport) */
+/** D3DVIEWPORT7 data (six fields, no leading dwSize). */
 export type Device7Viewport = {
     x: number;
     y: number;

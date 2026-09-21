@@ -103,6 +103,7 @@ export interface FixedFunctionStage {
     alphaOp: number;
     alphaArg1: number;
     alphaArg2: number;
+    textureFactor: number;
 }
 
 export interface LinkOptions {
@@ -127,13 +128,23 @@ export interface LinkOptions {
     projectedStages?: number;
     /** Stage-zero fixed-function combiner used when no pixel shader is bound. */
     fixedFunctionStage?: FixedFunctionStage;
+    /** POSITIONT bypasses vertex processing, including a still-bound vertex shader. */
+    transformedViewport?: { x: number; y: number; width: number; height: number; minZ: number; maxZ: number };
 }
 
 export function linkProgram(opts: LinkOptions): LinkResult {
     const { vs, ps, declElements, streamStride, alphaTest = null } = opts;
     const cubeMaskOverride = opts.cubeMask;
     const projectedStages = opts.projectedStages ?? 0;
-    const vsA = vs.analysis;
+    const transformed = opts.transformedViewport && declElements?.some(e => e.usage === 9 && e.usageIndex === 0)
+        ? opts.transformedViewport : null;
+    const vsA: VsAnalysis = transformed ? {
+        ...vs.analysis,
+        inputDcls: declElements!.map((e, reg) => ({ usage: e.usage, usageIndex: e.usageIndex, reg })),
+        constantCount: 0,
+        writesColor: [0, 1].map(n => declElements!.some(e => e.usage === 10 && e.usageIndex === n)) as [boolean, boolean],
+        writesTexcoord: new Set(declElements!.filter(e => e.usage === 5).map(e => e.usageIndex)),
+    } : vs.analysis;
     const psA = ps?.analysis ?? null;
 
     // ── Interpolant set (union of VS-written and PS-read) ──────────────────
@@ -206,7 +217,24 @@ export function linkProgram(opts: LinkOptions): LinkResult {
     lines.push(`}`);
     lines.push("");
 
-    lines.push(emitVsMain(vs.prog, vsA, {
+    if (transformed) {
+        const value = (usage: number, index: number, fallback: string) => {
+            const reg = vsA.inputDcls.find(d => d.usage === usage && d.usageIndex === index)?.reg;
+            return reg === undefined ? fallback : inputExprs.get(reg)!;
+        };
+        const f = (n: number) => Number.isFinite(n) ? n.toFixed(8) : "0.0";
+        lines.push("@vertex fn vs_main(in: VsInput) -> Interp {", "var out: Interp;",
+            `let p = ${value(9, 0, "vec4<f32>(0.0, 0.0, 0.0, 1.0)")};`,
+            "let w = select(1.0, 1.0 / p.w, abs(p.w) > 0.000001);",
+            `out.pos = vec4<f32>(((p.x + 0.5 - ${f(transformed.x)}) / ${f(Math.max(1, transformed.width))} * 2.0 - 1.0) * w,`,
+            `(1.0 - (p.y + 0.5 - ${f(transformed.y)}) / ${f(Math.max(1, transformed.height))} * 2.0) * w,`,
+            `(p.z - ${f(transformed.minZ)}) / ${f(transformed.maxZ - transformed.minZ || 1)} * w, w);`);
+        for (const n of [0, 1]) if (interpColors[n])
+            lines.push(`out.${colField(n)} = ${value(10, n, "vec4<f32>(1.0)")};`);
+        for (const n of interpTexcoords)
+            lines.push(`out.${texField(n)} = ${value(5, n, "vec4<f32>(0.0)")};`);
+        lines.push("return out;", "}");
+    } else lines.push(emitVsMain(vs.prog, vsA, {
         interpColors,
         interpTexcoords,
         inputExprs,
@@ -249,11 +277,14 @@ function emitDefaultFragment(hasColor: boolean, sampleStage: number | null, alph
     const tex = sampleStage !== null
         ? `textureSample(tex${sampleStage}, samp, ${coord})`
         : `vec4<f32>(1.0)`;
+    const factor = stage?.textureFactor ?? 0xffffffff;
+    const factorLiteral = `vec4<f32>(${((factor >>> 16) & 0xff) / 255}, ${((factor >>> 8) & 0xff) / 255}, ${(factor & 0xff) / 255}, ${((factor >>> 24) & 0xff) / 255})`;
     const arg = (value: number | undefined): string => {
         switch ((value ?? 0) & 0xf) {
             case 2: return tex; // D3DTA_TEXTURE
-            case 0: // D3DTA_DIFFUSE
-            case 1: // D3DTA_CURRENT at stage zero
+            case 3: return factorLiteral; // D3DTA_TFACTOR
+            case 0: // D3DTA_CURRENT at stage zero
+            case 1: // D3DTA_DIFFUSE
             default: return col;
         }
     };

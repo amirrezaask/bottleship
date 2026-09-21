@@ -48,7 +48,10 @@ export class MemoryEventBuffer {
 
     getRecent(n: number): MemoryEvent[] {
         const result: MemoryEvent[] = [];
-        const start = this.count < RING_BUFFER_SIZE ? 0 : this.writeIndex;
+        // When the ring is not full, writeIndex points at the next empty slot,
+        // not at the first event. Starting from zero walks the unused tail and
+        // makes fault diagnostics dereference undefined entries.
+        const start = this.count < RING_BUFFER_SIZE ? this.count : this.writeIndex;
         for (let i = 0; i < Math.min(n, this.count); i++) {
             const idx = (start - 1 - i + RING_BUFFER_SIZE) % RING_BUFFER_SIZE;
             result.push(this.events[idx]);

@@ -140,6 +140,10 @@ async function boundedRange(
     const timeout = AbortSignal.timeout(30_000);
     const response = await fetch(url, {
         headers: { Range: `bytes=${start}-${end - 1}` },
+        // Browser caches may satisfy a later range request with a previously
+        // cached full 200 response. Range readers require the wire response to
+        // describe exactly the requested bytes, so bypass that cache layer.
+        cache: "no-store",
         signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
     const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get("content-range") ?? "");

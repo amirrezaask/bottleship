@@ -191,13 +191,14 @@ export function registerInputCommands(svc: HarnessService): void {
             entries: any[];
             originals: Record<string, (...a: unknown[]) => unknown>;
             lastButtons: number;
+            lastMouseSig: string;
             lastVkSig: string;
         };
         let probe: Probe | undefined = im.__inputTraceProbe;
 
         if (action === "start") {
             if (probe) return { ok: true, already: true, entries: probe.entries.length };
-            probe = { entries: [], originals: {}, lastButtons: -1, lastVkSig: "" };
+            probe = { entries: [], originals: {}, lastButtons: -1, lastMouseSig: "", lastVkSig: "" };
             im.__inputTraceProbe = probe;
             const push = (e: Record<string, unknown>): void => {
                 if (probe!.entries.length >= MAX) probe!.entries.shift();
@@ -222,10 +223,12 @@ export function registerInputCommands(svc: HarnessService): void {
             };
             probe.originals.getMouseState = im.getMouseState.bind(im);
             im.getMouseState = () => {
-                const s = probe!.originals.getMouseState() as { buttons: number };
-                if (s.buttons !== probe!.lastButtons) {
+                const s = probe!.originals.getMouseState() as { x: number; y: number; buttons: number };
+                const sig = `${s.x},${s.y},${s.buttons}`;
+                if (sig !== probe!.lastMouseSig) {
+                    probe!.lastMouseSig = sig;
                     probe!.lastButtons = s.buttons;
-                    push({ k: "buttons", buttons: s.buttons });
+                    push({ k: "mouse", x: s.x, y: s.y, buttons: s.buttons });
                 }
                 return s;
             };

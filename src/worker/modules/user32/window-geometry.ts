@@ -62,6 +62,27 @@ function writeRect(address: number, left: number, top: number, right: number, bo
     );
 }
 
+/**
+ * Midtown Madness 1 creates a borderless 640x480 top-level window while the
+ * guest desktop is still 1024x768. Native USER32 reports that window centered
+ * at (192,144), even though GameBox renders the single guest surface at its
+ * own origin. Its WINEventHandler uses GetWindowRect while converting
+ * WM_*BUTTON coordinates, so reporting (0,0) makes the menu hit-test path
+ * disagree with the rendered button. Keep this correction in the query API
+ * only: it must not move rendering or any other Win32 title.
+ */
+function getReportedScreenOrigin(window: WindowInfo, absX: number, absY: number): { x: number; y: number } {
+    if (
+        !window.parent &&
+        window.title === 'Midtown Madness!' &&
+        window.width === 640 &&
+        window.height === 480
+    ) {
+        return { x: 192, y: 144 };
+    }
+    return { x: absX, y: absY };
+}
+
 function adjustWindowRectCore(mem: Uint8Array, lpRect: number, dwStyle: number, bMenu: number, dwExStyle: number): number {
     if (!lpRect || lpRect + 16 > mem.length) return 0;
 
@@ -317,11 +338,19 @@ export function registerWindowGeometryExports(
                 // common GetWindowRect → ScreenToClient → MoveWindow re-centering idiom
                 // subtract the parent offset twice, shifting child controls off-position.
                 const { x: absX, y: absY } = getAbsoluteWindowPosition(window);
+                const reportedOrigin = getReportedScreenOrigin(window, absX, absY);
                 const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-                view.setInt32(lpRect, absX, true);                    // left
-                view.setInt32(lpRect + 4, absY, true);                // top
-                view.setInt32(lpRect + 8, absX + window.width, true);  // right
-                view.setInt32(lpRect + 12, absY + window.height, true); // bottom
+                view.setInt32(lpRect, reportedOrigin.x, true);                    // left
+                view.setInt32(lpRect + 4, reportedOrigin.y, true);                 // top
+                view.setInt32(lpRect + 8, reportedOrigin.x + window.width, true);  // right
+                view.setInt32(lpRect + 12, reportedOrigin.y + window.height, true); // bottom
+                if (reportedOrigin.x !== absX || reportedOrigin.y !== absY) {
+                    Logger.log(
+                        LogCategory.USER32,
+                        `GetWindowRect Midtown compatibility: hwnd=0x${hWnd.toString(16)} ` +
+                        `render=(${absX},${absY}) reported=(${reportedOrigin.x},${reportedOrigin.y})`,
+                    );
+                }
 
                 return 1; // TRUE
             }

@@ -158,3 +158,13 @@ export const exports: Record<string, ThunkImplementation> = {
         return 0;
     },
 };
+
+// Win32 exposes the same atom table through both local and global entrypoints.
+// Legacy SDL calls the local names during DLL teardown.
+exports.AddAtomA = exports.GlobalAddAtomA;
+exports.AddAtomW = exports.GlobalAddAtomW;
+exports.FindAtomA = exports.GlobalFindAtomA;
+exports.FindAtomW = exports.GlobalFindAtomW;
+exports.GetAtomNameA = exports.GlobalGetAtomNameA;
+exports.GetAtomNameW = exports.GlobalGetAtomNameA;
+exports.DeleteAtom = exports.GlobalDeleteAtom;

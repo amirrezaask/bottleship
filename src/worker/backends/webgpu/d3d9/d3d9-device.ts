@@ -292,6 +292,25 @@ export class D3D9Device {
         return { index, width, height, min, max, nonzero, means: sums.map(sum => sum / pixels) };
     }
 
+    async getTexturePng(index: number): Promise<{ index: number; width: number; height: number; base64: string }> {
+        const data = this.textures.getData(index);
+        const width = this.textures.getWidth(index);
+        const height = this.textures.getHeight(index);
+        if (!data || width <= 0 || height <= 0 || data.byteLength < width * height * 4)
+            throw new Error(`texture ${index} has no readable RGBA base level`);
+        const canvas = new OffscreenCanvas(width, height);
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('2D canvas is unavailable');
+        const rgba = new Uint8ClampedArray(width * height * 4);
+        rgba.set(new Uint8Array(data.buffer, data.byteOffset, width * height * 4));
+        context.putImageData(new ImageData(rgba, width, height), 0, 0);
+        const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/png' })).arrayBuffer());
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 0x8000)
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        return { index, width, height, base64: btoa(binary) };
+    }
+
     getRtDebug(): { resolves: string[]; creates: string[]; stretches: string[]; stretchCount: number; draws: string[]; passes: string[]; currentRtIndex: number | null } {
         this.drawDiagnosticsArmed = true;
         return {
@@ -335,27 +354,7 @@ export class D3D9Device {
         this.viewport = { x: 0, y: 0, width: size.width, height: size.height, minZ: 0, maxZ: 1 };
         if (newTarget === this.currentRtIndex && newFace === this.currentRtFace) return 0;
         // Flush everything drawn for the current target/face before switching.
-        const previousTarget = this.currentRtIndex;
         this.submitFrame(false);
-        if (System.getInstance().executableName.toLowerCase() === "pop2.exe"
-            && previousTarget === 0 && newTarget === null && !this.popSceneSnapshotTaken) {
-            const source = this.textures.getGpuTexture(0);
-            if (source) {
-                const device = this.backend.getDevice()!;
-                if (!this.popSceneSnapshot || this.popSceneSnapshot.width !== source.width || this.popSceneSnapshot.height !== source.height) {
-                    this.popSceneSnapshot?.destroy();
-                    this.popSceneSnapshot = device.createTexture({
-                        size: { width: source.width, height: source.height, depthOrArrayLayers: 1 },
-                        format: source.format,
-                        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
-                    });
-                }
-                const encoder = device.createCommandEncoder();
-                encoder.copyTextureToTexture({ texture: source }, { texture: this.popSceneSnapshot }, { width: source.width, height: source.height, depthOrArrayLayers: 1 });
-                device.queue.submit([encoder.finish()]);
-                this.popSceneSnapshotTaken = true;
-            }
-        }
         this.currentRtIndex = newTarget;
         this.currentRtFace = newFace;
         return 0;
@@ -365,8 +364,6 @@ export class D3D9Device {
      *  array layer via a 2d view with baseArrayLayer=face; the cube's sampling view stays the
      *  dimension:"cube" view created in createCubeTexture. Cached per (index, face, level). */
     private surfaceBlitter: SurfaceBlitter | null = null;
-    private popSceneSnapshot: GPUTexture | null = null;
-    private popSceneSnapshotTaken = false;
 
     /** Module validation restricts this path to base-level 2D color render targets. */
     stretchRect(sourcePtr: number, destPtr: number, from: SurfaceRect, to: SurfaceRect, filter: number): number {
@@ -1070,6 +1067,14 @@ export class D3D9Device {
 
     /** True when a programmable vertex shader is bound (the new render path). */
     private isProgrammable(): boolean {
+        // D3DDECLUSAGE_POSITIONT means the stream has already completed vertex processing.
+        // D3D9 therefore bypasses the currently bound vertex shader for these draws. Route the
+        // common no-pixel-shader case through our pre-transformed FFP pipeline, which performs
+        // only the screen-to-clip conversion and forwards colour/texture coordinates.
+        if (this.activePixelShader === 0 && this.activeVertexDecl > 0
+            && this.vsDeclRegistry.get(this.activeVertexDecl)?.some(
+                element => element.usage === 9 && element.usageIndex === 0,
+            )) return false;
         return this.activeVertexShader !== 0 && this.vsShaderRegistry.has(this.activeVertexShader);
     }
 
@@ -2154,10 +2159,23 @@ export class D3D9Device {
      *  the trilist guard so non-trilist draws are still counted. Gated → zero cost. */
     private captureDrawIfArmed(primitiveType: number, primitiveCount: number): void {
         if (this.commandRecorder.getCurrentFrame().drawStateCount >= 2048) this.submitFrame(false);
-        if (this.drawDiagnosticsArmed && this.drawDiagnosticLog.length < 64) {
+        const diagnosticTexture0 = this.stateTracker.getTexture(0);
+        const diagnosticTextureIsUiAtlas = diagnosticTexture0 !== null
+            && ((this.textures.getWidth(diagnosticTexture0) === 1024 && this.textures.getHeight(diagnosticTexture0) === 256)
+                || (this.textures.getWidth(diagnosticTexture0) === 512 && this.textures.getHeight(diagnosticTexture0) === 128));
+        if (this.drawDiagnosticsArmed && diagnosticTextureIsUiAtlas && this.drawDiagnosticLog.length < 512) {
             const stream = this.stateTracker.getStreamSource();
             const vertices = stream ? this.vertexBuffers.getData(stream.index) : null;
-            const key = `rt=${this.currentRtIndex ?? "back"} vs=${this.activeVertexShader} ps=${this.activePixelShader} decl=${this.activeVertexDecl}`;
+            const texture0 = diagnosticTexture0;
+            const stageKey = [0, 1, 2, 3].map(stage =>
+                [1, 2, 3, 4, 5, 6].map(type => this.getTextureStageState(stage, type)).join('/'),
+            ).join('|');
+            const colorOffset = (this.vsDeclRegistry.get(this.activeVertexDecl) ?? [])
+                .find(element => element.usage === 10 && element.usageIndex === 0)?.offset;
+            const color = vertices && stream && colorOffset !== undefined && stream.offset + colorOffset + 4 <= vertices.byteLength
+                ? new DataView(vertices.buffer, vertices.byteOffset + stream.offset + colorOffset, 4).getUint32(0, true)
+                : 0;
+            const key = `rt=${this.currentRtIndex ?? "back"} vs=${this.activeVertexShader} ps=${this.activePixelShader} decl=${this.activeVertexDecl} tex0=${texture0 ?? "none"} count=${primitiveCount} color=0x${color.toString(16)} blend=${this.getRS(27)}/${this.getRS(19)}/${this.getRS(20)} stages=${stageKey}`;
             if (!this.drawDiagnosticLog.some(row => row.startsWith(key))) {
                 const prefix = vertices && stream
                     ? Array.from(vertices.subarray(stream.offset, Math.min(stream.offset + 96, vertices.byteLength)))
@@ -2166,12 +2184,17 @@ export class D3D9Device {
                     const index = this.stateTracker.getTexture(stage);
                     if (index === null) return null;
                     const data = this.textures.getData(index);
-                    let min = 255, max = 0, nonzero = 0;
+                    let min = 255, max = 0, nonzero = 0, alphaMin = 255, alphaMax = 0, alphaNonzero = 0;
                     if (data) for (let i = 0; i < data.byteLength; i++) {
                         const value = data[i];
                         if (value < min) min = value;
                         if (value > max) max = value;
                         if (value !== 0) nonzero++;
+                        if ((i & 3) === 3) {
+                            if (value < alphaMin) alphaMin = value;
+                            if (value > alphaMax) alphaMax = value;
+                            if (value !== 0) alphaNonzero++;
+                        }
                     }
                     return {
                         index,
@@ -2179,10 +2202,14 @@ export class D3D9Device {
                         height: this.textures.getHeight(index),
                         renderTarget: this.textures.isRenderTarget(index),
                         gpu: this.textures.getGpuTexture(index) !== null,
-                        cpu: data ? { bytes: data.byteLength, min, max, nonzero, prefix: Array.from(data.subarray(0, 32)) } : null,
+                        cpu: data ? { bytes: data.byteLength, min, max, nonzero, alphaMin, alphaMax, alphaNonzero, prefix: Array.from(data.subarray(0, 32)) } : null,
                     };
                 });
-                this.drawDiagnosticLog.push(`${key} primitive=${primitiveType} count=${primitiveCount} stream=${JSON.stringify(stream)} viewport=${JSON.stringify(this.viewport)} zfunc=${this.getRS(23)} zenable=${this.getRS(7)} zwrite=${this.getRS(14)} blend=${this.getRS(27)}/${this.getRS(19)}/${this.getRS(20)} colorwrite=0x${this.getRS(168).toString(16)} stage0=${[1,2,3,4,5,6].map(type => this.textureStageStates.get(this.makeStageStateKey(0, type)) ?? 0).join('/')} fvf=0x${this.stateTracker.getFVF().toString(16)} declaration=${JSON.stringify(this.vsDeclRegistry.get(this.activeVertexDecl) ?? null)} textures=${JSON.stringify(boundTextures)} bytes=${JSON.stringify(prefix)}`);
+                const extraStreams = [...this.additionalStreams.entries()].map(([slot, source]) => {
+                    const data = this.vertexBuffers.getData(source.index);
+                    return { slot, ...source, prefix: data ? Array.from(data.subarray(source.offset, Math.min(source.offset + 96, data.byteLength))) : null };
+                });
+                this.drawDiagnosticLog.push(`${key} primitive=${primitiveType} count=${primitiveCount} stream=${JSON.stringify(stream)} extraStreams=${JSON.stringify(extraStreams)} viewport=${JSON.stringify(this.viewport)} zfunc=${this.getRS(23)} zenable=${this.getRS(7)} zwrite=${this.getRS(14)} blend=${this.getRS(27)}/${this.getRS(19)}/${this.getRS(20)} colorwrite=0x${this.getRS(168).toString(16)} textureFactor=0x${(this.getRS(60) >>> 0).toString(16)} stage0=${[1,2,3,4,5,6].map(type => this.textureStageStates.get(this.makeStageStateKey(0, type)) ?? 0).join('/')} fvf=0x${this.stateTracker.getFVF().toString(16)} declaration=${JSON.stringify(this.vsDeclRegistry.get(this.activeVertexDecl) ?? null)} vsConstants=${JSON.stringify(Array.from(this.vsConstants.subarray(0, 64)))} textures=${JSON.stringify(boundTextures)} bytes=${JSON.stringify(prefix)}`);
             }
         }
         if (!frameCapture.isCapturing()) return;
@@ -2913,9 +2940,6 @@ export class D3D9Device {
         this.vbPool = null;
         this.surfaceBlitter?.dispose();
         this.surfaceBlitter = null;
-        this.popSceneSnapshot?.destroy();
-        this.popSceneSnapshot = null;
-        this.popSceneSnapshotTaken = false;
     }
 
     /** HARNESS/dbg (dbg.d3dArenaStats): this device's WASM-arena verify-only drain counters. */
@@ -3149,12 +3173,14 @@ export class D3D9Device {
             alphaOp: this.getTextureStageState(0, 4),
             alphaArg1: this.getTextureStageState(0, 5),
             alphaArg2: this.getTextureStageState(0, 6),
+            textureFactor: this.getRS(60),
         };
         const fixedStageKey = fixedFunctionStage ? Object.values(fixedFunctionStage).join(".") : "ps";
         const fvf = this.stateTracker.getFVF();
         const declElements = this.activeVertexDecl > 0
             ? (this.vsDeclRegistry.get(this.activeVertexDecl) ?? null)
             : declarationFromFvf(fvf);
+        const transformed = declElements?.some(e => e.usage === 9 && e.usageIndex === 0) ?? false;
         const streamSource = this.stateTracker.getStreamSource();
         const stride = strideOverride ?? streamSource?.stride ?? null;
         const stateBits = this.stateTracker.computePipelineKey() & 0x7FF0000;
@@ -3172,7 +3198,7 @@ export class D3D9Device {
         // Fast path: identical pipeline identity as the previous draw → return without building the
         // key string or touching the Map (the dominant case within a batch). Shared by both the
         // legacy and arena-keyed paths below — whichever cache backed `_lrPipelineId` last time.
-        if (ps && this._lrValid
+        if (!transformed && ps && this._lrValid
             && this._lrVs === this.activeVertexShader && this._lrPs === this.activePixelShader
             && this._lrDecl === this.activeVertexDecl && this._lrFvf === fvf && this._lrStride === stride
             && this._lrStateBits === stateBits && this._lrTopo === topology
@@ -3191,7 +3217,7 @@ export class D3D9Device {
         // with the legacy key space via dual-run cross-checking
         // BEFORE this fast path is ever taken; falls through to the legacy path below whenever
         // bypass is off, the arena declined this draw, or the arena isn't initialized.
-        if (arenaKey !== undefined && arenaKey >= 0 && isWasmPathEnabled()) {
+        if (!transformed && arenaKey !== undefined && arenaKey >= 0 && isWasmPathEnabled()) {
             const cachedViaArena = this.arenaPipelineCache.get(arenaKey);
             if (cachedViaArena !== undefined) {
                 d3d9PerfBackendInc("progPipelineCacheHits");
@@ -3207,7 +3233,7 @@ export class D3D9Device {
             return built;
         }
 
-        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${fvf}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:cm${cubeMask}:pj${projKey}:ff${fixedStageKey}:${this.streamLayoutKey}`;
+        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${fvf}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:cm${cubeMask}:pj${projKey}:ff${fixedStageKey}:${this.streamLayoutKey}:vp${transformed ? Object.values(this.viewport).join(",") : ""}`;
         const cached = this.progPipelineCache.get(cacheKey);
         if (cached !== undefined) {
             d3d9PerfBackendInc("progPipelineCacheHits");
@@ -3243,7 +3269,7 @@ export class D3D9Device {
             // UP draws supply their own stream-zero stride.
             const streamStrides = this.streamStrides.slice();
             if (stride !== null) streamStrides[0] = stride;
-            const link = linkProgram({ vs, ps, declElements, streamStride: stride, streamStrides, alphaTest, cubeMask, projectedStages, fixedFunctionStage });
+            const link = linkProgram({ vs, ps, declElements, streamStride: stride, streamStrides, alphaTest, cubeMask, projectedStages, fixedFunctionStage, transformedViewport: this.viewport });
             const gpuDevice = this.backend.getDevice()!;
             const format = this.backend.getFormat()!;
             const module = gpuDevice.createShaderModule({ code: link.wgsl });
@@ -3548,27 +3574,11 @@ export class D3D9Device {
             this.backendExecutor.drainArenaVerifyOnly();
         }
 
-        if (present && System.getInstance().executableName.toLowerCase() === "pop2.exe") {
-            const source = this.popSceneSnapshot;
-            const dest = this.backendExecutor.getBackBufferTexture();
-            if (source) {
-                this.surfaceBlitter ??= new SurfaceBlitter(this.backend.getDevice()!);
-                this.surfaceBlitter.copy(
-                    source,
-                    dest,
-                    { left: 0, top: 0, right: source.width, bottom: source.height },
-                    { left: 0, top: 0, right: dest.width, bottom: dest.height },
-                    false,
-                );
-            }
-        }
-
         this.backendExecutor.execute(frame, uniforms, textureView, present, {
             videoOverlayCanvas,
             gdiOverlayCanvas,
             gdiOverlayRects,
         }, target);
-        if (present) this.popSceneSnapshotTaken = false;
 
         // Return DrawPrimitiveUP vertex buffers to the reuse pool. execute() has already
         // issued queue.submit, so by WebGPU queue ordering the next frame's writeBuffer

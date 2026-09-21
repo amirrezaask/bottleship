@@ -33,6 +33,11 @@ export const msvfw32Module: ModuleDescriptor = {
         // VideoForWindowsVersion is exported by ordinal 2 on Windows.
         makeFunc("ord_2", 0, { ordinal: 2 }),
 
+        // MCIWnd convenience control (VFW). Games commonly use this only for
+        // optional intro movies and still require a valid HWND when video is skipped.
+        makeFunc("MCIWndCreateA", 4),
+        makeFunc("MCIWndCreateW", 4),
+
         // DrawDib API
         makeFunc("DrawDibOpen", 0),              // → HDRAWDIB
         makeFunc("DrawDibClose", 1),             // hdd

@@ -75,6 +75,8 @@ export const gdi32Module: ModuleDescriptor = {
         makeFunc("GetTextExtentPointA", 4),
         makeFunc("GetTextExtentExPointA", 7),
         makeFunc("GetCharWidthA", 4),
+        makeFunc("GetCharWidth32A", 4),
+        makeFunc("TextOutA", 5),
         makeFunc("ExtTextOutA", 8),
 
         // Bitmap creation

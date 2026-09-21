@@ -85,7 +85,7 @@ export class CachedSource implements ZipSource {
 
     private readonly inner: ZipSource;
     private readonly blockSize: number;
-    private readonly maxBytes: number;
+    private maxBytes: number;
     private readonly syncReadahead: number;
     private readonly prefetchAhead: number;
     private readonly prefetchDepthRuns: number;
@@ -131,6 +131,13 @@ export class CachedSource implements ZipSource {
         this.prefetchAhead = boundedOption(opts.prefetchAheadBlocks, 0, 0, 32);
         this.prefetchDepthRuns = boundedOption(opts.prefetchDepthRuns, 1, 1, 4);
         this.name = opts.name ?? "cached";
+    }
+
+    /** Increase or reduce the bounded working-set budget after manifest metadata
+     * is available. The cap remains the shared 64 MiB source-cache limit. */
+    setMaxBytes(maxBytes: number): void {
+        this.maxBytes = boundedOption(maxBytes, this.maxBytes, this.blockSize, MAX_CACHE_BYTES);
+        this.evictIfNeeded();
     }
 
     // ---- ZipSource ----

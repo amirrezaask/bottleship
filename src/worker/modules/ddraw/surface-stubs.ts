@@ -4,11 +4,12 @@
  */
 import type { ThunkImplementation } from "../../core/thunking/thunk-dispatcher";
 import { Logger, LogCategory } from "../../core/logger";
-import { DD_OK, DDSCAPS_TEXTURE, DDGAMMARAMP_SIZE } from "./constants";
-import { DirectDrawSurfaceObject } from "./com-objects";
+import { allocateComObject, DD_OK, DDSCAPS_TEXTURE, DDGAMMARAMP_SIZE, E_FAIL, E_POINTER } from "./constants";
+import { DirectDrawObject, DirectDrawSurfaceObject } from "./com-objects";
 import { isValidAddress } from "../../core/memory/address-guard";
 import { gammaService } from "../../core/gamma-service";
 import type { DDrawContext } from "./context";
+import { Mem } from "../../core/memory/mem-accessor";
 
 export function createSurfaceStubsExports(context: DDrawContext): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
@@ -24,7 +25,6 @@ export function createSurfaceStubsExports(context: DDrawContext): Record<string,
         "UpdateOverlay",
         "UpdateOverlayDisplay",
         "UpdateOverlayZOrder",
-        "GetDDInterface",
         "PageLock",
         "PageUnlock",
         "SetPrivateData",
@@ -65,6 +65,90 @@ export function createSurfaceStubsExports(context: DDrawContext): Record<string,
             };
         }
     }
+
+    // GetDDInterface returns the DirectDraw object which created the surface.
+    // Returning DD_OK without initializing the output pointer is not a harmless
+    // stub: Delta Force: Land Warrior immediately calls CreateSurface through
+    // that pointer while entering a mission and otherwise dereferences NULL.
+    exports["IDirectDrawSurface7_GetDDInterface"] = (_ctx, mem, args) => {
+        const lplpDD = args[1] >>> 0;
+        if (!lplpDD || !isValidAddress(mem, lplpDD, 4)) return E_POINTER;
+
+        const surface = context.resourceProvider.getComObjectByAddress(args[0]) as DirectDrawSurfaceObject | null;
+        const ownerHandle = surface?.getState().ownerDirectDrawHandle;
+        let ddrawObj = ownerHandle !== undefined
+            ? context.resourceProvider.getComObject(ownerHandle)
+            : null;
+        let ddrawAddr = ddrawObj
+            ? (context.resourceProvider.getAddressForHandle(ddrawObj.handle) ?? 0) >>> 0
+            : context.ddraw7ObjectAddr >>> 0;
+        ddrawObj = ddrawObj ?? (ddrawAddr
+            ? context.resourceProvider.getComObjectByAddress(ddrawAddr)
+            : null);
+
+        // Enumeration-heavy titles can release and recreate DirectDraw objects.
+        // Fall back to the newest live instance if the tracked address is stale.
+        if (!ddrawObj || ddrawObj.constructor.name !== "DirectDrawObject") {
+            ddrawObj = null;
+            let newestHandle = -1;
+            for (const candidate of context.resourceProvider.getAllComObjects()) {
+                if (candidate.constructor.name !== "DirectDrawObject" || candidate.handle <= newestHandle) {
+                    continue;
+                }
+                const candidateAddr = context.resourceProvider.getAddressForHandle(candidate.handle);
+                if (!candidateAddr) continue;
+                newestHandle = candidate.handle;
+                ddrawObj = candidate;
+                ddrawAddr = candidateAddr >>> 0;
+            }
+        }
+
+        // Some DX7 engines release the factory after creating their device and
+        // later recover it through a render target. If legacy object lifetime
+        // bookkeeping already retired every wrapper, recreate the lightweight
+        // DirectDraw interface over the same shared context. This mirrors the
+        // still-live native parent represented by the surface/device graph.
+        let createdForReturn = false;
+        if (!ddrawObj || !ddrawAddr) {
+            const vtable = context.vtables["IDirectDraw7"];
+            if (vtable) {
+                const replacement = new DirectDrawObject(vtable.address);
+                const replacementAddr = allocateComObject(context.process.memory, mem, vtable.address);
+                context.resourceProvider.mapAddressToHandle(replacementAddr, replacement.handle);
+                context.ddraw7ObjectAddr = replacementAddr;
+                // Hold one context-owned reference for the remainder of the
+                // session. The guest owns the constructor's initial reference
+                // returned below and may release it immediately.
+                replacement.addRef();
+                ddrawObj = replacement;
+                ddrawAddr = replacementAddr;
+                createdForReturn = true;
+                Logger.log(
+                    LogCategory.DDRAW,
+                    `IDirectDrawSurface7_GetDDInterface: restored owning DirectDraw wrapper at 0x${ddrawAddr.toString(16)}`,
+                );
+            }
+        }
+
+        if (!ddrawObj || !ddrawAddr) {
+            Mem.writeUint32(lplpDD, 0);
+            Logger.warn(
+                LogCategory.DDRAW,
+                `IDirectDrawSurface7_GetDDInterface: no live DirectDraw object ` +
+                `(surface=${surface ? "live" : "missing"}, ownerHandle=${ownerHandle === undefined ? "none" : `0x${ownerHandle.toString(16)}`}, ` +
+                `trackedAddr=0x${context.ddraw7ObjectAddr.toString(16)})`,
+            );
+            return E_FAIL;
+        }
+
+        if (!createdForReturn) ddrawObj.addRef();
+        Mem.writeUint32(lplpDD, ddrawAddr);
+        Logger.verbose(
+            LogCategory.DDRAW,
+            `IDirectDrawSurface7_GetDDInterface: surface=0x${(args[0] >>> 0).toString(16)} -> 0x${ddrawAddr.toString(16)}`,
+        );
+        return DD_OK;
+    };
 
     // =========================================================================
     // IDirectDrawGammaControl stubs

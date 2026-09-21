@@ -13,6 +13,9 @@ export class TimeService {
     // permanently. The game sees consistent dt every frame (no rubber-banding).
     private virtualTimeActive = false;
     private virtualTimeMs = 0;
+    private pausedAtWallMs: number | null = null;
+    private pausedNowMs = 0;
+    private pausedWallOffsetMs = 0;
 
     static getInstance(): TimeService {
         if (!TimeService.instance) {
@@ -60,7 +63,7 @@ export class TimeService {
     enableVirtualTime(): void {
         if (this.virtualTimeActive) return;
         this.virtualTimeActive = true;
-        this.virtualTimeMs = performance.now();
+        this.virtualTimeMs = this.guestWallClockMs();
     }
 
     /**
@@ -75,7 +78,7 @@ export class TimeService {
      * MUST use creditIdleMs() instead — see the runaway note there.
      */
     advanceVirtualTime(deltaMs: number): void {
-        if (!this.virtualTimeActive) return;
+        if (!this.virtualTimeActive || this.pausedAtWallMs !== null) return;
         this.virtualTimeMs += deltaMs;
     }
 
@@ -95,8 +98,8 @@ export class TimeService {
      * Returns the ms actually credited.
      */
     creditIdleMs(ms: number): number {
-        if (!this.virtualTimeActive || ms <= 0) return 0;
-        const headroom = performance.now() + TimeService.MAX_AHEAD_MS - this.virtualTimeMs;
+        if (!this.virtualTimeActive || this.pausedAtWallMs !== null || ms <= 0) return 0;
+        const headroom = this.guestWallClockMs() + TimeService.MAX_AHEAD_MS - this.virtualTimeMs;
         const credit = Math.max(0, Math.min(ms, headroom));
         this.virtualTimeMs += credit;
         return credit;
@@ -107,16 +110,23 @@ export class TimeService {
         return performance.now();
     }
 
-    /**
-     * Re-anchor virtual time to wall-clock after a pause/resume cycle.
-     * Without this, the gap between wall-clock (which advanced during pause)
-     * and virtual time (which froze) causes updateTimeData() to allow
-     * accelerated catch-up on resume.
-     */
+    /** Elapsed host time available to guest clocks, excluding emulator pauses. */
+    guestWallClockMs(): number {
+        return (this.pausedAtWallMs ?? performance.now()) - this.pausedWallOffsetMs;
+    }
+
+    /** Freeze guest elapsed time while the canonical native stop is pending. */
+    notifyPause(): void {
+        if (this.pausedAtWallMs !== null) return;
+        this.pausedNowMs = this.nowMs();
+        this.pausedAtWallMs = performance.now();
+    }
+
+    /** Resume the same guest instant; move the host ceiling, not guest time. */
     notifyPauseResume(): void {
-        if (!this.virtualTimeActive) return;
-        this.virtualTimeMs = performance.now();
-        this.lastReturnedMs = this.virtualTimeMs;
+        if (this.pausedAtWallMs === null) return;
+        this.pausedWallOffsetMs += Math.max(0, performance.now() - this.pausedAtWallMs);
+        this.pausedAtWallMs = null;
     }
 
     /**
@@ -126,8 +136,8 @@ export class TimeService {
      * Prevents catch-up acceleration (death spiral) after slow JS implementations.
      */
     reanchorToWallClock(): void {
-        if (!this.virtualTimeActive) return;
-        this.virtualTimeMs = performance.now();
+        if (!this.virtualTimeActive || this.pausedAtWallMs !== null) return;
+        this.virtualTimeMs = this.guestWallClockMs();
         this.lastReturnedMs = this.virtualTimeMs;
     }
 
@@ -140,6 +150,9 @@ export class TimeService {
         this.mode = "realtime";
         this.manualNowMs = 0;
         this.manualUnixMs = 0;
+        this.pausedAtWallMs = null;
+        this.pausedNowMs = 0;
+        this.pausedWallOffsetMs = 0;
         this.lastReturnedMs = 0;
         if (this.virtualTimeActive) {
             this.virtualTimeMs = performance.now();
@@ -163,6 +176,8 @@ export class TimeService {
         let currentMs: number;
         if (this.mode === "manual") {
             currentMs = this.manualNowMs;
+        } else if (this.pausedAtWallMs !== null) {
+            currentMs = this.pausedNowMs;
         } else if (this.virtualTimeActive) {
             currentMs = this.virtualTimeMs;
         } else {
@@ -207,7 +222,7 @@ export class TimeService {
     }
 
     private nowMsRealtime(): number {
-        return performance.now();
+        return this.guestWallClockMs();
     }
 
     /**

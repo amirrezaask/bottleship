@@ -979,8 +979,8 @@ export class SurfaceSyncManager {
 
             if (gpuConvertSupported) {
                 profiler.start("syncToCPU:gpuConvert");
-                Logger.log(LogCategory.DDRAW,
-                    `🚀 syncToCPU GPU COMPUTE PATH: Converting ${width}x${height} format=${surfacePixelFormat} on GPU`);
+                Logger.verboseLazy(LogCategory.DDRAW,
+                    () => `syncToCPU GPU compute: converting ${width}x${height} format=${surfacePixelFormat}`);
 
                 const gpuFormat = state.gpuTextureFormat ?? "rgba8unorm";
                 const converted = await textureConverter.convertFromTexture(
@@ -1007,26 +1007,23 @@ export class SurfaceSyncManager {
                         profiler.end("syncToCPU:gpuConvert");
                         profiler.end("SurfaceSyncManager.syncToCPU");
 
-                        // DIAGNOSTIC: Pixel dump to verify readback is not all-black
-                        {
+                        Logger.verboseLazy(LogCategory.DDRAW, () => {
                             const u16 = new Uint16Array(converted.buffer, converted.byteOffset, Math.min(16, converted.length >> 1));
                             const px = Array.from(u16.subarray(0, 8)).map(v => `0x${v.toString(16).padStart(4, '0')}`);
                             const allZero = u16.every(v => v === 0);
-                            Logger.log(LogCategory.DDRAW,
-                                `PIXEL DUMP after readback 0x${state.surfacePtr.toString(16)}: [${px.join(', ')}] allZero=${allZero}`);
-                        }
-                        // DIAGNOSTIC: Verify data actually landed in mem at the correct offset
-                        {
+                            return `readback 0x${state.surfacePtr.toString(16)} pixels=[${px.join(', ')}] allZero=${allZero}`;
+                        });
+                        Logger.verboseLazy(LogCategory.DDRAW, () => {
                             if (state.surfacePtr >= 0 && state.surfacePtr + 16 <= mem.length) {
                                 const u16v = new Uint16Array(mem.buffer, mem.byteOffset + state.surfacePtr, 8);
                                 const pxv = Array.from(u16v).map(v => `0x${v.toString(16).padStart(4, '0')}`);
-                                Logger.log(LogCategory.DDRAW,
-                                    `VERIFY mem[0x${state.surfacePtr.toString(16)}] after write: [${pxv.join(', ')}]`);
+                                return `readback verify mem[0x${state.surfacePtr.toString(16)}]=[${pxv.join(', ')}]`;
                             }
-                        }
+                            return `readback verify skipped for 0x${state.surfacePtr.toString(16)}`;
+                        });
 
-                        Logger.log(LogCategory.DDRAW,
-                            `syncToCPU GPU COMPUTE PATH completed for 0x${state.surfacePtr.toString(16)} ` +
+                        Logger.verboseLazy(LogCategory.DDRAW, () =>
+                            `syncToCPU GPU compute completed for 0x${state.surfacePtr.toString(16)} ` +
                             `(${totalWriteSize} bytes, format=${surfacePixelFormat})`);
                         return true;
                     } else {

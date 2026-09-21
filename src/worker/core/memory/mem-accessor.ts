@@ -15,13 +15,35 @@ export interface WatchRange {
 }
 
 /**
- * Global memory accessor that always returns fresh memory from v86.
- * No caching - eliminates stale buffer issues after async operations.
+ * Global memory accessor that always retrieves fresh memory from v86.
+ * Float views are reused only while the current buffer and window still match.
  */
 export class Mem {
     private static memoryGetter: (() => Uint8Array) | null = null;
     private static validateRange: ((address: number, size: number, perms: string) => boolean) | null = null;
     private static getRegion: ((address: number) => RegionEntry | null) | null = null;
+
+    // One view of the current memory window, not a cache of guest memory itself.
+    private static floatView: DataView | null = null;
+    private static floatBuffer: ArrayBufferLike | null = null;
+    private static floatOffset = 0;
+    private static floatLength = 0;
+
+    private static dataView(mem: Uint8Array): DataView {
+        const buffer = mem.buffer;
+        const offset = mem.byteOffset;
+        const length = mem.byteLength;
+        // Keep separate metadata: inspecting a detached/out-of-bounds DataView's
+        // byteOffset/byteLength can throw after WebAssembly/RAB memory changes.
+        if (!this.floatView || this.floatBuffer !== buffer ||
+            this.floatOffset !== offset || this.floatLength !== length) {
+            this.floatView = new DataView(buffer, offset, length);
+            this.floatBuffer = buffer;
+            this.floatOffset = offset;
+            this.floatLength = length;
+        }
+        return this.floatView;
+    }
 
     private static watchRanges: WatchRange[] = [];
     private static nextWatchHandle = 1;
@@ -39,6 +61,8 @@ export class Mem {
         validator?: (address: number, size: number, perms: string) => boolean,
         regionGetter?: (address: number) => RegionEntry | null
     ): void {
+        this.floatView = null;
+        this.floatBuffer = null;
         this.memoryGetter = getter;
         this.validateRange = validator ?? null;
         this.getRegion = regionGetter ?? null;
@@ -101,22 +125,14 @@ export class Mem {
         }
     }
 
-    /**
-     * Get fresh memory. For use by async thunks that may complete after memory was replaced.
-     */
+    /** Get fresh memory for async thunks that may complete after replacement. */
     static getView(): Uint8Array | null {
         return this.getMemory();
     }
 
     /**
-     * Get fresh memory. Always returns the current v86 memory view.
-     *
-     * Unwrapped to a plain Uint8Array via toPlainGuestMemory(): v86's view()
-     * returns a Proxy whose per-element get/set traps defeat V8's typed-array
-     * JIT fast path (~50x slower — see guest-memory.ts). This is growth-safe
-     * because every Mem read/write re-fetches through here (never field-caches
-     * the view), and toPlainGuestMemory re-derives the plain view whenever the
-     * underlying ArrayBuffer identity changes (WASM memory growth).
+     * Re-fetch and unwrap v86's proxy on every access. borrowGuestMemory refreshes
+     * its plain view when the underlying buffer changes after WASM memory growth.
      */
     private static getMemory(): Uint8Array | null {
         if (!this.memoryGetter) {
@@ -210,14 +226,14 @@ export class Mem {
     static readFloat32(address: number): number | null {
         const mem = this.ensure(address, 4, "r", "Mem.readFloat32", "read");
         if (!mem) return null;
-        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const view = this.dataView(mem);
         return view.getFloat32(address, true);
     }
 
     static readFloat64(address: number): number | null {
         const mem = this.ensure(address, 8, "r", "Mem.readFloat64", "read");
         if (!mem) return null;
-        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const view = this.dataView(mem);
         return view.getFloat64(address, true);
     }
 
@@ -257,7 +273,7 @@ export class Mem {
         this.checkWatch(address, 4, value);
         const mem = this.ensure(address, 4, "w", "Mem.writeFloat32", "write");
         if (!mem) return false;
-        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const view = this.dataView(mem);
         view.setFloat32(address, value, true);
         return true;
     }
@@ -267,7 +283,7 @@ export class Mem {
         this.checkWatch(address, 8, value);
         const mem = this.ensure(address, 8, "w", "Mem.writeFloat64", "write");
         if (!mem) return false;
-        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const view = this.dataView(mem);
         view.setFloat64(address, value, true);
         return true;
     }
@@ -284,7 +300,6 @@ export class Mem {
     static memcpy(dest: number, src: number, length: number): boolean {
         const mem = this.ensure(dest, length, "w", "Mem.memcpy", "write");
         if (!mem) return false;
-        // Read source bytes
         const source = mem.subarray(src, src + length);
         this.logStackWrite(dest, length, source);
         this.checkWatch(dest, length);
@@ -292,9 +307,7 @@ export class Mem {
         return true;
     }
 
-    /**
-     * @deprecated No longer needed - memory is always fresh
-     */
+    /** @deprecated No longer needed - memory is always fresh. */
     static sync(): void {
         // No-op for backwards compatibility
     }

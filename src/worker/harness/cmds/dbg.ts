@@ -17,6 +17,14 @@ import type { HarnessService } from "../service";
 import { dbg } from "../../core/debug/dbg-commands";
 
 export function registerDbgCommands(svc: HarnessService): void {
+    /** Arm the D3D8 fixed-function draw diagnostic without relying on a worker console. */
+    svc.register("d3d8DiagDraws", (args) => {
+        const fn = (globalThis as Record<string, unknown>).d3d8DiagDraws;
+        if (typeof fn !== "function") throw new Error("d3d8DiagDraws: no active D3D8 device");
+        (fn as (count: number) => void)(Number(args[0] ?? 20) | 0);
+        return { ok: true };
+    });
+
     /** dbgCall(name, ...args) — invoke dbg[name](...args), return its result. */
     svc.register("dbgCall", (args) => {
         const [name, ...rest] = args as [string, ...unknown[]];

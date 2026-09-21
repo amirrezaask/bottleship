@@ -39,11 +39,14 @@ import { computeFvfStride } from "../../../backends/webgpu/ddraw/compute/vertex-
 import { drawCostProfiler, DC } from "../../../backends/webgpu/ddraw/draw-cost-profiler";
 import * as frameCapture from "../frame-capture";
 import { MAX_FFP_SAMPLED_STAGES } from "../../../backends/webgpu/ddraw/ffp-stages";
+import { isDeltaForce3PresentProfile } from "../delta-force-3-present";
+import { setDeviceRenderTarget } from "./texture-manager";
 
 // Reusable per-draw stage-texture array (index = stage; stage 0 rides its own param).
 // D3D7 titles drive at most stages 0..2; the executor supports up to MAX_FFP_SAMPLED_STAGES.
 const stageTexturesScratch: (DirectDrawSurfaceState | null)[] =
     new Array(MAX_FFP_SAMPLED_STAGES).fill(null);
+let deltaForce3DrawDiagCount = 0;
 
 type MutableViewport = {
     x: number;
@@ -241,12 +244,45 @@ export const createDrawHandler = (context: DDrawContext, textureManager: Texture
         const _tResolve = drawCostProfiler.now();
 
         const devObj = resourceProvider.getComObjectByAddress(devicePtr) as (Direct3DDevice3Object | Direct3DDevice7Object) | null;
+        if (deltaForce3DrawDiagCount < 8 && isDeltaForce3PresentProfile(context)) {
+            deltaForce3DrawDiagCount++;
+            Logger.log(
+                LogCategory.DDRAW,
+                `[Delta Force 3] Draw request: device=0x${devicePtr.toString(16)} `
+                + `primitive=${type} vertices=0x${lpVertices.toString(16)} count=${count} `
+                + `deviceRT=0x${(devObj?.getRenderTarget() ?? 0).toString(16)} `
+                + `contextBack=0x${context.surfaces.backBuffer.toString(16)} `
+                + `contextPrimary=0x${context.surfaces.primary.toString(16)}`,
+            );
+        }
 
         // Resolve Render Target
-        const rtAddr = (devObj ? devObj.getRenderTarget() : 0) || context.surfaces.backBuffer || context.surfaces.primary;
+        let rtAddr = (devObj ? devObj.getRenderTarget() : 0) || context.surfaces.backBuffer || context.surfaces.primary;
         if (!rtAddr) return;
 
-        const rtObj = resourceProvider.getComObjectByAddress(rtAddr) as DirectDrawSurfaceObject | null;
+        let rtObj = resourceProvider.getComObjectByAddress(rtAddr) as DirectDrawSurfaceObject | null;
+        // Land Warrior can retain a released backbuffer COM address after it
+        // recreates its display chain. Keep this exact executable playable by
+        // retargeting D3D to the live primary, which is also the surface Flip
+        // presents in this one-surface chain.
+        if (!rtObj && isDeltaForce3PresentProfile(context)) {
+            const fallbackAddr = context.surfaces.primary;
+            const fallbackObj = fallbackAddr
+                ? resourceProvider.getComObjectByAddress(fallbackAddr) as DirectDrawSurfaceObject | null
+                : null;
+            if (fallbackObj) {
+                Logger.log(
+                    LogCategory.DDRAW,
+                    `[Delta Force 3] Recovered stale D3D render target: `
+                    + `stale=0x${rtAddr.toString(16)} primary=0x${fallbackAddr.toString(16)} `
+                    + `surface=0x${fallbackObj.getState().surfacePtr.toString(16)}`,
+                );
+                if (devObj && devObj.getRenderTarget() !== fallbackAddr)
+                    setDeviceRenderTarget(context, devObj, fallbackAddr);
+                rtAddr = fallbackAddr;
+                rtObj = fallbackObj;
+            }
+        }
         if (!rtObj) return;
         const rtState = rtObj.getState();
 

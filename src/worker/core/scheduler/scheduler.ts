@@ -110,6 +110,7 @@ export class Scheduler {
     private currentThreadId: number | null = null;
     private nextThreadId = 1;
     private runQueue: number[] = [];
+    private preferredSwitchThreadId = 0;
 
     // TLS
     private tlsSlots = new Set<number>();
@@ -544,6 +545,7 @@ export class Scheduler {
         this.tlsSlots.clear();
         this.nextTlsIndex = 0;
         this.switchRequested = false;
+        this.preferredSwitchThreadId = 0;
         this.bootstrapUntilFirstWait.clear();
         this.idleAnchorWallMs = 0;
         this.criticalSectionOwners.clear();
@@ -3332,8 +3334,44 @@ export class Scheduler {
     requestSwitch(): void { this.switchRequested = true; }
 
     requestSwitchToThread(threadId: number): void {
-        // Simple: just request a switch. Round-robin will get there.
+        const target = this.threads.get(threadId >>> 0);
+        if (target && target.state === ThreadState.READY) {
+            this.preferredSwitchThreadId = target.id;
+        }
         this.switchRequested = true;
+    }
+
+    /**
+     * Make the owner of a suspended callback frame runnable before host-driven
+     * pumps write a new guest callback onto its saved stack. A modal dialog can
+     * idle long enough for another guest thread to become current; dispatching
+     * on that thread corrupts the callback-frame ownership contract.
+     *
+     * Returns true only when the requested thread already owns the live CPU.
+     * Callers must retry later when false, without consuming their queued work.
+     */
+    prepareThreadForCallbackDispatch(threadId: number): boolean {
+        const targetId = threadId >>> 0;
+        const target = this.threads.get(targetId);
+        if (!target || target.state === ThreadState.TERMINATED || target.state === ThreadState.SUSPENDED) {
+            return false;
+        }
+
+        if (this.currentThreadId === targetId && target.state === ThreadState.RUNNING) {
+            return true;
+        }
+
+        if (target.state === ThreadState.WAITING && target.waitInfo?.reason === WaitReason.ASYNC_THUNK) {
+            if (!target.context) return false;
+            const ready = this.transitionTo(target, ThreadState.READY, null, target.context);
+            if (!ready.success) return false;
+        }
+
+        if (target.state !== ThreadState.READY) return false;
+        this.requestSwitchToThread(targetId);
+        preemptionManager.requestImmediateExit();
+        this.wakeEarlyFromIdleYield();
+        return false;
     }
 
     requestYieldToHost(ms: number = 1, source: string = "req"): void {
@@ -3352,7 +3390,7 @@ export class Scheduler {
         let pumpedIdle = false;
         if (this.timeService.isVirtualTimeActive() && this.shouldPumpIdleVirtualTime()) {
             pumpedIdle = true;
-            const wallNow = performance.now();
+            const wallNow = this.timeService.guestWallClockMs();
             if (this.idleAnchorWallMs === 0) {
                 this.idleAnchorWallMs = wallNow;
             } else {
@@ -3840,6 +3878,13 @@ export class Scheduler {
 
     private pickNextRunnable(excludeId?: number): Thread | null {
         if (this.runQueue.length === 0) return null;
+
+        if (this.preferredSwitchThreadId !== 0) {
+            const preferredId = this.preferredSwitchThreadId;
+            this.preferredSwitchThreadId = 0;
+            const preferred = this.threads.get(preferredId);
+            if (preferred && preferred.state === ThreadState.READY) return preferred;
+        }
 
         // Bootstrap threads must reach their first wait before the creator can monopolize CPU
         // during long thunks (e.g. MCI intro decode).

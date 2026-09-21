@@ -978,6 +978,14 @@ function runModalDialog(
     let pumpIterations = 0;
     const pumpStep = (): void => {
         pumpIterations++;
+        // The modal thunk and its callback frame belong to the thread that
+        // entered DialogBoxParam. Other guest threads may run while the pump is
+        // idle, so wait until the scheduler restores that owner before touching
+        // its saved stack or completing the frame.
+        if (!callbackManager.prepareSuspendedFrameDispatch(frameId)) {
+            setTimeout(pumpStep, 8);
+            return;
+        }
         const dialog = activeDialogs.get(dialogHwnd);
         if (!dialog || dialog.closed) {
             // EndDialog while the pump was idle (no in-flight guest callback): still
@@ -1221,6 +1229,38 @@ function runModalDialog(
         if (dialogWin) assignPendingClientMessage(dialogWin);
         finalizeDialogPaint(dialogHwnd);
         system.windowManager.postMessage(dialogHwnd, 0x000f /* WM_PAINT */, 0, 0);
+
+        // These games always present a hardware picker before the game. Their
+        // defaults are populated by WM_INITDIALOG and are valid for our fixed
+        // virtual adapter. Match the immutable resource title: either dialog proc
+        // may replace the live window title during initialization.
+        const startupDialog = dlgTitle === 'AlienShooter'
+            ? 'AlienShooter'
+            : dlgTitle === '!Delta Force: Land Warrior - Video Test'
+                ? 'Delta Force: Land Warrior video test'
+                : undefined;
+        const startupOk = startupDialog
+            ? findChildByControlId(dialogHwnd, IDOK)
+            : undefined;
+        if (startupOk) {
+            Logger.log(LogCategory.USER32,
+                `${label}: accepting ${startupDialog} virtual-adapter defaults`);
+            try {
+                callbackManager.invokeCallback(
+                    lpDialogFunc,
+                    [dialogHwnd, WM_COMMAND, IDOK | (BN_CLICKED << 16), startupOk.handle],
+                    0,
+                    pumpCompleteThunk,
+                    false,
+                    `${label}:${startupDialog}-IDOK`,
+                    frameId,
+                );
+                return null;
+            } catch (e) {
+                Logger.warn(LogCategory.USER32,
+                    `${label}: ${startupDialog} default acceptance failed: ${e}`);
+            }
+        }
 
         // Start the async message pump (yields to JS event loop between callbacks).
         Logger.log(LogCategory.USER32,
@@ -1943,4 +1983,3 @@ export function createDialogExports(): Record<string, ThunkImplementation> {
 export function isSentinelWndProc(wndProc: number): boolean {
     return (wndProc & 0xFFFF0000) === 0xFFFF0000;
 }
-

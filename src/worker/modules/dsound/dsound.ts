@@ -2084,8 +2084,16 @@ export class DSound implements IModule {
         };
         this.exports["idirectsoundbuffer8_setpan"] = (ctx, mem, args) => {
             const buffer = this.getBuffer(args[0]);
-            if (!buffer) return DSERR_INVALIDPARAM;
-            if (!(buffer.flags & DSBCAPS_CTRLPAN) || (buffer.flags & DSBCAPS_CTRL3D)) return DSERR_CONTROLUNAVAIL;
+            if (!buffer) {
+                Logger.warn(LogCategory.SYSTEM,
+                    `IDirectSoundBuffer8::SetPan invalid buffer this=0x${(args[0] >>> 0).toString(16)} pan=${args[1] | 0}`);
+                return DSERR_INVALIDPARAM;
+            }
+            if (!(buffer.flags & DSBCAPS_CTRLPAN) || (buffer.flags & DSBCAPS_CTRL3D)) {
+                Logger.warn(LogCategory.SYSTEM,
+                    `IDirectSoundBuffer8::SetPan unavailable id=${buffer.id} flags=0x${(buffer.flags >>> 0).toString(16)} pan=${args[1] | 0}`);
+                return DSERR_CONTROLUNAVAIL;
+            }
             buffer.pan = Math.max(-10000, Math.min(10000, args[1] | 0));
             // Instant update via Atomics
             if (buffer.sab) {
@@ -2343,6 +2351,9 @@ export class DSound implements IModule {
             }
             buffers.push({
                 ptr: `0x${(ptr >>> 0).toString(16)}`,
+                // Keep the guest PCM allocation visible in harness snapshots while
+                // investigating title allocators that receive a DSound lock pointer.
+                dataPtr: `0x${(b.ptr >>> 0).toString(16)}`,
                 id: b.id,
                 type: obj.type,
                 isPlaying: b.isPlaying,

@@ -20,6 +20,7 @@ import {
 } from "../com-objects";
 import { TextureResolution, TextureManager } from "./types";
 
+
 /**
  * Propagate surface content state to texture handle registry.
  * Call after any writer that sets authority/version on a texture surface so that

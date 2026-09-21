@@ -1223,7 +1223,8 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
         // whether a NORMAL is present (XYZ=12, +NORMAL=12, then DIFFUSE).
         let diffuseTag = "noDiffuse";
         if (fvf & 0x40) {
-            const dOff = verticesAddr + 12 + ((fvf & 0x10) ? 12 : 0);
+            const positionBytes = posType === 0x0004 ? 16 : 12;
+            const dOff = verticesAddr + positionBytes + ((fvf & 0x10) ? 12 : 0);
             if (dOff + 4 <= mem.length) diffuseTag = `diffuse=0x${(view.getUint32(dOff, true) >>> 0).toString(16).padStart(8, "0")}`;
         }
         const L = this.getFFPLightingState();
@@ -1929,11 +1930,23 @@ export class D3D8DeviceAdapter implements RenderActive, FFPLightingSource {
 
         profiler.start("present");
         const presentStart = frameProfiler.startTimer();
-        await framePacer.waitForFrameSlot({ nonBlocking: true });
+        // Present is a real frame boundary, not a Blt-to-primary update. Waiting
+        // for a fresh display slot prevents uncapped D3D8 games from repeatedly
+        // locking/readback-rendering the back buffer at 200+ FPS and gives stable
+        // frame pacing at the browser's refresh rate.
+        await framePacer.waitForFrameSlot();
         framePacer.reserveFrameSlot();
 
         try {
             this.flushProgrammablePending();
+
+            // LockRect/UnlockRect can make guest memory the newest backbuffer.
+            // Upload those pixels before presenting: mixed GPU terrain and CPU
+            // sprite renderers otherwise display the terrain without actors/HUD.
+            if (this.renderTarget.mode === "CPU" && this.renderTarget.gpuDirty &&
+                surfaceSyncManager.needsGPUSync(this.renderTarget).needed) {
+                this.renderer.syncSurfaceFromMemory(this.renderTarget);
+            }
 
             const system = System.getInstance();
             const backend = system.services.render.getBackend();

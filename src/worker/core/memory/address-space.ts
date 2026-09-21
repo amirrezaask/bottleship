@@ -348,6 +348,7 @@ export class AddressSpace {
         return this.layoutBucketMap.get(kind) ?? null;
     }
 
+
     /**
      * Dynamically expand a layout bucket to accommodate larger allocations.
      * Returns the new size on success, or 0 if expansion failed.

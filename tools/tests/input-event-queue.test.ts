@@ -10,6 +10,8 @@ function fixture() {
     const manager = new InputManager({
         getKeyboardTargetWindow: () => win, getMouseTargetWindow: () => win,
         getActiveHwnd: () => 1, postMessage: (...args: number[]) => messages.push(args),
+        getWindowOwnerThread: () => 1,
+        getFocusHwnd: () => 1,
     } as never);
     manager.setInputBuffer(buffer);
     function transition(change: () => void) {
@@ -22,6 +24,29 @@ function fixture() {
 }
 
 describe("input transitions while guest execution is busy", () => {
+    test("harness movement reaches buffered and unbuffered DirectInput once", () => {
+        const f = fixture();
+        f.manager.setDInputMouseBufferSize(32);
+        f.manager.injectMoveAtScreen(100, 80);
+        expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
+        f.manager.injectButtonAtScreen(100, 80, 0, true);
+        f.manager.injectButtonAtScreen(100, 80, 0, false);
+        expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
+        f.manager.injectMoveAtScreen(120, 60);
+        expect(f.manager.getDInputAccum()).toEqual({ x: 120, y: 60 });
+        const events = f.manager.drainDInputMouseEvents(32);
+        expect(events.filter(event => event.dwOfs < 8).map(event => [event.dwOfs, event.dwData]))
+            .toEqual([[0, 100], [4, 80], [0, 20], [4, -20]]);
+    });
+    test("a harness click moves once and preserves a guest cursor warp", () => {
+        const f = fixture();
+        f.manager.injectClickAtScreen(100, 80);
+        expect(f.manager.getDInputAccum()).toEqual({ x: 100, y: 80 });
+        f.manager.setMousePosition(320, 240);
+        f.manager.injectClickAtScreen(330, 235);
+        expect(f.manager.getDInputAccum()).toEqual({ x: 110, y: 75 });
+        expect(f.manager.getMouseState()).toMatchObject({ x: 330, y: 235, buttons: 0 });
+    });
     test("reset discards taps queued for the previous guest", () => {
         const f = fixture();
         f.transition(() => { f.view[16] = 1 << 13; });

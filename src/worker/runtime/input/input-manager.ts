@@ -93,6 +93,11 @@ const VK_CAPITAL = 0x14;
 const VK_NUMLOCK = 0x90;
 const VK_SCROLL  = 0x91;
 
+// Bounded bring-up diagnostics for titles whose custom-painted menus appear
+// to ignore input. This is intentionally tiny and self-limiting so it cannot
+// perturb normal input or fill the worker log ring during gameplay.
+let inputDiagnosticLogCount = 0;
+
 // VK → OEM hardware scan code mapping (Set 1 / AT keyboard)
 const VK_TO_SCAN: Record<number, number> = {
     // Letters A-Z (0x41-0x5A) → 0x1E-0x32 handled inline
@@ -514,6 +519,16 @@ export class InputManager {
         // separately below (capture → WindowFromPoint).
         const targetWin = this.windowManager.getKeyboardTargetWindow();
         if (!targetWin) {
+            if (inputDiagnosticLogCount < 32) {
+                inputDiagnosticLogCount++;
+                Logger.log(
+                    LogCategory.SYSTEM,
+                    `[InputDiag] no keyboard target mouse=(${mouseX},${mouseY}) `
+                    + `active=0x${this.windowManager.getActiveHwnd().toString(16)} `
+                    + `focus=0x${this.windowManager.getFocusHwnd().toString(16)} `
+                    + `z=${this.windowManager.getZOrder().map((hwnd) => `0x${hwnd.toString(16)}`).join(',')}`,
+                );
+            }
             // Save bitfield state even when no window
             for (let w = 0; w < KEY_BITFIELD_COUNT; w++) {
                 this.prevKeyBitfield[w] = inputView[KEY_BITFIELD_BASE + w];
@@ -661,6 +676,16 @@ export class InputManager {
         if (leftDown !== wasLeftDown) {
             let msg = leftDown ? WM_LBUTTONDOWN : WM_LBUTTONUP;
             if (leftDown) msg = this.checkDblClick(0, clientX, clientY, WM_LBUTTONDOWN, WM_LBUTTONDBLCLK);
+            if (inputDiagnosticLogCount < 32) {
+                inputDiagnosticLogCount++;
+                Logger.log(
+                    LogCategory.SYSTEM,
+                    `[InputDiag] mouse msg=0x${msg.toString(16)} screen=(${screenX},${screenY}) `
+                    + `client=(${clientX},${clientY}) target=0x${mouseTargetHwnd.toString(16)} `
+                    + `ownerThread=${this.windowManager.getWindowOwnerThread(mouseTargetHwnd)} `
+                    + `active=0x${this.windowManager.getActiveHwnd().toString(16)} focus=0x${this.windowManager.getFocusHwnd().toString(16)}`,
+                );
+            }
             this.windowManager.postMessage(mouseTargetHwnd, msg, wParamButtons, mouseLParam, screenX, screenY, 0, keyStateSnapshot);
         }
 
@@ -725,6 +750,16 @@ export class InputManager {
             if (newKeyEvents.length > 0) {
                 if (enqueue) {
                     for (const evt of newKeyEvents) {
+                        if (inputDiagnosticLogCount < 32) {
+                            inputDiagnosticLogCount++;
+                            Logger.log(
+                                LogCategory.SYSTEM,
+                                `[InputDiag] key msg=0x${(evt.pressed ? WM_KEYDOWN : WM_KEYUP).toString(16)} `
+                                + `vk=0x${evt.vk.toString(16)} target=0x${targetHwnd.toString(16)} `
+                                + `ownerThread=${this.windowManager.getWindowOwnerThread(targetHwnd)} `
+                                + `active=0x${this.windowManager.getActiveHwnd().toString(16)} focus=0x${this.windowManager.getFocusHwnd().toString(16)}`,
+                            );
+                        }
                         this.windowManager.postMessage(
                             targetHwnd,
                             evt.pressed ? WM_KEYDOWN : WM_KEYUP,
@@ -1129,8 +1164,7 @@ export class InputManager {
         const y = screenY | 0;
         const step = (buttons: number): void => {
             this.beginInputWrite(view);
-            view[INPUT_INDEX.mouseX] = x;
-            view[INPUT_INDEX.mouseY] = y;
+            this.writeInjectedMousePosition(view, x, y);
             view[INPUT_INDEX.mouseInside] = 1;
             view[INPUT_INDEX.buttons] = buttons;
             this.endInputWrite(view);
@@ -1155,13 +1189,23 @@ export class InputManager {
         return button === 1 ? 2 : button === 2 ? 4 : 1;
     }
 
+    /** Harness movement must also reach unbuffered DirectInput, which reads
+     * the running relative accumulators rather than the absolute cursor. A
+     * guest SetCursorPos warp is already reflected in currentMouseX/Y and must
+     * not become physical mouse movement in the next injected event. */
+    private writeInjectedMousePosition(view: Int32Array, x: number, y: number): void {
+        Atomics.add(view, INPUT_INDEX.dinputDX, (x - this.currentMouseX) | 0);
+        Atomics.add(view, INPUT_INDEX.dinputDY, (y - this.currentMouseY) | 0);
+        view[INPUT_INDEX.mouseX] = x;
+        view[INPUT_INDEX.mouseY] = y;
+    }
+
     /** Move the cursor to (screenX,screenY) keeping the current button state. */
     injectMoveAtScreen(screenX: number, screenY: number): boolean {
         const view = this.inputView;
         if (!view) return false;
         this.beginInputWrite(view);
-        view[INPUT_INDEX.mouseX] = screenX | 0;
-        view[INPUT_INDEX.mouseY] = screenY | 0;
+        this.writeInjectedMousePosition(view, screenX | 0, screenY | 0);
         view[INPUT_INDEX.mouseInside] = 1;
         this.endInputWrite(view);
         this.poll(true);
@@ -1174,8 +1218,7 @@ export class InputManager {
         if (!view) return false;
         const mask = this.mouseMaskFor(button);
         this.beginInputWrite(view);
-        view[INPUT_INDEX.mouseX] = screenX | 0;
-        view[INPUT_INDEX.mouseY] = screenY | 0;
+        this.writeInjectedMousePosition(view, screenX | 0, screenY | 0);
         view[INPUT_INDEX.mouseInside] = 1;
         view[INPUT_INDEX.buttons] = down ? (view[INPUT_INDEX.buttons] | mask) : (view[INPUT_INDEX.buttons] & ~mask);
         this.endInputWrite(view);

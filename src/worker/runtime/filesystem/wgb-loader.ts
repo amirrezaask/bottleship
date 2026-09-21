@@ -105,6 +105,8 @@ export interface WgbManifest {
     /** Presentation baseline; enriched by editorial catalog / user overrides keyed by gameId. */
     meta?: WgbMeta;
     entrypoint: string;
+    /** Optional host-verified SHA-256 for a legacy raw entrypoint object. */
+    entrypointSha256?: string;
     args?: string;
     rom?: string;
     registry?: string;
@@ -161,6 +163,9 @@ export interface WgbManifest {
         codepage?: number;
         /** Windows OEM code page (GetOEMCP). Default 437. Use 866 for Cyrillic OEM. */
         oemCodepage?: number;
+        /** Bounded source-cache working set in MiB for titles with a measured
+         * larger streaming working set. The shared hard cap is 64 MiB. */
+        streamCacheMB?: number;
         /** Windows locale identifier (LCID). Default 0x0409 (English US). Use 0x0419 for Russian, etc. */
         lcid?: number;
         /** Skip video playback (BinkOpen/SmackOpen return stubs). For debugging video→menu transitions. */
@@ -273,14 +278,25 @@ export class WgbLoader {
     /** Build a bundle from any ZipSource (sync OPFS handle, in-memory buffer, blob, or HTTP range). */
     static async fromSource(source: ZipSource, onStage?: (label: string) => void, options?: GameboxLoadOptions): Promise<WgbBundle> {
         onStage?.("Reading index");
-        const archive = new ZipArchive(withBlockCache(source), {
+        const cachedSource = withBlockCache(source);
+        const archive = new ZipArchive(cachedSource, {
             maxCentralDirectoryBytes: 64 * 1024 * 1024,
             rejectDuplicateNames: true,
         });
         try {
             await archive.init();
+            const manifest = await readManifest(archive);
+            const streamCacheMB = manifest.emulator?.streamCacheMB;
+            if (cachedSource instanceof CachedSource && streamCacheMB !== undefined) {
+                if (!Number.isSafeInteger(streamCacheMB) || streamCacheMB < 16 || streamCacheMB > 64) {
+                    throw new Error(`Invalid emulator.streamCacheMB: ${streamCacheMB}`);
+                }
+                cachedSource.setMaxBytes(streamCacheMB * 1024 * 1024);
+                Logger.log(LogCategory.SYSTEM, `WGB: title source-cache budget ${streamCacheMB} MiB`);
+            }
             return await this.loadFromArchive(archive, onStage, options?.trustStore ?? configuredTrustStore(),
-                options?.sharedBlobBase ?? (globalThis as { __GAMEBOX_SHARED_BLOB_BASE?: string }).__GAMEBOX_SHARED_BLOB_BASE);
+                options?.sharedBlobBase ?? (globalThis as { __GAMEBOX_SHARED_BLOB_BASE?: string }).__GAMEBOX_SHARED_BLOB_BASE,
+                manifest);
         } catch (error) { archive.close(); throw error; }
     }
 
@@ -385,8 +401,8 @@ export class WgbLoader {
         return this.fromSource(new BlobSource(blob), undefined, options);
     }
 
-    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void, trustStore?: GameboxTrustStore, sharedBlobBase?: string): Promise<WgbBundle> {
-        const manifest = await readManifest(archive);
+    private static async loadFromArchive(archive: ZipArchive, onStage?: (label: string) => void, trustStore?: GameboxTrustStore, sharedBlobBase?: string, manifestOverride?: WgbManifest): Promise<WgbBundle> {
+        const manifest = manifestOverride ?? await readManifest(archive);
 
         onStage?.(`Loading ${manifest.entrypoint.split(/[\\/]/).pop() ?? "game"}`);
         const gamebox = manifest.gamebox === undefined ? undefined :

@@ -86,6 +86,14 @@ export const REFERENCE_ARG_COUNTS: ReferenceArgCountMap = {
     "ail_redbook_close": 1,
     "ail_mmx_available": 0
   },
+  "msacm32": {
+    "acmstreamsize": 4,
+    "acmstreamclose": 2,
+    "acmstreamunprepareheader": 3,
+    "acmstreamconvert": 3,
+    "acmstreamprepareheader": 3,
+    "acmstreamopen": 8
+  },
   "gdi32": {
     "getstockobject": 1,
     "setbkcolor": 2,
@@ -162,6 +170,21 @@ export const REFERENCE_ARG_COUNTS: ReferenceArgCountMap = {
     "bitblt": 9,
     "getdibits": 7,
     "getdibcolortable": 4
+  },
+  "imm32": {
+    "immassociatecontext": 2,
+    "immcreatecontext": 0,
+    "immdestroycontext": 1,
+    "immgetcandidatelistw": 4,
+    "immgetcompositionstringw": 4,
+    "immgetcontext": 1,
+    "immgetdefaultimewnd": 1,
+    "immgetimefilenamea": 3,
+    "immnotifyime": 4,
+    "immreleasecontext": 2,
+    "immsetcandidatewindow": 2,
+    "immsetcompositionstringw": 6,
+    "immsetcompositionwindow": 2
   },
   "rpcrt4": {
     "uuidcreate": 1,

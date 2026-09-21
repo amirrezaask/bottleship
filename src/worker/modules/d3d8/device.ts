@@ -80,7 +80,8 @@ export function createDeviceExports(): Record<string, ThunkImplementation> {
         if (Flags & 1) parts.push('TARGET');
         if (Flags & 2) parts.push('ZBUFFER');
         if (Flags & 4) parts.push('STENCIL');
-        Logger.log(LogCategory.SYSTEM, `D3D8 Clear flags=${parts.join('|')||Flags} color=0x${(Color>>>0).toString(16)} z=${Z.toFixed(2)}`);
+        Logger.verboseLazy(LogCategory.SYSTEM,
+            () => `D3D8 Clear flags=${parts.join('|')||Flags} color=0x${(Color>>>0).toString(16)} z=${Z.toFixed(2)}`);
         device.clear(Flags, Color, Z, Stencil);
         return D3D_OK;
     };

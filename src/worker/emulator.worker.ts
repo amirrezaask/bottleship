@@ -61,6 +61,7 @@ import { Psapi } from './modules/psapi';
 import { Iphlpapi } from './modules/iphlpapi';
 import { Tapi32 } from './modules/tapi32';
 import { Setupapi } from './modules/setupapi';
+import { EBUEula } from './modules/ebueula';
 import { Netapi32 } from './modules/netapi32';
 import { ImageHlp } from './modules/imagehlp';
 import { DbgHelp } from './modules/dbghelp';
@@ -166,7 +167,7 @@ import {
 import { KERNEL32_VISTA_WARMUP_EXPORTS } from './api/kernel32-vista-supplement';
 // Load diagnostics commands (exposes frameDiagnostics to console)
 import './core/diagnostics-commands';
-import { handleDbgCommand } from './core/debug/dbg-commands';
+import { handleDbgCommand, tickDf2TerrainProbe } from './core/debug/dbg-commands';
 import { debugSession } from './core/debug/debug-session';
 import { harnessService } from './harness/service';
 import { HARNESS_RPC, HARNESS_CANCEL } from './harness/rpc';
@@ -1031,10 +1032,20 @@ const drawPlaceholder = () => {
   requestAnimationFrame(drawPlaceholder);
 };
 
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>),
+  );
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 const loadPeData = async (
   peData: Uint8Array | undefined,
   skipReset: boolean = false,
   image?: GameboxImage,
+  sourceHash?: string,
 ) => {
   const system = System.getInstance();
   if (!system.process) {
@@ -1061,7 +1072,7 @@ const loadPeData = async (
       ? image.descriptor
         ? await loader.loadPreparedExecutable(image.source, image.descriptor)
         : await loader.loadSourceExecutable(image.source)
-      : await loader.loadExecutable(peData!);
+      : await loader.loadExecutable(peData!, sourceHash);
     Logger.log(
       LogCategory.SYSTEM,
       `Loaded PE. Entry point: 0x${module.entryPoint.toString(16)}, base: 0x${module.baseAddress.toString(16)}`,
@@ -2163,6 +2174,25 @@ const loadBundleImpl = async (payload: {
       throw new Error('Prepared entrypoint is missing from the catalog');
     if (preparedImage?.fallbackReason)
       Logger.warn(LogCategory.SYSTEM, `GameBox: ${preparedImage.fallbackReason}`);
+    let legacyEntrypointHash: string | undefined;
+    if (!preparedImage) {
+      if (!bundle.entrypointBytes)
+        throw new Error('Legacy bundle is missing its entrypoint bytes');
+      legacyEntrypointHash = await sha256Hex(bundle.entrypointBytes);
+      const declaredHash = bundle.manifest.entrypointSha256?.toLowerCase();
+      if (
+        declaredHash !== undefined &&
+        (!SHA256_HEX.test(declaredHash) || declaredHash !== legacyEntrypointHash)
+      ) {
+        throw new Error(
+          `Legacy entrypoint SHA-256 mismatch: declared=${declaredHash}, actual=${legacyEntrypointHash}`,
+        );
+      }
+      Logger.log(
+        LogCategory.SYSTEM,
+        `Legacy PE identity verified: ${bundle.manifest.entrypoint} sha256=${legacyEntrypointHash}`,
+      );
+    }
     // This is the last safe startup boundary: prepareFullGameSwitch has reset
     // the final v86 instance and the bundle is fully mounted, but no guest code
     // has run. Resolve every cache request sent after load_bundle here so AOT
@@ -2176,7 +2206,7 @@ const loadBundleImpl = async (payload: {
         self.postMessage({ type: 'gamebox_aot_result', id: request.id, error: String(error) });
       }
     }
-    await loadPeData(bundle.entrypointBytes, true, preparedImage);
+    await loadPeData(bundle.entrypointBytes, true, preparedImage, legacyEntrypointHash);
     bootMark('pe-loaded');
 
     // Signal host that loading is done and the game is starting
@@ -2463,6 +2493,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       const iphlpapi = new Iphlpapi();
       const tapi32 = new Tapi32();
       const setupapi = new Setupapi();
+      const ebueula = new EBUEula();
       const netapi32 = new Netapi32();
       const psapi = new Psapi();
       const imagehlp = new ImageHlp();
@@ -2520,6 +2551,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
             iphlpapi.name,
             tapi32.name,
             setupapi.name,
+            ebueula.name,
             netapi32.name,
             glu32.name,
             'gdiplus',
@@ -2598,6 +2630,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       wininet.initialize(process);
       tapi32.initialize(process);
       setupapi.initialize(process);
+      ebueula.initialize(process);
       netapi32.initialize(process);
 
       process.registerModule(kernel32.name, kernel32);
@@ -2652,6 +2685,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       process.registerModule(iphlpapi.name, iphlpapi);
       process.registerModule(tapi32.name, tapi32);
       process.registerModule(setupapi.name, setupapi);
+      process.registerModule(ebueula.name, ebueula);
       process.registerModule(netapi32.name, netapi32);
       process.registerModule(imagehlp.name, imagehlp);
       const dbghelp = new DbgHelp(process);
@@ -2720,6 +2754,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       process.dispatcher.registerModule(iphlpapi.name, iphlpapi.exports);
       process.dispatcher.registerModule(tapi32.name, tapi32.exports);
       process.dispatcher.registerModule(setupapi.name, setupapi.exports);
+      process.dispatcher.registerModule(ebueula.name, ebueula.exports);
       process.dispatcher.registerModule(netapi32.name, netapi32.exports);
       process.dispatcher.registerModule(imagehlp.name, imagehlp.exports);
       process.dispatcher.registerModule(dbghelp.name, dbghelp.exports);
@@ -2916,6 +2951,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
         let ticksSinceStart = 0;
         v86Inner['tick_hooks_after'] = () =>
           guardTickHook('after', () => {
+            if ((globalThis as any).__df2TerrainProbeActive) tickDf2TerrainProbe(cpu);
             // JIT-on guest-EIP sampler (opt-in via __eipSamp). Runs between v86 JIT
             // batches (~1ms) so it observes real full-speed behavior with no starvation;
             // streams the cumulative 4KB-page histogram to the main thread (the reliable
@@ -3102,6 +3138,7 @@ async function pauseEmulatorAndWait(): Promise<void> {
   if (!system.process?.v86) return;
   isPaused = true;
   system.isPaused = true;
+  TimeService.getInstance().notifyPause();
   if (gdiPresentRafId !== null) {
     cancelAnimationFrame(gdiPresentRafId);
     gdiPresentRafId = null;

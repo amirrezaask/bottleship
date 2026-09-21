@@ -1,0 +1,11 @@
+{
+  "module": "msacm32",
+  "functions": [
+    { "name": "acmStreamSize", "argCount": 4 },
+    { "name": "acmStreamClose", "argCount": 2 },
+    { "name": "acmStreamUnprepareHeader", "argCount": 3 },
+    { "name": "acmStreamConvert", "argCount": 3 },
+    { "name": "acmStreamPrepareHeader", "argCount": 3 },
+    { "name": "acmStreamOpen", "argCount": 8 }
+  ]
+}

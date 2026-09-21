@@ -76,10 +76,13 @@ export const msvcrtModule: ModuleDescriptor = {
         makeFunc("time", 1),
         makeFunc("clock", 0),
         makeFunc("_sleep", 1),
+        makeFunc("raise", 1),
         makeFunc("_ftime", 1),
         makeFunc("_errno", 0),
         makeFunc("__p__pctype", 0),
+        makeFunc("_pctype", 0),
         makeFunc("__p___mb_cur_max", 0),
+        makeFunc("__mb_cur_max", 0),
         makeFunc("_isctype", 2),
         makeFunc("_adjust_fdiv", 0),
         makeFunc("_initterm", 2),
@@ -214,6 +217,7 @@ export const msvcrtModule: ModuleDescriptor = {
         makeFunc("_snprintf", 16),
 
         // Path/directory
+        makeFunc("_getdrives", 0),
         makeFunc("_getcwd", 2),
         makeFunc("_fullpath", 3),
         makeFunc("_makepath", 5),

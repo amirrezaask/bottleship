@@ -928,7 +928,8 @@ export function createResourcesExports(): Record<string, ThunkImplementation> {
             surface.gpuDirty = true;
             surface.mode = 'CPU';
             surface.everLocked = true;
-            Logger.log(LogCategory.SYSTEM, `D3D8 UnlockRect on render_surface 0x${args[0].toString(16)}: marked CPU-dirty, version=${surface.version}`);
+            Logger.verboseLazy(LogCategory.SYSTEM,
+                () => `D3D8 UnlockRect on render_surface 0x${args[0].toString(16)}: marked CPU-dirty, version=${surface.version}`);
         }
         return D3D_OK;
     };

@@ -7,6 +7,10 @@ import { Marshaler } from "../../../core/memory/marshaler";
 import { DDrawContext } from "../context";
 import { bytesToGuid } from "../helpers";
 import {
+    IID_IDirect3D,
+    IID_IDirect3D2,
+    IID_IDirect3D3,
+    IID_IDirect3D7,
     IID_IDirect3DDevice3,
     IID_IDirect3DDevice3V5,
     IID_IDirect3DDevice7,
@@ -33,10 +37,51 @@ import {
 import { computeFvfStride } from "../../../backends/webgpu/ddraw/compute/vertex-converter";
 import { EmulatorConfig } from "../../../core/emulator-config-manager";
 import { initReturnPtr } from "../../../backends/webgpu/shared/dx-com-helpers";
+import { setDeviceRenderTarget } from "./texture-manager";
 
 export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => {
     const exports: D3DExports = {};
     const resourceProvider = context.resourceProvider;
+
+    /**
+     * DirectDraw exposes the Direct3D generations as tear-off interfaces on one
+     * COM identity.  Games such as Midtown Madness first obtain IDirect3D and
+     * then immediately QueryInterface for IDirect3D3.  BaseComObject only knows
+     * the IID it was constructed with, so handle the cross-generation query here
+     * and map the version-specific vtable back to the same object/refcount.
+     */
+    const queryD3DTearOff = (
+        obj: ReturnType<typeof resourceProvider.getComObjectByAddress>,
+        iidStr: string,
+        ppvObject: number,
+        mem: Uint8Array,
+    ): number | null => {
+        if (!obj || !ppvObject || ppvObject + 4 > mem.length) return obj ? 0x80004003 : 0x80004002;
+
+        const normalized = iidStr.replace(/[{}]/g, "").toLowerCase();
+        const interfaceName = new Map<string, keyof typeof context.vtables>([
+            [IID_IDirect3D.toLowerCase(), "IDirect3D"],
+            [IID_IDirect3D2.toLowerCase(), "IDirect3D2"],
+            [IID_IDirect3D3.toLowerCase(), "IDirect3D3"],
+            [IID_IDirect3D7.toLowerCase(), "IDirect3D7"],
+        ]).get(normalized);
+        if (!interfaceName) return null;
+
+        if (normalized === obj.iid.replace(/[{}]/g, "").toLowerCase()) {
+            return obj.queryInterface(iidStr, ppvObject, mem);
+        }
+
+        const vtableAddr = context.vtables[interfaceName]?.address;
+        if (!vtableAddr) return 0x80004002;
+
+        const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
+        new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(ppvObject, objAddr, true);
+        resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+        obj.addRef();
+        Logger.log(LogCategory.COM,
+            `${obj.constructor.name} QueryInterface(${interfaceName}) -> tear-off 0x${objAddr.toString(16)} handle=0x${obj.handle.toString(16)}`);
+        return D3D_OK;
+    };
 
     // --- IDirect3D (v1) ---
 
@@ -50,6 +95,8 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
         const iidStr = bytesToGuid(iidBytes);
         Logger.log(LogCategory.COM, `IDirect3D_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr}`);
         if (!obj) return 0x80004002;
+        const tearOffResult = queryD3DTearOff(obj, iidStr, ppvObject, mem);
+        if (tearOffResult !== null) return tearOffResult;
         return obj.queryInterface(iidStr, ppvObject, mem);
     };
 
@@ -92,6 +139,8 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
         const iidStr = bytesToGuid(iidBytes);
         Logger.log(LogCategory.COM, `IDirect3D2_QueryInterface: this=0x${thisPtr.toString(16)} iid=${iidStr}`);
         if (!obj) return 0x80004002;
+        const tearOffResult = queryD3DTearOff(obj, iidStr, ppvObject, mem);
+        if (tearOffResult !== null) return tearOffResult;
         return obj.queryInterface(iidStr, ppvObject, mem);
     };
 
@@ -132,7 +181,7 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
         if (!obj) return 0x80004005;
 
         obj.setParentD3(args[0]);
-        obj.setRenderTarget(lpDDS);
+        setDeviceRenderTarget(context, obj, lpDDS);
 
         const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -177,7 +226,8 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
             return 0x80004002;
         }
 
-        const result = obj.queryInterface(iidStr, ppvObject, mem);
+        const result = queryD3DTearOff(obj, iidStr, ppvObject, mem)
+            ?? obj.queryInterface(iidStr, ppvObject, mem);
         if (ppvObject) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             const returnedAddr = view.getUint32(ppvObject, true);
@@ -237,7 +287,7 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
         if (!obj) return 0x80004005;
 
         obj.setParentD3(args[0]);
-        obj.setRenderTarget(lpDDS);
+        setDeviceRenderTarget(context, obj, lpDDS);
 
         const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
@@ -674,7 +724,8 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
             return 0x80004002;
         }
 
-        const result = obj.queryInterface(iidStr, ppvObject, mem);
+        const result = queryD3DTearOff(obj, iidStr, ppvObject, mem)
+            ?? obj.queryInterface(iidStr, ppvObject, mem);
         if (ppvObject) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             const returnedAddr = view.getUint32(ppvObject, true);
@@ -714,7 +765,7 @@ export const createD3DInterfaceExports = (context: DDrawContext): D3DExports => 
         }
 
         obj.setParentD3(args[0]);
-        if (lpDDS) obj.setRenderTarget(lpDDS);
+        if (lpDDS) setDeviceRenderTarget(context, obj, lpDDS);
 
         const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);

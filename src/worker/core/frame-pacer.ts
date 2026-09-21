@@ -208,6 +208,31 @@ class FramePacerImpl {
         frameVarianceDiagnostics.recordIdleTime('raf_wait', wallElapsed);
     }
 
+    /**
+     * Acquire a display slot for a best-effort present. Returns false when this
+     * refresh interval already consumed its slot, allowing Blt-to-primary games
+     * to keep composing without submitting thousands of redundant frames.
+     */
+    async waitForFrameSlotIfDue(): Promise<boolean> {
+        if (!this.enabled || !this.running) return true;
+
+        if (this.recentSleepMs >= 5 && (performance.now() - this.recentSleepTime) < 20) {
+            this.recentSleepMs = 0;
+            this.totalWaits++;
+            return true;
+        }
+
+        if (this.permitAvailable) {
+            this.permitAvailable = false;
+            this.totalWaits++;
+            return true;
+        }
+
+        if (performance.now() - this.lastYieldTime < this.yieldCooldownMs) return false;
+        await this.waitForFrameSlot({ nonBlocking: true });
+        return true;
+    }
+
     setPacingMode(mode: 'off' | 'vsync' | 'smooth'): void {
         this.pacingMode = mode;
         this.lastSlotReturnMs = 0;

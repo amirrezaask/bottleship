@@ -2098,6 +2098,11 @@ class OpfsOverlay {
   private readonly WRITE_BUFFER_FLUSH_MS = 50; // 50ms
   /** Cached FileSystemSyncAccessHandle instances for fast synchronous reads */
   private syncHandleCache = new Map<string, any /* FileSystemSyncAccessHandle */>();
+  /** Deduplicates asynchronous createSyncAccessHandle calls for the same OPFS file. */
+  private syncHandleOpenings = new Map<
+    string,
+    Promise<any /* FileSystemSyncAccessHandle */ | null>
+  >();
   private syncHandleLru: string[] = [];
   private readonly MAX_SYNC_HANDLES = 32;
   /**
@@ -2108,6 +2113,8 @@ class OpfsOverlay {
    * write→close→read ordering holds despite the async commit.
    */
   private pendingFlushes = new Map<string, Promise<void>>();
+  /** Writer generation that owns each pending commit; avoids self-await deadlocks. */
+  private pendingFlushOwners = new Map<string, WriterCacheEntry>();
   /**
    * In-memory authoritative content for overlay files written this session. OPFS
    * exposes WritableFileStream and FileSystemSyncAccessHandle as mutually-exclusive,
@@ -2287,11 +2294,13 @@ class OpfsOverlay {
       }
     }
     this.syncHandleCache.clear();
+    this.syncHandleOpenings.clear();
     this.syncHandleLru = [];
     this.contentCache.clear();
     this.ephemeralFiles.clear();
     this.entries.clear();
     this.pendingFlushes.clear();
+    this.pendingFlushOwners.clear();
     this.shadowed.clear();
     this.shadowDirty = false;
     this.root = null;
@@ -2331,9 +2340,37 @@ class OpfsOverlay {
         clearTimeout(staleWriter.flushTimer);
         staleWriter.flushTimer = null;
       }
-      if (staleWriter.writer) {
-        void staleWriter.writer.close().catch(() => {});
-      }
+      // create/truncate is synchronous to the guest, but both pending sync-handle
+      // opens and writable-stream closes are asynchronous. Publish the complete
+      // hand-off so the replacement entry cannot acquire a second exclusive lock.
+      const previous = this.pendingFlushes.get(key);
+      const release = (async () => {
+        if (previous) {
+          try {
+            await previous;
+          } catch {
+            /* the earlier commit already logged its failure */
+          }
+        }
+        try {
+          await staleWriter.queue;
+        } catch {
+          /* closing still releases the handle after a failed queued write */
+        }
+        if (staleWriter.writer) await staleWriter.writer.close();
+        // A queued buffer flush may have opened a sync handle after the first
+        // closeSyncHandle() above. Release that handle before the new generation.
+        this.closeSyncHandle(path);
+      })();
+      this.pendingFlushes.set(key, release);
+      this.pendingFlushOwners.set(key, staleWriter);
+      const cleanup = () => {
+        if (this.pendingFlushes.get(key) === release) {
+          this.pendingFlushes.delete(key);
+          this.pendingFlushOwners.delete(key);
+        }
+      };
+      release.then(cleanup, cleanup);
     }
     this.entries.set(key, { size: 0, kind: 'file', path: normalizePath(path) });
     this.cacheReset(key); // authoritative empty content for read-after-write
@@ -2639,6 +2676,7 @@ class OpfsOverlay {
   private async ensureSyncHandle(
     path: string,
     create = false,
+    writerOwner?: WriterCacheEntry,
   ): Promise<any /* FileSystemSyncAccessHandle */ | null> {
     const key = toKey(path);
 
@@ -2647,9 +2685,14 @@ class OpfsOverlay {
 
     // Don't open if writer is active — a WritableFileStream and a sync access handle
     // can't coexist on the same OPFS file (createSyncAccessHandle would throw).
-    if (this.writerCache.has(key)) return null;
+    const activeWriter = this.writerCache.get(key);
+    if (activeWriter && activeWriter !== writerOwner) return null;
 
-    try {
+    const opening = this.syncHandleOpenings.get(key);
+    if (opening) return opening;
+
+    const open = (async () => {
+      try {
       // Evict LRU if at capacity
       while (this.syncHandleCache.size >= this.MAX_SYNC_HANDLES && this.syncHandleLru.length > 0) {
         const evictKey = this.syncHandleLru.shift()!;
@@ -2665,9 +2708,16 @@ class OpfsOverlay {
       this.syncHandleCache.set(key, syncHandle);
       this.syncHandleLru.push(key);
       return syncHandle;
-    } catch (e) {
-      Logger.warn(LogCategory.SYSTEM, `OPFS: ensureSyncHandle("${path}") failed: ${e}`);
-      return null;
+      } catch (e) {
+        Logger.warn(LogCategory.SYSTEM, `OPFS: ensureSyncHandle("${path}") failed: ${e}`);
+        return null;
+      }
+    })();
+    this.syncHandleOpenings.set(key, open);
+    try {
+      return await open;
+    } finally {
+      if (this.syncHandleOpenings.get(key) === open) this.syncHandleOpenings.delete(key);
     }
   }
 
@@ -2852,6 +2902,21 @@ class OpfsOverlay {
 
   private async ensureWriter(entry: WriterCacheEntry): Promise<void> {
     if (entry.writer) return;
+    // CloseHandle commits through a sync access handle and runs asynchronously.
+    // A guest may reopen/write the same path before that commit finishes; in that
+    // race the new writer entry is created first, then the old commit opens an
+    // exclusive sync handle.  Waiting here keeps the OPFS lock hand-off ordered
+    // before createWritable() (observed with Midtown Madness 2 player0.rec).
+    const key = toKey(entry.path);
+    const pending = this.pendingFlushes.get(key);
+    if (pending && this.pendingFlushOwners.get(key) !== entry) {
+      try {
+        await pending;
+      } catch {
+        // The committing path already logs its failure.  Still retry writer setup
+        // after closing any handle it managed to leave behind.
+      }
+    }
     this.closeSyncHandle(entry.path);
     const handle = await this.getFileHandle(entry.path, true);
     const keepExistingData = !entry.replaceExisting;
@@ -2874,6 +2939,30 @@ class OpfsOverlay {
 
     const doFlush = async () => {
       if (bufferToWrite.length === 0 && !entry.replaceExisting) return;
+      // This worker can use OPFS sync access handles. Prefer one for buffered guest
+      // writes: it commits immediately, remains reusable for read-after-write, and
+      // avoids createWritable() lock races during rapid Win32 create/write/close
+      // cycles (Midtown Madness 2 rewrites player0.rec several times per second).
+      if (!entry.writer) {
+        const key = toKey(entry.path);
+        const pending = this.pendingFlushes.get(key);
+        if (pending && this.pendingFlushOwners.get(key) !== entry) {
+          try {
+            await pending;
+          } catch {
+            /* the committing path already logged its failure */
+          }
+        }
+        const syncHandle = await this.ensureSyncHandle(entry.path, true, entry);
+        if (syncHandle) {
+          if (entry.replaceExisting) syncHandle.truncate(offsetToWrite + bufferToWrite.length);
+          if (bufferToWrite.length > 0) syncHandle.write(bufferToWrite, { at: offsetToWrite });
+          syncHandle.flush();
+          entry.replaceExisting = false;
+          entry.lastUsed = performance.now();
+          return;
+        }
+      }
       // Opening the stream belongs to the same queue as writes, so concurrent
       // flushes cannot open competing replacement streams.
       await this.ensureWriter(entry);
@@ -2992,8 +3081,12 @@ class OpfsOverlay {
     })();
 
     this.pendingFlushes.set(key, run);
+    this.pendingFlushOwners.set(key, cacheEntry);
     const cleanup = () => {
-      if (this.pendingFlushes.get(key) === run) this.pendingFlushes.delete(key);
+      if (this.pendingFlushes.get(key) === run) {
+        this.pendingFlushes.delete(key);
+        this.pendingFlushOwners.delete(key);
+      }
     };
     run.then(cleanup, cleanup);
     await run;
@@ -3060,6 +3153,7 @@ class OpfsOverlay {
     const key = toKey(path);
     this.contentCache.delete(key);
     this.pendingFlushes.delete(key);
+    this.pendingFlushOwners.delete(key);
     this.clearShadowed(key);
     const existing = this.entries.get(key);
     if (!existing || existing.kind !== 'file') {
@@ -3079,10 +3173,17 @@ class OpfsOverlay {
       try {
         await cacheEntry.writer?.close();
       } catch (e) {
-        Logger.warn(
-          LogCategory.SYSTEM,
-          `OPFS: Error closing writer before delete for key "${key}": ${e}`,
-        );
+        // Chromium throws TypeError when a queued close/delete race observes a
+        // stream that is already closing. Its bytes are already committing, so
+        // this is not a save failure and must not poison GameBox teardown.
+        if (!String(e).includes('closed or closing stream')) {
+          Logger.warn(
+            LogCategory.SYSTEM,
+            `OPFS: Error closing writer before delete for key "${key}": ${e}`,
+          );
+        }
+      } finally {
+        cacheEntry.writer = null;
       }
     }
 

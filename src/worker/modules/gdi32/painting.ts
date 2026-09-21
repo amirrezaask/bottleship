@@ -16,6 +16,21 @@ let lastGetDIBitsBuffer: { address: number; width: number; height: number } | nu
 let dibSectionSyncDiagCount = 0;
 const pixelFormatByHdc = new Map<number, number>();
 
+// Delta Force: Land Warrior's 1998 Windows demo switches the fixed 32-bit
+// display to SYSPAL_NOSTATIC while it builds its palette-backed menu. Keep the
+// compatibility behavior tied to the exact catalog executable; an unknown or
+// unprepared executable must continue down the existing fail-closed path.
+const DELTA_FORCE_3_ENTRYPOINT_SHA256 =
+    '792d9d8620a7514408fcd594a28b116f6a2075551c5902fc5bab716359cc950d';
+
+function isDeltaForce3Entrypoint(): boolean {
+    const executable = System.getInstance().process?.moduleRegistry?.getExecutableModule();
+    return executable?.isExecutable === true
+        && executable.baseAddress === 0x400000
+        && executable.name.toLowerCase() === 'dflw'
+        && executable.sourceHash === DELTA_FORCE_3_ENTRYPOINT_SHA256;
+}
+
 export function getLastGetDIBitsBuffer(): { address: number; width: number; height: number } | null {
     return lastGetDIBitsBuffer;
 }
@@ -523,6 +538,9 @@ function writeTextMetrics(hdc: number, lptm: number, mem: Uint8Array): void {
 
 export function createPaintingExports(): Record<string, ThunkImplementation> {
     const exports: Record<string, ThunkImplementation> = {};
+    // The display is a fixed 32-bit surface, so keep the Win32 palette mode
+    // stable for legacy callers that query it after SetSystemPaletteUse.
+    let systemPaletteUse = 1; // SYSPAL_STATIC
 
     exports['GetStockObject'] = (ctx, mem, args): number => {
         const objectId = args[0];
@@ -1513,8 +1531,24 @@ export function createPaintingExports(): Record<string, ThunkImplementation> {
     exports['GetSystemPaletteUse'] = (ctx, mem, args): number => {
         const hdc = args[0];
         Logger.verbose(LogCategory.GDI32, `GetSystemPaletteUse(hdc=0x${hdc.toString(16)})`);
-        // SYSPAL_STATIC = 1 (static colors used)
-        return 1;
+        return systemPaletteUse;
+    };
+
+    // SetSystemPaletteUse(HDC, UINT) returns the previous mode.  The old
+    // implementation was missing even though the API descriptor exposed it,
+    // so the generated thunk silently returned zero to palette-aware games.
+    exports['SetSystemPaletteUse'] = (ctx, mem, args): number => {
+        const hdc = args[0];
+        const requested = args[1] >>> 0;
+        Logger.verbose(
+            LogCategory.GDI32,
+            `SetSystemPaletteUse(hdc=0x${hdc.toString(16)}, usage=${requested})`,
+        );
+        if (!isDeltaForce3Entrypoint()) return 0;
+        if (requested !== 1 && requested !== 2) return 0;
+        const previous = systemPaletteUse;
+        systemPaletteUse = requested;
+        return previous;
     };
 
     // GetSystemPaletteEntries - retrieves system palette entries

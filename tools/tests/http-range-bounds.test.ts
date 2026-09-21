@@ -8,10 +8,12 @@ const response = (body: Uint8Array | ReadableStream<Uint8Array>, range: string) 
 describe("WGB exact bounded ranges", () => {
     it("probes one byte and preserves offsets above 4 GiB", async () => {
         const seen: string[] = [];
+        const cacheModes: RequestCache[] = [];
         const total = 8 * 2 ** 30;
         globalThis.fetch = (async (_url, options) => {
             const range = (options?.headers as Record<string,string>).Range;
             seen.push(range);
+            cacheModes.push(options?.cache as RequestCache);
             const [, a, b] = /^bytes=(\d+)-(\d+)$/.exec(range)!;
             return response(Uint8Array.from({length:Number(b)-Number(a)+1}, (_, i) => (Number(a)+i)%251), `bytes ${a}-${b}/${total}`);
         }) as typeof fetch;
@@ -19,6 +21,7 @@ describe("WGB exact bounded ranges", () => {
         const offset = 6 * 2 ** 30 + 17;
         expect([...await source.readRange(offset, offset+5)]).toEqual(Array.from({length:5}, (_, i) => (offset+i)%251));
         expect(seen).toEqual(["bytes=0-0", `bytes=${offset}-${offset+4}`]);
+        expect(cacheModes).toEqual(["no-store", "no-store"]);
     });
     it("cancels an ignored range without consuming a whole response", async () => {
         let cancelled = false;

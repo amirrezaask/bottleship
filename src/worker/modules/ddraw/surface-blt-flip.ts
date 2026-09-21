@@ -46,6 +46,7 @@ import { isValidAddress } from "../../core/memory/address-guard";
 import { markGpuSyncedFromCpu } from "./surface-sync";
 import { onFrameEnd as frameCaptureOnFrameEnd } from "./frame-capture";
 import { fillSurfaceColor } from "./surface-color-fill";
+import { repairDeltaForce3FlipChain } from "./delta-force-3-present";
 
 // Module-level rect pool to reduce allocations in hot paths
 const rectPool = new RectPool(8);
@@ -321,6 +322,19 @@ export function createSurfaceBltFlipExports(context: DDrawContext): Record<strin
         let dstState = state;
         let attachedAddr = state.attachedSurfaceAddr;
 
+        // Land Warrior can retain a primary -> stale/aliased surface address
+        // after recreating its display chain. Keep this exact-title repair
+        // fail-closed and require a real live backbuffer.
+        if ((state.caps & DDSCAPS_PRIMARYSURFACE) && (state.caps & DDSCAPS_FLIP)) {
+            Logger.log(LogCategory.DDRAW,
+                `[Delta Force 3] Flip branch: this=0x${thisPtr.toString(16)} `
+                + `size=${state.width}x${state.height} ptr=0x${state.surfacePtr.toString(16)} `
+                + `attached=0x${state.attachedSurfaceAddr.toString(16)} `
+                + `contextBack=0x${context.surfaces.backBuffer.toString(16)}`);
+            const repaired = repairDeltaForce3FlipChain(context, thisPtr, obj);
+            if (repaired) attachedAddr = repaired.address;
+        }
+
         if (!attachedAddr && (state.caps & DDSCAPS_PRIMARYSURFACE) && (state.caps & DDSCAPS_FLIP)) {
             attachedAddr = context.surfaces.backBuffer;
         }
@@ -354,7 +368,12 @@ export function createSurfaceBltFlipExports(context: DDrawContext): Record<strin
         {
             const s = srcState as any;
             Logger.log(LogCategory.DDRAW,
-                `IDirectDrawSurface7_Flip: attachedAddr=0x${(attachedAddr || 0).toString(16)} src=0x${srcState.surfacePtr.toString(16)} dst=0x${dstState.surfacePtr.toString(16)} srcMode=${s.mode ?? '?'} srcGpuTex=${!!srcState.gpuTexture} dstGpuTex=${!!dstState.gpuTexture} srcGpuDirty=${s.gpuDirty ?? '?'} srcVer=${s.version ?? '?'} srcGpuWriteVer=${s.gpuWrittenVersion ?? '?'}`);
+                `IDirectDrawSurface7_Flip: this=0x${thisPtr.toString(16)} caps=0x${state.caps.toString(16)} ` +
+                `attachedAddr=0x${(attachedAddr || 0).toString(16)} src=0x${srcState.surfacePtr.toString(16)} ` +
+                `srcCaps=0x${srcState.caps.toString(16)} dst=0x${dstState.surfacePtr.toString(16)} ` +
+                `dstCaps=0x${dstState.caps.toString(16)} srcMode=${s.mode ?? '?'} srcGpuTex=${!!srcState.gpuTexture} ` +
+                `dstGpuTex=${!!dstState.gpuTexture} srcGpuDirty=${s.gpuDirty ?? '?'} srcVer=${s.version ?? '?'} ` +
+                `srcGpuWriteVer=${s.gpuWrittenVersion ?? '?'}`);
         }
 
         // Helper: post-copy Flip tail — deferred uploads, frame pacing, present

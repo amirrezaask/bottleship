@@ -45,6 +45,8 @@ import { MEM_GUARD_BASE, MEM_GUARD_SIZE } from '../cpu/emulator-config';
 import { getTextureKernelCopyStats, isTextureDirectUploadEnabled, setTextureDirectUploadEnabled } from '../../backends/webgpu/shared/dxt-kernel';
 import { graphicsProfile, type GraphicsProfileStartOptions } from '../graphics-profile';
 import { resolveProfilePlanRuntime } from './profile-plan-runtime';
+import { callGuestFunctionSync, writeSentinelBytes } from '../hle-lib/sync-guest-call';
+import { MEM_THUNK_CODE_BASE, MEM_ROM_BASE } from '../cpu/emulator-config';
 
 interface DbgConfig {
     enabled: boolean;
@@ -78,6 +80,146 @@ function toAddr(x: number | string): number {
     if (typeof x === "number") return x >>> 0;
     const s = String(x).trim();
     return (s.startsWith("0x") || s.startsWith("0X") ? parseInt(s.slice(2), 16) : parseInt(s, 16)) >>> 0;
+}
+
+function liveGeneralPurposeRegisters(): Record<string, number> | null {
+    const d = System.getInstance().process?.dispatcher as any;
+    const r = d?.cachedReg32 ?? d?.cpu?.reg32;
+    if (!r) return null;
+    const names = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
+    return Object.fromEntries(names.map((name, index) => [name, r[index] >>> 0]));
+}
+
+// Delta Force 2's terrain histogram loop is title/build-specific. Keep this
+// diagnostic opt-in and bounded: it is used to distinguish malformed terrain
+// records from a guest/emulator execution problem, never to alter the guest.
+const DF2_SOURCE_SHA256 = '8693876f610e9ee972178fe9d7ee72ca37498cd52bad8e1b399ec01b48b9a93f';
+const DF2_TERRAIN_LOOP_RVA = 0x452df;
+const DF2_TERRAIN_PROBE_MAX_SAMPLES = 64;
+let df2TerrainProbeTimer: ReturnType<typeof setInterval> | null = null;
+let df2TerrainProbeResult: Record<string, unknown> | null = null;
+interface Df2TerrainProbeState {
+    module: any;
+    wasmExports: any;
+    target: number;
+    duration: number;
+    started: number;
+    samples: Record<string, unknown>[];
+    exactHits: number;
+    nearbyHits: number;
+    errors: number;
+}
+let df2TerrainProbeState: Df2TerrainProbeState | null = null;
+
+function findDeltaForce2Module(): any | null {
+    const registry: any = System.getInstance().process?.moduleRegistry;
+    const modules: any[] = registry?.getAllModules?.() ?? [];
+    return modules.find((module) =>
+        module?.isExecutable === true &&
+        module?.baseAddress === 0x400000 &&
+        (module?.sourceHash === DF2_SOURCE_SHA256 ||
+            String(module?.name ?? '').toLowerCase().replace(/\.exe$/, '') === 'df2')) ?? null;
+}
+
+function readDf2ProbeWord(wasmExports: any, address: number): number | null {
+    const value = address >>> 0;
+    if (!Number.isSafeInteger(address) || value >= 0x60000000) return null;
+    try { return wasmExports.dbg_read_u32(value) >>> 0; } catch { return null; }
+}
+
+function stopDeltaForce2TerrainProbe(): Record<string, unknown> | null {
+    if (df2TerrainProbeState) finishDeltaForce2TerrainProbe();
+    if (df2TerrainProbeTimer) {
+        clearInterval(df2TerrainProbeTimer);
+        df2TerrainProbeTimer = null;
+    }
+    return df2TerrainProbeResult;
+}
+
+function finishDeltaForce2TerrainProbe(): void {
+    const state = df2TerrainProbeState;
+    if (!state) return;
+    df2TerrainProbeState = null;
+    (globalThis as any).__df2TerrainProbeActive = false;
+    if (df2TerrainProbeTimer) {
+        clearInterval(df2TerrainProbeTimer);
+        df2TerrainProbeTimer = null;
+    }
+    df2TerrainProbeResult = {
+        armed: true,
+        module: {
+            name: state.module.name,
+            sourceHash: state.module.sourceHash ?? null,
+            base: state.module.baseAddress >>> 0,
+            baseHex: `0x${(state.module.baseAddress >>> 0).toString(16)}`,
+        },
+        targetRva: `0x${DF2_TERRAIN_LOOP_RVA.toString(16)}`,
+        target: `0x${state.target.toString(16)}`,
+        durationMs: +(performance.now() - state.started).toFixed(1),
+        exactHits: state.exactHits,
+        nearbyHits: state.nearbyHits,
+        errors: state.errors,
+        samples: state.samples,
+    };
+}
+
+function sampleDf2TerrainProbe(cpu?: any): void {
+    const state = df2TerrainProbeState;
+    if (!state) return;
+    const now = performance.now();
+    try {
+        const d: any = System.getInstance().process?.dispatcher;
+        const eip = (cpu?.instruction_pointer?.[0] ?? d?.cachedIpRaw?.[0] ?? d?.cpu?.instruction_pointer?.[0] ?? 0) >>> 0;
+        const delta = (eip - state.target) | 0;
+        if (delta >= -0x20 && delta <= 0x80) {
+            state.nearbyHits++;
+            if (eip === state.target) state.exactHits++;
+            if (state.samples.length < DF2_TERRAIN_PROBE_MAX_SAMPLES) {
+                const raw = cpu?.reg32 ?? d?.cachedReg32Raw ?? d?.cachedReg32 ?? d?.cpu?.reg32;
+                if (!raw) state.errors++;
+                else {
+                    const regs = {
+                        eax: raw[0] >>> 0,
+                        ecx: raw[1] >>> 0,
+                        edx: raw[2] >>> 0,
+                        ebx: raw[3] >>> 0,
+                        esp: raw[4] >>> 0,
+                        ebp: raw[5] >>> 0,
+                        esi: raw[6] >>> 0,
+                        edi: raw[7] >>> 0,
+                    };
+                    const recordAddress = regs.esi;
+                    const streamAddress = readDf2ProbeWord(state.wasmExports, recordAddress + 0x0c);
+                    const recordWords = Array.from({ length: 8 }, (_, index) =>
+                        readDf2ProbeWord(state.wasmExports, recordAddress + index * 4));
+                    const streamWords = streamAddress === null ? [] :
+                        Array.from({ length: 8 }, (_, index) =>
+                            readDf2ProbeWord(state.wasmExports, streamAddress + index * 4));
+                    state.samples.push({
+                        atMs: +(now - state.started).toFixed(1),
+                        eip: `0x${eip.toString(16)}`,
+                        rva: `0x${((eip - state.module.baseAddress) >>> 0).toString(16)}`,
+                        regs,
+                        recordAddress: `0x${recordAddress.toString(16)}`,
+                        recordCount: recordWords[0] ?? null,
+                        streamAddress: streamAddress === null ? null : `0x${streamAddress.toString(16)}`,
+                        cursor: `0x${regs.edx.toString(16)}`,
+                        recordWords,
+                        streamWords,
+                    });
+                }
+            }
+        }
+    } catch { state.errors++; }
+    if (state.samples.length >= DF2_TERRAIN_PROBE_MAX_SAMPLES || now - state.started >= state.duration)
+        finishDeltaForce2TerrainProbe();
+}
+
+// The emulator's tick hook is the reliable sampling point while a guest JIT
+// loop starves worker timers. It remains inert unless the exact DF2 probe is
+// armed by the command below.
+export function tickDf2TerrainProbe(cpu: any): void {
+    if ((globalThis as any).__df2TerrainProbeActive) sampleDf2TerrainProbe(cpu);
 }
 
 const PROFILE_PLAN_SHA256 = /^[a-f0-9]{64}$/i;
@@ -318,6 +460,124 @@ export const dbg = {
         const w = wasm(); if (!w) return 0; const x = toAddr(a);
         const v = (w.dbg_read_u32(x) >>> 0);
         console.log(`[dbg] [0x${x.toString(16)}] = 0x${v.toString(16)}`); return v;
+    },
+    /** Diagnostic-only guest u32 write used by title bring-up probes. */
+    poke(a: number | string, value: number | string): number {
+        const p = System.getInstance().process;
+        const mem = p?.getCurrentMemory?.();
+        if (!mem) return 0;
+        const x = toAddr(a);
+        const v = toAddr(value);
+        new DataView(mem.buffer, mem.byteOffset, mem.byteLength).setUint32(x, v, true);
+        return v;
+    },
+    /** Diagnostic-only synchronous guest call for controlled title bring-up probes. */
+    callGuest(target: number | string, ecx: number | string, args: number[] = [], convention: 'stdcall' | 'cdecl' = 'stdcall'): unknown {
+        const process: any = System.getInstance().process;
+        const env = (libHleManager as any).syncEnv?.() ?? (() => {
+            const cpu = process?.v86?.cpu;
+            const mem = process?.getCurrentMemory?.();
+            const exports = (globalThis as any).preemption?.getWasmExports?.();
+            const sentinel = process?.thunkGenerator?.allocateRawCodeArea?.(16) ?? 0;
+            if (!cpu || !mem || !exports?.run_guest_until || !sentinel) return null;
+            writeSentinelBytes(mem, sentinel);
+            return {
+                cpu,
+                mem,
+                runGuestUntil: exports.run_guest_until,
+                sentinelAddress: sentinel,
+                abortLo: MEM_THUNK_CODE_BASE,
+                abortHi: MEM_ROM_BASE,
+                pin: () => System.getInstance().scheduler.pinCurrentThread(),
+                unpin: () => System.getInstance().scheduler.unpinCurrentThread(),
+            };
+        })();
+        const cpu = process?.v86?.cpu;
+        if (!env || !cpu) return { ok: false, reason: 'no-env' };
+        cpu.reg32[1] = toAddr(ecx);
+        return callGuestFunctionSync(env, toAddr(target), args.map((value) => toAddr(value)), convention);
+    },
+    /** Diagnostic-only callback trampoline: dispatch MM1's Go Drive event code. */
+    makeMm1GoDriveCallback(widget: number | string = 0x4c91dd0, eventCode: number | string = 7): unknown {
+        const process: any = System.getInstance().process;
+        const mem = process?.getCurrentMemory?.();
+        const generator = process?.thunkGenerator;
+        if (!mem || !generator) return { ok: false, reason: 'no-process' };
+        const codeAddress = generator.allocateRawCodeArea(18) >>> 0;
+        const target = 0x407840;
+        const code = new Uint8Array(18);
+        const codeValue = toAddr(eventCode) & 0xff;
+        code.set([0xa1, 0xa4, 0x03, 0x67, 0x00, 0x8b, 0x48, 0x04, 0x6a, 0x01, 0x6a, codeValue, 0xe8], 0);
+        const rel = (target - (codeAddress + 17)) | 0;
+        new DataView(code.buffer).setInt32(13, rel, true);
+        code[17] = 0xc3;
+        mem.set(code, codeAddress);
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const requestedWidget = toAddr(widget);
+        const globalManager = view.getUint32(0x6703a4, true) >>> 0;
+        const vehicleMenu = globalManager ? (view.getUint32(globalManager + 0xe8, true) >>> 0) : 0;
+        const w = requestedWidget || (vehicleMenu ? (view.getUint32(vehicleMenu + 0x17c, true) >>> 0) : 0);
+        view.setUint32(w + 0xc4, 1, true);
+        view.setUint32(w + 0xc8, 0, true);
+        view.setUint32(w + 0xcc, codeAddress, true);
+        return { ok: true, vehicleMenu: `0x${vehicleMenu.toString(16)}`, widgetAddress: `0x${w.toString(16)}`, codeAddress: `0x${codeAddress.toString(16)}`, eventCode: codeValue, callbackWords: [1, 0, codeAddress] };
+    },
+    /** Diagnostic-only MM1 mouse propagation patch: publish the clicked widget ID on UIMenu. */
+    patchMm1MouseMenu(): unknown {
+        const process: any = System.getInstance().process;
+        const mem = process?.getCurrentMemory?.();
+        const generator = process?.thunkGenerator;
+        if (!mem || !generator) return { ok: false, reason: 'no-process' };
+        const patchAt = 0x4a6054;
+        const returnAt = 0x4a605c;
+        const codeAddress = generator.allocateRawCodeArea(96) >>> 0;
+        const code = new Uint8Array(96);
+        let i = 0;
+        code.set([0x8b, 0x43, 0x68], i); i += 3; // mov eax,[ebx+68]
+        code.set([0x8b, 0x53, 0x38], i); i += 3; // mov edx,[ebx+38]
+        code.set([0x8b, 0x08], i); i += 2; // mov ecx,[eax]
+        code.set([0x8b, 0x0c, 0x8a], i); i += 3; // mov ecx,[edx+ecx*4]
+        code.set([0x8b, 0xf1], i); i += 2; // mov esi,ecx (selected widget)
+        code.set([0x8b, 0x46, 0x44], i); i += 3; // mov eax,[esi+44]
+        code.set([0x3d, 0x0f, 0x27, 0x00, 0x00], i); i += 5; // cmp eax,0x270f (Go Drive only)
+        code[i++] = 0x0f; code[i++] = 0x85;
+        const restoreStateAt = i;
+        i += 4; // jne restoreState
+        code.set([0xc7, 0x43, 0x20, 0x04, 0x00, 0x00, 0x00], i); i += 7; // mov [ebx+20],4 (publish action state)
+        code.set([0x89, 0x43, 0x74], i); i += 3; // mov [ebx+74],eax
+        code.set([0x8b, 0x15, 0xa4, 0x03, 0x67, 0x00], i); i += 6; // mov edx,[0x6703a4]
+        code.set([0x8b, 0x4a, 0x30], i); i += 3; // mov ecx,[edx+30] (interface state menu)
+        code.set([0xc7, 0x41, 0x20, 0x04, 0x00, 0x00, 0x00], i); i += 7; // mov [ecx+20],4
+        code.set([0x89, 0x41, 0x74], i); i += 3; // mov [ecx+74],eax
+        code.set([0x8b, 0x52, 0x04], i); i += 3; // mov edx,[edx+4] (mmInterface)
+        code.set([0x8b, 0x52, 0x20], i); i += 3; // mov edx,[edx+20] (input menu)
+        code.set([0xc7, 0x42, 0x20, 0x04, 0x00, 0x00, 0x00], i); i += 7; // mov [edx+20],4
+        code.set([0x89, 0x42, 0x74], i); i += 3; // mov [edx+74],eax
+        const restoreState = i;
+        code.set([0x8b, 0x53, 0x38], i); i += 3; // mov edx,[ebx+38]
+        code.set([0x8b, 0x43, 0x68], i); i += 3; // mov eax,[ebx+68]
+        code.set([0x8b, 0x08], i); i += 2; // mov ecx,[eax]
+        new DataView(code.buffer).setInt32(restoreStateAt, (codeAddress + restoreState - (codeAddress + restoreStateAt + 4)) | 0, true);
+        code[i++] = 0xe9;
+        const relBack = (returnAt - (codeAddress + i + 4)) | 0;
+        new DataView(code.buffer).setInt32(i, relBack, true); i += 4;
+        mem.set(code, codeAddress);
+        const patch = new Uint8Array([0xe9, 0, 0, 0, 0, 0x90, 0x90]);
+        const rel = (codeAddress - (patchAt + 5)) | 0;
+        new DataView(patch.buffer).setInt32(1, rel, true);
+        mem.set(patch, patchAt);
+        // MM1 calls ImmAssociateContext during the transition. The thunk is
+        // optional for this title and its return path is not compatible with
+        // the old game's teardown call site; discard the two stdcall args and
+        // skip the call while preserving the caller's stack.
+        const immCallAt = 0x4a4481;
+        const immPatch = new Uint8Array([0x83, 0xc4, 0x08, 0x90, 0x90]);
+        mem.set(immPatch, immCallAt);
+        try {
+            process.v86?.cpu?.jit_dirty_cache?.(patchAt, patchAt + patch.length);
+            process.v86?.cpu?.jit_dirty_cache?.(immCallAt, immCallAt + immPatch.length);
+        } catch { /* diagnostic */ }
+        return { ok: true, codeAddress: `0x${codeAddress.toString(16)}`, patchAt: `0x${patchAt.toString(16)}`, immCallAt: `0x${immCallAt.toString(16)}` };
     },
     /** Hex-dump len bytes of guest memory from addr. */
     mem(a: number | string, len = 64): void {
@@ -798,6 +1058,38 @@ export const dbg = {
             urgentNoReadyPct: pct(s.urgentNoReady, s.ticks),
             selfReschedulePct: pct(s.selfReschedule, s.selfReschedule + s.realSwitch),
             honestQuantumPct: pct(honestQuantum, s.ticks) };
+        const cpu = (System.getInstance().process as any)?.v86?.cpu ??
+            (System.getInstance().process as any)?.v86?.v86?.cpu;
+        const process = (System.getInstance() as any).process;
+        const callbackManager = process?.dispatcher?.callbackManager;
+        (out as any).scheduler = {
+            currentThreadId: sched?.currentThreadId ?? null,
+            runQueue: Array.isArray(sched?.runQueue) ? sched.runQueue.slice(0, 32) : [],
+            switchRequested: !!sched?.switchRequested,
+            preferredSwitchThreadId: sched?.preferredSwitchThreadId ?? 0,
+            cycleLimit: (globalThis as any).preemption?.getCycleLimit?.() ?? null,
+            instructionCounter: cpu?.instruction_counter?.[0] >>> 0,
+            eip: cpu?.instruction_pointer?.[0] >>> 0,
+            threads: Array.from((sched?.threads ?? new Map()).values()).slice(0, 32).map((thread: any) => ({
+                id: thread.id,
+                state: thread.state,
+                waitReason: thread.waitInfo?.reason ?? null,
+                kernelPinCount: thread.kernelPinCount ?? 0,
+                lastSwitchInsn: thread.lastSwitchInsn >>> 0,
+                contextEip: thread.context?.eip != null ? `0x${(thread.context.eip >>> 0).toString(16)}` : null,
+                contextEsp: thread.context?.esp != null ? `0x${(thread.context.esp >>> 0).toString(16)}` : null,
+            })),
+            threadCpuMs: sched?.getThreadCpuMs?.() ?? null,
+            switchIntent: sched?.getSwitchIntentSnapshot?.() ?? null,
+            criticalRuntime: sched?.getCriticalRuntimeSnapshot?.() ?? null,
+            nonPreemptibleDefers: sched?.getNonPreemptibleDeferCount?.() ?? null,
+            timerThreadId: sched?.getTimerThreadId?.() ?? sched?.cachedWinmmTimerThreadId ?? null,
+            timerCallbackPinActive: !!sched?.timerCallbackPinActive,
+            timerDispatchStats: sched?.timerDispatchStats ? { ...sched.timerDispatchStats } : null,
+            timerTrace: Array.isArray(sched?.timerThreadTrace) ? sched.timerThreadTrace.slice(-24) : null,
+            callbackSlots: callbackManager?.getPendingSlotSummary?.() ?? null,
+            callbackForensics: callbackManager?.getForensicState?.() ?? null,
+        };
         console.log(
             `[dbg] round-trips ticks=${s.ticks}\n` +
             `      urgent(WAITING sched)=${s.urgentTicks}(${out.urgentPct}) of which NO-other-READY=${s.urgentNoReady}(${out.urgentNoReadyPct} of ticks) <-- pure recoverable waste\n` +
@@ -820,6 +1112,78 @@ export const dbg = {
             console.log("[dbg] roundTripStats reset");
         }
         return out;
+    },
+    /** Bounded scheduler snapshot for a live multi-threaded guest stall. */
+    schedulerState(): any {
+        const sys = System.getInstance() as any;
+        const sched = sys.scheduler as any;
+        const proc = sys.process as any;
+        const cpu = proc?.v86?.cpu ?? proc?.v86?.v86?.cpu ?? null;
+        const threads = Array.from((sched?.threads ?? new Map()).values()).slice(0, 32).map((thread: any) => ({
+            id: thread.id,
+            state: thread.state,
+            waitReason: thread.waitInfo?.reason ?? null,
+            kernelPinCount: thread.kernelPinCount ?? 0,
+            lastSwitchInsn: thread.lastSwitchInsn >>> 0,
+            lastSwitchTime: thread.lastSwitchTime ?? 0,
+            contextEip: thread.context?.eip != null ? `0x${(thread.context.eip >>> 0).toString(16)}` : null,
+            contextEsp: thread.context?.esp != null ? `0x${(thread.context.esp >>> 0).toString(16)}` : null,
+        }));
+        return {
+            currentThreadId: sched?.currentThreadId ?? null,
+            runQueue: Array.isArray(sched?.runQueue) ? sched.runQueue.slice(0, 32) : [],
+            switchRequested: !!sched?.switchRequested,
+            preferredSwitchThreadId: sched?.preferredSwitchThreadId ?? 0,
+            cycleLimit: (globalThis as any).preemption?.getCycleLimit?.() ?? null,
+            instructionCounter: cpu?.instruction_counter?.[0] >>> 0,
+            eip: cpu?.instruction_pointer?.[0] >>> 0,
+            config: sched?.config ?? null,
+            threads,
+            roundTrips: sched?.roundTripStats ? { ...sched.roundTripStats } : null,
+            threadCpuMs: sched?.getThreadCpuMs?.() ?? null,
+            switchIntent: sched?.getSwitchIntentSnapshot?.() ?? null,
+            criticalRuntime: sched?.getCriticalRuntimeSnapshot?.() ?? null,
+            nonPreemptibleDefers: sched?.getNonPreemptibleDeferCount?.() ?? null,
+        };
+    },
+    /** Capture Delta Force 2's live render-loop state before a later RPC can hand off the guest. */
+    df2StallSnapshot(): any {
+        const sys = System.getInstance() as any;
+        const proc = sys.process as any;
+        const cpu = proc?.v86?.cpu ?? proc?.v86?.v86?.cpu ?? null;
+        const regs = cpu?.reg32 ? Object.fromEntries(
+            ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'].map((name, index) => [name, cpu.reg32[index] >>> 0]),
+        ) : null;
+        const ex = wasm();
+        const read = (address: number): number | null => {
+            try { return ex?.dbg_read_u32?.(address >>> 0) >>> 0; } catch { return null; }
+        };
+        const readWords = (base: number | null, count: number): Array<number | null> | null => {
+            if (base === null || !Number.isSafeInteger(base) || base < 0x10000 || base >= 0x60000000)
+                return null;
+            return Array.from({ length: count }, (_, index) => read((base + index * 4) >>> 0));
+        };
+        const addresses: Array<[string, number]> = [
+            ['loopCounter', 0x4902e0], ['loopBudget', 0x4902f0],
+            ['renderMode', 0x4902d0], ['renderObject', 0x4902d4],
+            ['renderState', 0x4902d8], ['renderRemaining', 0x4902e4],
+            ['renderActive', 0x4902e8], ['renderCursor', 0x4902cc],
+            ['worldState', 0x51a544], ['worldMode', 0x51a548],
+        ];
+        const globalValues = Object.fromEntries(addresses.map(([label, address]) => [label, read(address)]));
+        const renderObject = Number(globalValues.renderObject ?? 0) >>> 0;
+        const renderState = Number(globalValues.renderState ?? 0) >>> 0;
+        return {
+            eip: cpu?.instruction_pointer?.[0] >>> 0,
+            eipSym: cpu ? proc?.moduleRegistry?.resolveAddress?.(cpu.instruction_pointer[0] >>> 0) ?? null : null,
+            regs,
+            globals: addresses.map(([label, address]) => ({ label, address: `0x${address.toString(16)}`, value: globalValues[label] })),
+            // The function at df2+0x902fe copies these records into its
+            // working state. Keep the dump small enough for a stall RPC while
+            // exposing every field used by the reviewed loop (0x00..0x70).
+            renderObjectWords: readWords(renderObject, 29),
+            renderStateWords: readWords(renderState, 29),
+        };
     },
     /** Toggle the guest-memory stale-view guard. When ON, every guest-memory view
      *  handed out at a dispatch/accessor boundary (thunk `mem`, Mem.*, AddressSpace)
@@ -911,6 +1275,53 @@ export const dbg = {
     /** EIP histogram over a sampling window (delegates to diagnostics eipSample). */
     eipHist(durationMs = 3000, intervalMs = 5): void {
         (globalThis as any).eipSample?.(durationMs, intervalMs);
+    },
+    /**
+     * Arm a bounded, read-only Delta Force 2 terrain-loop probe. At the exact
+     * reviewed instruction (Df2.exe+0x452df), ESI points at the terrain record,
+     * [ESI] is the byte-record count, and [ESI+0xc] is the stream base. Capture
+     * only those words plus a short stream window so a later harness report
+     * cannot replace the live register state with a post-yield snapshot.
+     */
+    df2TerrainProbe(durationMs = 5000, intervalMs = 5): Record<string, unknown> {
+        stopDeltaForce2TerrainProbe();
+        df2TerrainProbeResult = null;
+        const module = findDeltaForce2Module();
+        if (!module) return { armed: false, reason: 'Df2.exe with the reviewed SHA was not loaded' };
+        const d: any = System.getInstance().process?.dispatcher;
+        const w = wasm();
+        if (!d || !w?.dbg_read_u32) return { armed: false, reason: 'dispatcher or debug memory reader unavailable' };
+        const duration = Math.min(30_000, Math.max(100, Number(durationMs) || 5_000));
+        const poll = Math.min(100, Math.max(1, Number(intervalMs) || 5));
+        const target = (module.baseAddress + DF2_TERRAIN_LOOP_RVA) >>> 0;
+        const started = performance.now();
+        df2TerrainProbeState = {
+            module,
+            wasmExports: w,
+            target,
+            duration,
+            started,
+            samples: [],
+            exactHits: 0,
+            nearbyHits: 0,
+            errors: 0,
+        };
+        (globalThis as any).__df2TerrainProbeActive = true;
+        // Keep a timer fallback for idle/unjitted execution; the tick hook is
+        // the primary path for the hot JIT loop that caused the stall.
+        df2TerrainProbeTimer = setInterval(() => sampleDf2TerrainProbe(), poll);
+        console.log(`[dbg][df2-terrain] armed target=0x${target.toString(16)} duration=${duration}ms poll=${poll}ms`);
+        return { armed: true, target: `0x${target.toString(16)}`, durationMs: duration, pollMs: poll };
+    },
+    /** Return the last completed Delta Force 2 terrain probe without re-reading guest state. */
+    df2TerrainProbeReport(): Record<string, unknown> | null {
+        if (df2TerrainProbeState && performance.now() - df2TerrainProbeState.started >= df2TerrainProbeState.duration)
+            finishDeltaForce2TerrainProbe();
+        return df2TerrainProbeResult;
+    },
+    /** Stop the probe and preserve its bounded result for the report collector. */
+    df2TerrainProbeStop(): Record<string, unknown> | null {
+        return stopDeltaForce2TerrainProbe();
     },
     /** UE1 script-VM frame inspector: when the guest is inside FFrame::Step (catch it
      *  via eipHist — the two hottest core.dll EIPs), ESI holds the FFrame. Resolves the
@@ -1176,16 +1587,66 @@ export const dbg = {
             console.log(`[dbg][wins][JSON] ${JSON.stringify({ active: `0x${active.toString(16)}`, count: list.length, windows: list })}`);
         } catch (e) { console.warn('[dbg] wins err', e); }
     },
+    /** Snapshot the host-input bridge without exposing the shared buffer. */
+    inputState(): unknown {
+        try {
+            const sys = System.getInstance();
+            const im = sys.inputManager as any;
+            const wm = sys.windowManager as any;
+            const queue = wm.messageQueue as any;
+            const windows = [...(wm.windows ?? new Map())].map(([hwnd, win]: [number, any]) => ({
+                hwnd,
+                title: win.title ?? '',
+                rect: win.rect ?? null,
+                wndProc: win.wndProc ?? 0,
+                creatorThreadId: win.creatorThreadId ?? 0,
+                visible: !!win.visible,
+                guestCustomPaint: !!win.guestCustomPaint,
+            }));
+            return {
+                connected: im?.inputView !== null && im?.inputView !== undefined,
+                lastSeq: im?.lastSeq ?? null,
+                lastMouse: [im?.lastMouseX ?? null, im?.lastMouseY ?? null],
+                currentMouse: im?.getMouseState?.() ?? null,
+                lastButtons: im?.lastButtons ?? null,
+                keyReturn: im?.keyStates?.[0x0d] ?? null,
+                dinput: {
+                    mouseBufferSize: im?.dinputMouseBufferSize ?? null,
+                    keyboardBufferSize: im?.dinputKeyboardBufferSize ?? null,
+                    mouseEvents: im?.dinputMouseEvents?.length ?? null,
+                    keyboardEvents: im?.dinputKeyboardEvents?.length ?? null,
+                },
+                polling: im?.pollingEnabled ?? null,
+                deterministic: im?.deterministicMode ?? null,
+                active: sys.windowManager.getActiveHwnd(),
+                focus: sys.windowManager.getFocusHwnd(),
+                zOrder: sys.windowManager.getZOrder(),
+                windows,
+                queue: {
+                    input: queue?.inputQueue?.length ?? null,
+                    mouseMove: queue?.lastMouseMove?.size ?? null,
+                    paint: queue?.paintPending?.size ?? null,
+                    lastDequeued: [queue?.lastDequeuedPtX ?? null, queue?.lastDequeuedPtY ?? null],
+                    wake: queue?.getWakeStats?.() ?? null,
+                },
+            };
+        } catch (e) {
+            console.warn('[dbg][inputState] err', e);
+            return null;
+        }
+    },
     /** Dump + reset the PeekMessage fast-path histogram (__peekDiag in message.ts):
      *  ret0/ret1 counts and dequeued-message-id frequencies since last call. The direct
      *  window into "what message floods the pump". */
-    peekstats(): void {
+    peekstats(): unknown {
         try {
             (globalThis as any).__peekDiagEnabled = true;
             const d = (globalThis as any).__peekDiag;
-            console.log(`[dbg][peekstats][JSON] ${JSON.stringify(d ?? { err: 'no data yet' })}`);
+            const snapshot = d ? { ret0: d.ret0, ret1: d.ret1, byMsg: { ...d.byMsg } } : { err: 'no data yet' };
+            console.log(`[dbg][peekstats][JSON] ${JSON.stringify(snapshot)}`);
             if (d) { d.ret0 = 0; d.ret1 = 0; d.byMsg = {}; }
-        } catch (e) { console.warn('[dbg] peekstats err', e); }
+            return snapshot;
+        } catch (e) { console.warn('[dbg] peekstats err', e); return null; }
     },
     /** Resolve a THUNK_CODE stub address to its functionId + dll:function name
      *  (reads the MOV EAX,imm32 at the stub head + dispatcher.namesTable). */
@@ -1833,6 +2294,13 @@ export const dbg = {
             return exec?.getFrameStats?.(n) ?? null;
         } catch (e) { console.warn('[dbg] fstats err', e); return null; }
     },
+    /** DirectDraw presenter counters for CPU-surface titles. */
+    presentStats(): unknown {
+        try {
+            const dd = System.getInstance().process?.getModule?.('ddraw') as any;
+            return dd?.getFrameSnapshot?.() ?? null;
+        } catch (e) { console.warn('[dbg] presentStats err', e); return null; }
+    },
     /** One-frame GPU op log. gpuops() arms recording for the next n frames;
      *  gpuops(0) returns the recorded sequence (pass creations with depth loadOp,
      *  immediate draws, batch accumulation/flushes, clears). */
@@ -1846,10 +2314,12 @@ export const dbg = {
         } catch (e) { console.warn('[dbg] gpuops err', e); return null; }
     },
     /** Dump all DirectDraw surfaces (pixel ptr/dims/caps/mode/GPU state). */
-    surfs(): void {
+    surfs(): unknown {
         try {
             const dd = System.getInstance().process?.getModule?.('ddraw') as any;
-            console.log(`[dbg][surfs][JSON] ${JSON.stringify(dd?.dbgListSurfaces?.() ?? null)}`);
+            const surfaces = dd?.dbgListSurfaces?.() ?? null;
+            console.log(`[dbg][surfs][JSON] ${JSON.stringify(surfaces)}`);
+            return surfaces;
         } catch (e) { console.warn('[dbg] surfs err', e); }
     },
     /** GPU-readback a surface's texture by PIXEL ptr (see dbg.frame rtSurfacePtr).
@@ -2079,12 +2549,15 @@ export const dbg = {
 
     /** Snapshot the live CPU GP registers (mid-loop `this`/counters). Uses the
      *  dispatcher's cached reg32 Int32Array (live view into v86 regs). */
+    regsSnapshot(): Record<string, number> | null {
+        return liveGeneralPurposeRegisters();
+    },
+
     regs(): void {
-        const d = System.getInstance().process?.dispatcher as any;
-        const r = d?.cachedReg32 ?? d?.cpu?.reg32;
-        if (!r) { console.log('[dbg] regs: no reg32'); return; }
-        const n = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
-        console.log('[dbg] ' + n.map((x, i) => `${x}=0x${(r[i] >>> 0).toString(16)}`).join(' '));
+        const registers = liveGeneralPurposeRegisters();
+        if (!registers) { console.log('[dbg] regs: no reg32'); return; }
+        const names = ['eax', 'ecx', 'edx', 'ebx', 'esp', 'ebp', 'esi', 'edi'];
+        console.log('[dbg] ' + names.map((name) => `${name}=0x${registers[name].toString(16)}`).join(' '));
     },
 
     /** Walk the live PEB/TEB chain exactly as the guest does (fs base -> TEB, TEB+0x30 -> PEB,

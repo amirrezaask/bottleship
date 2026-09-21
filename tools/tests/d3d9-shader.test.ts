@@ -250,11 +250,28 @@ describe("vs codegen", () => {
             fixedFunctionStage: {
                 colorOp: 5, colorArg1: 2, colorArg2: 0,
                 alphaOp: 4, alphaArg1: 2, alphaArg2: 0,
+                textureFactor: 0xffffffff,
             },
         });
         expect(res.wgsl).toContain("2.0 * textureSample(tex0");
         expect(res.wgsl).toContain("textureSample(tex0");
         expect(res.wgsl).toContain("in.col0");
+    });
+
+    test("VS-only fragment resolves D3DTA_TFACTOR from the pipeline state", () => {
+        const vs = compileVertexShader(buildVs());
+        const res = linkProgram({
+            vs,
+            ps: null,
+            declElements: decl,
+            streamStride: 20,
+            fixedFunctionStage: {
+                colorOp: 4, colorArg1: 2, colorArg2: 3,
+                alphaOp: 4, alphaArg1: 2, alphaArg2: 3,
+                textureFactor: 0x80402010,
+            },
+        });
+        expect(res.wgsl).toContain("vec4<f32>(0.25098039215686274, 0.12549019607843137, 0.06274509803921569, 0.5019607843137255)");
     });
 
     test("builds vertex attributes from the declaration", () => {
@@ -419,4 +436,34 @@ test("vs_1_1 reciprocal keeps disabled point-light attenuation finite", () => {
     ], streamStride: 16 });
     expect(link.wgsl).toContain("legacy_vs_rcp(((vsc.c[0]).xxxx).x)");
     expect(link.wgsl).toContain("if (x == 0.0) { return 3.402823466e38f; }");
+});
+
+test("POSITIONT bypasses a bound vertex shader while preserving the pixel shader", () => {
+    const vs = compileVertexShader(new Uint32Array([
+        version(false, 1, 1),
+        instr(Op.M4x4), dst(RegType.RASTOUT, 0), src(RegType.INPUT, 0), src(RegType.CONST, 0), END,
+    ]));
+    const ps = compilePixelShader(new Uint32Array([
+        version(true, 1, 1),
+        instr(Op.TEX), dst(RegType.ADDR, 0),
+        instr(Op.MUL), dst(RegType.TEMP, 0), src(RegType.ADDR, 0), src(RegType.INPUT, 0), END,
+    ]));
+    const decl: RawVertexElement[] = [
+        { stream: 0, offset: 0, type: 3, usage: 9, usageIndex: 0 },
+        { stream: 0, offset: 16, type: 4, usage: 10, usageIndex: 0 },
+        { stream: 0, offset: 20, type: 1, usage: 5, usageIndex: 0 },
+    ];
+    const linked = linkProgram({ vs, ps, declElements: decl, streamStride: 28,
+        transformedViewport: { x: 10, y: 20, width: 640, height: 480, minZ: 0, maxZ: 1 } });
+    expect(linked.vsConstantCount).toBe(0);
+    expect(linked.wgsl).not.toContain("vsc.c[0]");
+    expect(linked.wgsl).toContain("p.x + 0.5 - 10.00000000");
+    expect(linked.wgsl).toContain("/ 640.00000000");
+    expect(linked.wgsl).toContain("textureSample");
+    expect(linked.vertexAttributes.map(a => a.offset)).toEqual([0, 16, 20]);
+    // Ordinary POSITION declarations must still run the original shader.
+    const ordinary = linkProgram({ vs, ps, declElements: [{ ...decl[0], usage: 0 }, ...decl.slice(1)],
+        streamStride: 28, transformedViewport: { x: 0, y: 0, width: 640, height: 480, minZ: 0, maxZ: 1 } });
+    expect(ordinary.vsConstantCount).toBeGreaterThan(0);
+    expect(ordinary.wgsl).toContain("vsc.c[0]");
 });

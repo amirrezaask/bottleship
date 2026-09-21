@@ -34,6 +34,7 @@ import { ioTraceRing } from '../../core/debug/io-trace-ring';
 import { hypercallDataManager } from '../../core/cpu/hypercall-data';
 
 const readFileFirstLogged = new Set<number>();
+let deltaForce3LreadDiagCount = 0;
 
 const RW_RASTER_NAMES: Record<number, string> = {
     0x0100: "1555",
@@ -397,6 +398,11 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             return 0x02; // FILE_TYPE_CHAR
         }
 
+        if (!fileHandle) {
+            System.getInstance().scheduler.setLastError(ERROR_INVALID_HANDLE);
+            return 0x00; // FILE_TYPE_UNKNOWN / ERROR_INVALID_HANDLE
+        }
+
         return 0x01; // FILE_TYPE_DISK
     };
 
@@ -659,7 +665,14 @@ export const exports: Record<string, ThunkImplementation> = (() => {
         ]);
     };
 
-    // _lopen - legacy wrapper around OpenFile.
+    // _lcreat/_lopen - legacy wrappers around OpenFile.
+    exports['_lcreat'] = (ctx, mem, args) => {
+        const lpPathName = args[0];
+        const OF_READWRITE = 0x00000002;
+        const OF_CREATE = 0x00001000;
+        return exports['OpenFile']!(ctx, mem, [lpPathName, 0, OF_READWRITE | OF_CREATE]);
+    };
+
     exports['_lopen'] = (ctx, mem, args) => {
         const lpPathName = args[0];
         const iReadWrite = args[1] >>> 0;
@@ -1700,10 +1713,51 @@ export const exports: Record<string, ThunkImplementation> = (() => {
 
         try {
             const wrapper = fileHandle as FileHandleWrapper;
+            const readPath = wrapper.vfsHandle.path;
+            const readPathLower = readPath.toLowerCase();
+            const deltaForce3AssetRead =
+                readPathLower.endsWith('.pff')
+                || readPathLower.endsWith('.trn')
+                || readPathLower.endsWith('.mis')
+                || readPathLower.includes('dflw');
+            const readPosition = wrapper.vfsHandle.position ?? 0;
             const bytesRead = wrapper.readIntoSync(mem, lpBuffer, uBytes);
+            if (deltaForce3AssetRead && deltaForce3LreadDiagCount < 64) {
+                deltaForce3LreadDiagCount++;
+                Logger.log(
+                    LogCategory.SYSTEM,
+                    `[Delta Force 3] _lread path="${readPath}" pos=${readPosition} `
+                    + `request=${uBytes} sync=${bytesRead === null ? 'async' : bytesRead} `
+                    + `next=${wrapper.vfsHandle.position ?? 0}`,
+                );
+            }
             if (bytesRead === null) {
-                // Fallback path when sync read is unavailable.
-                return 0;
+                // Large ROM/range-backed files (notably Delta Force 2's PFF
+                // assets) cannot be served synchronously.  Returning zero
+                // here turns a pending read into a false EOF and leaves the
+                // game with a null stream pointer.  Suspend the thunk until
+                // the bounded async range read completes instead.
+                return (async (): Promise<ThunkResult> => {
+                    try {
+                        const freshMem = Mem.getView();
+                        if (!freshMem || lpBuffer + uBytes > freshMem.length)
+                            return { value: HFILE_ERROR, stackCleanup: 12 };
+                        const count = await wrapper.readInto(freshMem, lpBuffer, uBytes);
+                        if (deltaForce3AssetRead && deltaForce3LreadDiagCount < 64) {
+                            deltaForce3LreadDiagCount++;
+                            Logger.log(
+                                LogCategory.SYSTEM,
+                                `[Delta Force 3] _lread async path="${readPath}" pos=${readPosition} `
+                                + `request=${uBytes} result=${count} next=${wrapper.vfsHandle.position ?? 0}`,
+                            );
+                        }
+                        System.getInstance().scheduler.setLastError(0);
+                        return { value: count, stackCleanup: 12 };
+                    } catch {
+                        System.getInstance().scheduler.setLastError(ERROR_SEEK);
+                        return { value: HFILE_ERROR, stackCleanup: 12 };
+                    }
+                })();
             }
             return bytesRead;
         } catch {
@@ -1711,6 +1765,7 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             return HFILE_ERROR;
         }
     };
+    exports['_hread'] = exports['_lread'];
 
     exports['GetFileSize'] = (ctx, mem, args) => {
         const hFile = args[0];
@@ -2008,6 +2063,21 @@ export const exports: Record<string, ThunkImplementation> = (() => {
             return 0; // FALSE
         }
     };
+
+    // Legacy HFILE writes return the byte count rather than a BOOL. Reuse the
+    // bounded WriteFile path while preserving the three-argument ABI.
+    exports['_hwrite'] = (ctx, mem, args) => {
+        const byteCount = args[2] >>> 0;
+        const result = exports['WriteFile']!(ctx, mem, [args[0], args[1], byteCount, 0, 0]);
+        if (result instanceof Promise) {
+            return (result as Promise<number | ThunkResult>).then<ThunkResult>((writeResult) => ({
+                value: (typeof writeResult === 'number' ? writeResult : writeResult.value) ? byteCount : -1,
+                stackCleanup: 12,
+            }));
+        }
+        return result ? byteCount : -1;
+    };
+    exports['_lwrite'] = exports['_hwrite'];
 
     exports['FlushFileBuffers'] = async (ctx, mem, args) => {
         const hFile = args[0];

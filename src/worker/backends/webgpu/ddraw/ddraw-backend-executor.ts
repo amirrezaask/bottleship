@@ -3158,8 +3158,8 @@ export class DDrawWebGPUExecutor {
         this.ringBufferManager.flushStorageBuffer();
         
         if (this.surfacesNeedingClear.size > 0) {
-            Logger.log(LogCategory.DDRAW,
-                `flush: processing ${this.surfacesNeedingClear.size} deferred clears (no draws consumed them)`);
+            Logger.verboseLazy(LogCategory.DDRAW,
+                () => `flush: processing ${this.surfacesNeedingClear.size} deferred clears (no draws consumed them)`);
             // flushBatch() may leave a render pass open via ensureRenderPass().
             // clearPipeline.clear() calls encoder.beginRenderPass() internally — encoder must be unlocked first.
             if (this.currentRenderPass) {

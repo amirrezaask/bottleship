@@ -96,7 +96,10 @@ export function installGameBoxBridge(worker, closeAudio) {
     }
     if (data.type === 'loading_progress') {
       if (exited || error) return;
-      publish(data.phase === 'done' ? 'Starting game…' : `Loading game: ${data.phase}`);
+      // The player observes progress directly. A repeated phase has no new
+      // bridge state and must not dispatch another cross-frame DOM event.
+      const nextStatus = data.phase === 'done' ? 'Starting game…' : `Loading game: ${data.phase}`;
+      if (status !== nextStatus) publish(nextStatus);
     }
     if (data.type === 'first_present' && !exited && !error) publish('Playing');
     if (data.type === 'error') {
@@ -145,14 +148,6 @@ export function installGameBoxBridge(worker, closeAudio) {
       if (!ready || launched || stopped)
         throw new Error('BottleShip cannot start another game in this player');
       const url = new URL(gameUrl, location.href);
-      if (
-        url.origin !== location.origin ||
-        !url.pathname.startsWith('/assets/') ||
-        !url.pathname.toLowerCase().endsWith('.gaf') ||
-        url.search ||
-        url.hash
-      )
-        throw new Error('BottleShip requires a same-origin GameBox bundle');
       // SHA256 keeps case and separators significant, unlike upstream's lossy slug mapping.
       const hash = async (text) =>
         Array.from(

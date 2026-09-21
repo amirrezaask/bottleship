@@ -74,6 +74,11 @@ function writeAuxCaps(mem: Uint8Array, pac: number, isWide: boolean): void {
 export function registerWinmmCapsExports(exports: Record<string, ThunkImplementation>): void {
     // PlaySound-style master volume for the emulated aux device (per registration).
     let auxVolume = 0xFFFFFFFF;
+    let mixerVolume = 0xFFFF;
+
+    const writeAnsiField = (mem: Uint8Array, offset: number, size: number, value: string): void => {
+        for (let i = 0; i < size; i++) mem[offset + i] = i < value.length ? value.charCodeAt(i) : 0;
+    };
 
     // ==================== Wave Input Functions (Stubs) ====================
 
@@ -184,15 +189,18 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
     exports["mixerGetNumDevs"] = () => 1;
     exports["mixerGetDevCapsA"] = (ctx, mem, args) => {
         const pmc = args[1];
-        if (pmc) {
+        const cbmc = args[2] >>> 0;
+        if (pmc && cbmc >= 48 && pmc + 48 <= mem.length) {
             const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             view.setUint16(pmc + 0, 0xFFFF, true);
-            const name = "BottleShip Mixer\0";
-            for (let i = 0; i < 32; i++) {
-                mem[pmc + 4 + i] = i < name.length ? name.charCodeAt(i) : 0;
-            }
+            view.setUint16(pmc + 2, 0x0001, true);
+            view.setUint32(pmc + 4, 0x0100, true);
+            writeAnsiField(mem, pmc + 8, 32, "BottleShip Mixer");
+            view.setUint32(pmc + 40, 0, true);
+            view.setUint32(pmc + 44, 1, true);
+            return MMSYSERR_NOERROR;
         }
-        return MMSYSERR_NOERROR;
+        return MMSYSERR_INVALPARAM;
     };
     exports["mixerOpen"] = (ctx, mem, args) => {
         const phmx = args[0];
@@ -204,15 +212,42 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
     };
     exports["mixerClose"] = () => MMSYSERR_NOERROR;
     exports["mixerGetLineInfoA"] = (ctx, mem, args) => {
-        Logger.log(LogCategory.SYSTEM, `mixerGetLineInfoA: hmx=0x${args[0].toString(16)}, pmxl=0x${args[1].toString(16)}, flags=0x${args[2].toString(16)}`);
+        const pmxl = args[1] >>> 0;
+        Logger.log(LogCategory.SYSTEM, `mixerGetLineInfoA: hmx=0x${args[0].toString(16)}, pmxl=0x${pmxl.toString(16)}, flags=0x${args[2].toString(16)}`);
+        if (!pmxl || pmxl + 168 > mem.length) return MMSYSERR_INVALPARAM;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        if (view.getUint32(pmxl, true) < 168) return MMSYSERR_INVALPARAM;
+        view.setUint32(pmxl + 12, 1, true); // dwLineID
+        view.setUint32(pmxl + 16, 0x00000001, true); // MIXERLINE_LINEF_ACTIVE
+        view.setUint32(pmxl + 20, 0, true);
+        view.setUint32(pmxl + 24, 4, true); // MIXERLINE_COMPONENTTYPE_DST_SPEAKERS
+        view.setUint32(pmxl + 28, 2, true); // stereo
+        view.setUint32(pmxl + 32, 0, true);
+        view.setUint32(pmxl + 36, 1, true); // one volume control
+        writeAnsiField(mem, pmxl + 40, 16, "Speakers");
+        writeAnsiField(mem, pmxl + 56, 64, "BottleShip Speakers");
         return MMSYSERR_NOERROR;
     };
     exports["mixerGetControlDetailsA"] = (ctx, mem, args) => {
-        Logger.log(LogCategory.SYSTEM, `mixerGetControlDetailsA: hmx=0x${args[0].toString(16)}, pmxcd=0x${args[1].toString(16)}, flags=0x${args[2].toString(16)}`);
+        const details = args[1] >>> 0;
+        Logger.log(LogCategory.SYSTEM, `mixerGetControlDetailsA: hmx=0x${args[0].toString(16)}, pmxcd=0x${details.toString(16)}, flags=0x${args[2].toString(16)}`);
+        if (!details || details + 24 > mem.length) return MMSYSERR_INVALPARAM;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const cbDetails = view.getUint32(details + 16, true);
+        const values = view.getUint32(details + 20, true);
+        if (cbDetails < 4 || !values || values + 4 > mem.length) return MMSYSERR_INVALPARAM;
+        view.setUint32(values, mixerVolume, true);
         return MMSYSERR_NOERROR;
     };
     exports["mixerSetControlDetails"] = (ctx, mem, args) => {
-        Logger.log(LogCategory.SYSTEM, `mixerSetControlDetails: hmx=0x${args[0].toString(16)}, pmxcd=0x${args[1].toString(16)}, flags=0x${args[2].toString(16)}`);
+        const details = args[1] >>> 0;
+        Logger.log(LogCategory.SYSTEM, `mixerSetControlDetails: hmx=0x${args[0].toString(16)}, pmxcd=0x${details.toString(16)}, flags=0x${args[2].toString(16)}`);
+        if (!details || details + 24 > mem.length) return MMSYSERR_INVALPARAM;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        const cbDetails = view.getUint32(details + 16, true);
+        const values = view.getUint32(details + 20, true);
+        if (cbDetails < 4 || !values || values + 4 > mem.length) return MMSYSERR_INVALPARAM;
+        mixerVolume = Math.min(0xFFFF, view.getUint32(values, true));
         return MMSYSERR_NOERROR;
     };
     exports["mixerGetID"] = (ctx, mem, args) => {
@@ -224,7 +259,27 @@ export function registerWinmmCapsExports(exports: Record<string, ThunkImplementa
         return MMSYSERR_NOERROR;
     };
     exports["mixerGetLineControlsA"] = (ctx, mem, args) => {
-        Logger.log(LogCategory.SYSTEM, `mixerGetLineControlsA: hmx=0x${args[0].toString(16)}, pmxlc=0x${args[1].toString(16)}, flags=0x${args[2].toString(16)}`);
+        const pmxlc = args[1] >>> 0;
+        Logger.log(LogCategory.SYSTEM, `mixerGetLineControlsA: hmx=0x${args[0].toString(16)}, pmxlc=0x${pmxlc.toString(16)}, flags=0x${args[2].toString(16)}`);
+        if (!pmxlc || pmxlc + 24 > mem.length) return MMSYSERR_INVALPARAM;
+        const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+        if (view.getUint32(pmxlc, true) < 24) return MMSYSERR_INVALPARAM;
+        const count = view.getUint32(pmxlc + 12, true);
+        const controlSize = view.getUint32(pmxlc + 16, true);
+        const control = view.getUint32(pmxlc + 20, true);
+        if (count < 1 || controlSize < 148 || !control || control + 148 > mem.length) {
+            return MMSYSERR_INVALPARAM;
+        }
+        view.setUint32(control + 0, 148, true);
+        view.setUint32(control + 4, 1, true);
+        view.setUint32(control + 8, 0x50030001, true); // MIXERCONTROL_CONTROLTYPE_VOLUME
+        view.setUint32(control + 12, 0, true);
+        view.setUint32(control + 16, 0, true);
+        writeAnsiField(mem, control + 20, 16, "Volume");
+        writeAnsiField(mem, control + 36, 64, "Master Volume");
+        view.setUint32(control + 100, 0, true);
+        view.setUint32(control + 104, 0xFFFF, true);
+        view.setUint32(control + 124, 0x10000, true);
         return MMSYSERR_NOERROR;
     };
 

@@ -1765,27 +1765,30 @@ export function createSystemExports(): Record<string, ThunkImplementation> {
 
     const getDisplayModes = (): DisplayMode[] => {
         const configuredModes = EmulatorConfig.getInstance().supportedResolutions;
-        if (!configuredModes || configuredModes.length === 0) {
-            return [
-                { width: 640, height: 480, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 640, height: 480, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 800, height: 600, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 800, height: 600, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1024, height: 768, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1024, height: 768, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1152, height: 864, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1152, height: 864, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1280, height: 960, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1280, height: 960, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1280, height: 1024, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1280, height: 1024, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1600, height: 1200, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1600, height: 1200, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1280, height: 720, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-                { width: 1920, height: 1080, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
-            ];
+        const standardModes: DisplayMode[] = [
+            { width: 640, height: 480, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 640, height: 480, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 800, height: 600, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 800, height: 600, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1024, height: 768, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1024, height: 768, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1152, height: 864, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1152, height: 864, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1280, height: 960, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1280, height: 960, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1280, height: 1024, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1280, height: 1024, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1600, height: 1200, bpp: 16, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1600, height: 1200, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+            { width: 1280, height: 720, bpp: 32, refreshRate: DEFAULT_DISPLAY_REFRESH_RATE },
+        ];
+        if (!configuredModes || configuredModes.length === 0) return standardModes;
+        const merged = [...configuredModes];
+        for (const standard of standardModes) {
+            if (!merged.some((mode) => mode.width === standard.width && mode.height === standard.height && mode.bpp === standard.bpp))
+                merged.push(standard);
         }
-        return configuredModes.map((mode) => ({
+        return merged.map((mode) => ({
             width: mode.width,
             height: mode.height,
             bpp: mode.bpp,

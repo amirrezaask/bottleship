@@ -514,12 +514,10 @@ export default function App() {
   const updatePointerLockIntent = () => {
     const wants = !cursorVisibleRef.current || cursorClippedRef.current || mouseCapturedRef.current;
     wantsPointerLockRef.current = wants;
-    if (wants) {
-      const c = canvasRef.current;
-      if (c && document.hasFocus() && !pointerLockedRef.current && !userReleasedLockRef.current) {
-        requestPointerLockSafe(c);
-      }
-    } else if (document.pointerLockElement) {
+    // Acquiring pointer lock requires a user activation in browsers. Keep the
+    // intent armed here, but defer the actual request to handlePointerDown so a
+    // title cannot enter relative mode before its first absolute menu click.
+    if (!wants && document.pointerLockElement) {
       pointerLockCooldownRef.current = true;
       document.exitPointerLock();
       setTimeout(() => { pointerLockCooldownRef.current = false; }, 32);
@@ -1306,20 +1304,6 @@ export default function App() {
       const inputView = globalInputView;
       if (!inputView) return;
 
-      // Opportunistic re-acquire after an ESC-exit: if the guest still wants relative mouse and
-      // the user didn't deliberately release (Right Ctrl), retry on pointermove. Many browsers
-      // don't treat pointermove as a valid activation gesture, so this is best-effort — the
-      // reliable path is the canvas click in handlePointerDown. Guarded so a rejection is silent.
-      if (
-        !pointerLockedRef.current &&
-        wantsPointerLockRef.current &&
-        !userReleasedLockRef.current &&
-        !pointerLockCooldownRef.current &&
-        document.hasFocus()
-      ) {
-        try { requestPointerLockSafe(canvas); } catch { /* not a valid gesture in this browser */ }
-      }
-
       // --- Pointer Lock mode: use relative movementX/Y, skip canvas bounds check ---
       if (pointerLockedRef.current) {
         const pointerSpace =
@@ -1552,19 +1536,20 @@ export default function App() {
       // A deliberate click on the canvas is the re-engage gesture: clear the Right-Ctrl
       // host-release suppression so lock can be re-acquired.
       userReleasedLockRef.current = false;
-      // If cursor is hidden by guest, request pointer lock (user click = valid gesture)
-      if (wantsPointerLockRef.current && !pointerLockedRef.current) {
-        requestPointerLockSafe(canvas);
-        // Still forward this click — before pointer lock is acquired, absolute coords
-        // are still valid (pointermove has been syncing them). Without forwarding,
-        // button state never reaches the SAB and the game never sees WM_LBUTTONDOWN.
-        // Games like HoMM3 call ShowCursor(FALSE) to draw a custom cursor but still
-        // rely on WndProc mouse messages for click handling.
-      }
       if (!isPausedRef.current) {
         void audioEngine?.resume();
       }
+      // Publish the absolute button transition before entering relative mode. The
+      // browser can commit pointer lock during this same user-gesture dispatch;
+      // if the request happens first, writePointer() takes the relative branch
+      // and the click is delivered at the virtual cursor origin (often 0,0).
+      // Games that hide the cursor still use absolute WndProc clicks for menus.
       writePointer(event);
+      // If cursor is hidden by the guest, request pointer lock (user click = valid gesture)
+      // after the absolute click has reached the SAB.
+      if (wantsPointerLockRef.current && !pointerLockedRef.current) {
+        requestPointerLockSafe(canvas);
+      }
     };
 
     const handlePointerUp = (event: PointerEvent) => {

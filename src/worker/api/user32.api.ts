@@ -73,6 +73,7 @@ export const user32Module: ModuleDescriptor = {
         makeFunc("MapVirtualKeyA", 2),
         makeFunc("MapVirtualKeyW", 2),
         makeFunc("ToAscii", 5),
+        makeFunc("ToAsciiEx", 6),
         makeFunc("ToUnicode", 6),
         makeFunc("GetKeyNameTextA", 3),
         makeFunc("GetKeyboardType", 1),
@@ -322,6 +323,7 @@ export const user32Module: ModuleDescriptor = {
         makeFunc("LoadBitmapA", 2),
         // String functions
         makeFunc("CharNextA", 1),
+        makeFunc("CharPrevA", 2),
         makeFunc("CharUpperBuffA", 2),
         // Additional user32 imports from newer runtimes/launchers
         makeFunc("PaintDesktop", 1),

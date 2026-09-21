@@ -4,7 +4,7 @@
  * MSS version errors, Quake2 Z_Free forensics). Host-side display goes through
  * the dialog bridge (requestMessageBox); no HWND is created for these.
  */
-import { ThunkImplementation } from '../../core/thunking/thunk-dispatcher';
+import { ThunkImplementation, ThunkResult } from '../../core/thunking/thunk-dispatcher';
 import { Logger, LogCategory } from '../../core/logger';
 import { Marshaler } from '../../core/memory/marshaler';
 import { requestMessageBox } from '../../runtime/dialog-bridge';
@@ -346,7 +346,7 @@ function formatQuake2ZFreeLiteralXrefs(mem: Uint8Array): string {
 }
 
 export function registerMessageBoxExports(exports: Record<string, ThunkImplementation>): void {
-    exports['MessageBoxA'] = async (ctx, mem, args) => {
+    exports['MessageBoxA'] = (ctx, mem, args) => {
         const lpText = args[1];
         const lpCaption = args[2];
         const uType = args[3];
@@ -391,8 +391,27 @@ export function registerMessageBoxExports(exports: Record<string, ThunkImplement
             Logger.log(LogCategory.USER32, `MessageBoxA: ${caption} - ${text}`);
         }
 
-        const result = await requestMessageBox(text, caption, uType);
-        return { value: result, stackCleanup: 16 };
+        // These first-run display probes open one-button boxes from inside guest
+        // window callbacks. Parking those callbacks on the asynchronous UI bridge
+        // lets their callback stacks unwind before the result is restored. Safely
+        // acknowledge only the exact, non-interactive probes synchronously.
+        const isDeltaForceDisplayProbe =
+            caption === 'Resolution Test' &&
+            text.startsWith('Your screen will flicker and go black during the test.');
+        const isDeltaForceDisplaySuccess =
+            caption === 'Resolution Test Complete' &&
+            text.startsWith('Resolution test completed successfully!');
+        const isMidtownDisplayProbe =
+            caption === 'Midtown Madness!' &&
+            text.startsWith('Click OK to have Midtown Madness detect the presence of a hardware accelerator card.');
+        if (isDeltaForceDisplayProbe || isDeltaForceDisplaySuccess || isMidtownDisplayProbe) {
+            return { value: 1, stackCleanup: 16 }; // IDOK
+        }
+
+        return requestMessageBox(text, caption, uType).then<ThunkResult>(result => ({
+            value: result,
+            stackCleanup: 16,
+        }));
     };
 
     exports['MessageBoxW'] = async (ctx, mem, args) => {

@@ -200,10 +200,12 @@ function fakeVfs(bytes: Uint8Array, reportedSize = bytes.length): any {
 
 class BoundedSource implements PeImageSource {
     readonly size: number;
+    readonly sourceHash?: string;
     readonly requests: number[] = [];
 
-    constructor(private readonly bytes: Uint8Array) {
+    constructor(private readonly bytes: Uint8Array, sourceHash?: string) {
         this.size = bytes.length;
+        this.sourceHash = sourceHash;
     }
 
     async readRange(offset: number, length: number): Promise<Uint8Array> {
@@ -262,6 +264,38 @@ describe('bounded prepared PE loading', () => {
         expect(prepared.registry.getByName('fixture')?.exports.get('exportedentry')).toBe(BASE + ENTRY_RVA);
         expect(Math.max(...source.requests)).toBeLessThanOrEqual(256 * 1024);
         expect(source.requests).toContain(256 * 1024);
+    });
+
+    test('raw PE loaders retain the caller-verified source identity', async () => {
+        prepareSystem();
+        const pe = makePe();
+        const sourceHash = 'a'.repeat(64);
+        const raw = makeLoader(new Uint8Array(16 * 1024 * 1024));
+        const bounded = makeLoader(new Uint8Array(16 * 1024 * 1024));
+
+        await raw.loader.loadExecutable(pe, sourceHash);
+        await bounded.loader.loadSourceExecutable(new BoundedSource(pe, sourceHash));
+
+        expect(raw.registry.getByName('fixture')?.sourceHash).toBe(sourceHash);
+        expect(bounded.registry.getByName('fixture')?.sourceHash).toBe(sourceHash);
+    });
+
+    test('clamps one final raw-alignment tail to SizeOfImage', async () => {
+        prepareSystem();
+        const pe = makePe();
+        const truncatedImageSize = IMAGE_SIZE - 0x100;
+        const view = new DataView(pe.buffer);
+        view.setUint32(0x98 + 56, truncatedImageSize, true);
+        view.setUint32(0x98 + 0xe0 + 8, RAW_SIZE - 0x100, true);
+        const memory = new Uint8Array(16 * 1024 * 1024);
+        memory.fill(0xa5, BASE + truncatedImageSize, BASE + truncatedImageSize + 0x100);
+        const { loader } = makeLoader(memory);
+
+        await loader.loadSourceExecutable(new BoundedSource(pe));
+
+        expect(memory[BASE + ENTRY_RVA]).toBe(0xc3);
+        expect(memory.slice(BASE + truncatedImageSize, BASE + truncatedImageSize + 0x100))
+            .toEqual(new Uint8Array(0x100).fill(0xa5));
     });
 
     test('descriptor mismatches fail before mapping guest memory', async () => {

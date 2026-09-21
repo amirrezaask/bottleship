@@ -21,6 +21,7 @@ import { handleSystemControlMouseAtScreen, handleSystemControlWheel } from './co
 import { encodeAnsi } from '../codepage-utils';
 import { PAINT_TRACE_ENABLED, logPaintMsgDelivered, logPaintPendingBlocked, logPaintTrace } from './paint-trace';
 import { isValidGuestEip } from '../../core/scheduler/scheduler-context';
+import { alienShooterMousePrelude, type MouseMessagePrelude } from '../../core/game-fixes/alien-shooter';
 
 const WM_TIMER = 0x0113;
 const WM_PAINT = 0x000F;
@@ -49,6 +50,7 @@ function invokeGuestWndProcSync(
     stackCleanup: number,
     tag: string,
     onReturn: (wndRet: number) => number | null,
+    prelude?: MouseMessagePrelude,
 ): ThunkResult | null {
     const system = System.getInstance();
     const callbackManager = system.process?.dispatcher?.callbackManager;
@@ -69,9 +71,18 @@ function invokeGuestWndProcSync(
 
     const first = callbackManager.invokeCallback(
         wndProc,
-        [hwnd, message, wParam, lParam],
+        prelude ? [hwnd, prelude.message, prelude.wParam, prelude.lParam] : [hwnd, message, wParam, lParam],
         0,
-        onReturn,
+        prelude ? () => {
+            // Finish the sent hit-test before delivering the queued mouse
+            // message. Both callbacks belong to the same suspended thunk and
+            // owner thread; DispatchMessage returns the original message result.
+            const next = callbackManager.invokeCallback(
+                wndProc, [hwnd, message, wParam, lParam], 0,
+                onReturn, false, tag, frameId,
+            );
+            return next.callbackId === 0 ? 0 : null;
+        } : onReturn,
         false,
         tag,
         frameId,
@@ -1008,6 +1019,25 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
                     return { value: 0, stackCleanup: 4 };
                 }
 
+                // MM1's menu is guest-painted, so the useful hit-test boundary is the
+                // actual guest WndProc rather than the JS system-control router above.
+                // Keep this probe title-scoped and opt-in: it records the exact message,
+                // coordinates, WndProc, and callback result without adding work to other
+                // titles or to the normal message path.
+                const mm1Probe = (globalThis as Record<string, unknown>).__mm1InputProbe === true
+                    && window.title === 'Midtown Madness!';
+                if (mm1Probe && (
+                    message === 0x0200 || message === 0x0201 || message === 0x0202
+                    || message === 0x0100 || message === 0x0101 || message === 0x0111
+                )) {
+                    Logger.log(
+                        LogCategory.USER32,
+                        `MM1-DISPATCH hwnd=0x${hwnd.toString(16)} msg=0x${message.toString(16)} ` +
+                        `wParam=0x${wParam.toString(16)} lParam=0x${lParam.toString(16)} ` +
+                        `wndProc=0x${window.wndProc.toString(16)}`,
+                    );
+                }
+
                 // Win32 contract: DispatchMessage returns the LRESULT produced by WndProc.
                 // Re-enter the guest WndProc via the shared suspended-thunk mechanism so
                 // EAX receives the actual callback return value. DispatchMessage(lpMsg)
@@ -1016,11 +1046,26 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
                     ctx, mem, window.wndProc, hwnd, message, wParam, lParam,
                     4, 'DispatchMessageW',
                     (wndRet: number): number | null => {
+                        if (mm1Probe && (
+                            message === 0x0200 || message === 0x0201 || message === 0x0202
+                            || message === 0x0100 || message === 0x0101 || message === 0x0111
+                        )) {
+                            Logger.log(
+                                LogCategory.USER32,
+                                `MM1-DISPATCH-RETURN msg=0x${message.toString(16)} ` +
+                                `lParam=0x${lParam.toString(16)} wndRet=0x${(wndRet >>> 0).toString(16)}`,
+                            );
+                        }
                         // Finalize a deferred-destroy window only after its wndProc has
                         // processed WM_NCDESTROY (MFC OnNcDestroy → detach).
                         if (message === WM_NCDESTROY) finalizeWindowDestroy(hwnd);
                         return wndRet >>> 0;
                     },
+                    window.title === 'AlienShooter' && message >= 0x0200 && message <= 0x0209
+                    ? alienShooterMousePrelude(
+                        System.getInstance().process?.moduleRegistry?.getExecutableModule(),
+                        mem, window, message, lParam,
+                    ) : undefined,
                 );
                 if (dispatchResult) return dispatchResult;
             }
@@ -1284,6 +1329,20 @@ export function createMessageExports(): Record<string, ThunkImplementation> {
         };
 
         if (targetWindow) {
+            if ((targetWindow.nativeClassName ?? '').toLowerCase() === 'mciwndclass') {
+                // MCIWNDM_GETMODE (WM_USER + 106). BottleShip deliberately skips
+                // legacy AVI playback; expose the control as already stopped so
+                // callers leave their splash-video polling loop and continue boot.
+                if (msg === 0x046A) {
+                    if (lParam && wParam > 0) {
+                        const mode = encodeAnsi('stopped');
+                        const writeLen = Math.min(mode.length, wParam - 1);
+                        mem.set(mode.subarray(0, writeLen), lParam);
+                        mem[lParam + writeLen] = 0;
+                    }
+                    return 525; // MCI_MODE_STOP
+                }
+            }
             const animateResult = handleAnimateMessage(hWnd, msg, wParam, lParam, mem);
             if (animateResult !== null) return animateResult;
 

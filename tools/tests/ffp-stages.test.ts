@@ -34,6 +34,7 @@ import {
     D3DTOP_DISABLE,
     D3DTOP_MODULATE,
     D3DTOP_SELECTARG1,
+    D3DTOP_SELECTARG2,
     D3DTA_TEXTURE,
     D3DTA_DIFFUSE,
     D3DTA_CURRENT,
@@ -49,6 +50,41 @@ function set(states: Int32Array, stage: number, key: number, value: number): voi
 }
 
 describe("FfpStagesState.resolve", () => {
+    test("color SELECTARG2 retains independent texture alpha for Land Warrior shadows", () => {
+        for (const [alphaOp, arg1, arg2] of [
+            [D3DTOP_MODULATE, D3DTA_TEXTURE, D3DTA_DIFFUSE],
+            [D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTA_DIFFUSE],
+            [D3DTOP_SELECTARG2, D3DTA_DIFFUSE, D3DTA_TEXTURE],
+        ]) {
+            const states = makeStates();
+            set(states, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+            set(states, 0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+            set(states, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            set(states, 0, D3DTSS_ALPHAOP, alphaOp);
+            set(states, 0, D3DTSS_ALPHAARG1, arg1);
+            set(states, 0, D3DTSS_ALPHAARG2, arg2);
+            const st = new FfpStagesState();
+            st.resolve(states, 1, true, true);
+            expect(st.sampledMask).toBe(1);
+            expect(st.colorOp[0]).toBe(D3DTOP_SELECTARG2);
+            expect(st.alphaOp[0]).toBe(alphaOp);
+        }
+    });
+
+    test("disabled alpha and an unused texture alpha argument do not require sampling", () => {
+        for (const alphaOp of [D3DTOP_DISABLE, D3DTOP_SELECTARG2]) {
+            const states = makeStates();
+            set(states, 0, D3DTSS_COLOROP, D3DTOP_SELECTARG2);
+            set(states, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+            set(states, 0, D3DTSS_ALPHAOP, alphaOp);
+            set(states, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+            set(states, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+            const st = new FfpStagesState();
+            st.resolve(states, 1, true, true);
+            expect(st.sampledMask).toBe(0);
+        }
+    });
+
     test("uninitialized stage 0 with texture: MODULATE(TEXTURE, DIFFUSE), samples", () => {
         const st = new FfpStagesState();
         st.resolve(makeStates(), /*realTexMask*/ 1, /*hasTexCoords*/ true, /*dummy*/ true);

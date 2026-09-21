@@ -17,6 +17,9 @@ const BUILD_SHA = (
   process.env.CF_PAGES_COMMIT_SHA ||
   (() => { try { return execSync("git rev-parse --short HEAD").toString().trim(); } catch { return "dev"; } })()
 ).slice(0, 7);
+const buildOutDir = process.env.GAMEBOX_RUNTIME_OUT_DIR
+  ? path.resolve(process.env.GAMEBOX_RUNTIME_OUT_DIR)
+  : path.resolve(__dirname, "dist");
 // HTTP is the default (localhost is a secure context, so SharedArrayBuffer /
 // COOP-COEP work over plain HTTP and automation needn't clear a self-signed
 // cert). Opt into a self-signed HTTPS dev/preview server with VITE_SSL=1.
@@ -158,7 +161,7 @@ function copyPublicDirExceptApps(): Plugin {
     apply: "build",
     closeBundle() {
       const publicDir = path.resolve(__dirname, "public");
-      const outDir = path.resolve(__dirname, "dist");
+      const outDir = buildOutDir;
       if (!fs.existsSync(publicDir)) return;
       fs.mkdirSync(outDir, { recursive: true });
       for (const entry of fs.readdirSync(publicDir, { withFileTypes: true })) {
@@ -233,6 +236,7 @@ export default defineConfig({
     }
   },
   build: {
+    outDir: buildOutDir,
     emptyOutDir: false,
     rollupOptions: { output: { entryFileNames: "assets/[name].js", chunkFileNames: "assets/[name].js", assetFileNames: "assets/[name][extname]" } },
     // We copy public/ ourselves (copyPublicDirExceptApps) — Vite's built-in publicDir

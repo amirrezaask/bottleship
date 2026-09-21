@@ -61,7 +61,7 @@ import {
     D3DVector,
 } from "./types";
 import { setDeviceRenderTarget } from "./texture-manager";
-import { setAuthorityGpu, surfaceSyncManager, syncActiveGdiContextBeforeD3D } from "../surface-sync";
+import { surfaceSyncManager, syncActiveGdiContextBeforeD3D } from "../surface-sync";
 import { createDeviceStubsExports } from "./device-impl-stubs";
 import {
     fillDeviceDesc,
@@ -276,15 +276,16 @@ export const createDeviceExports = (
         const lpViewport = args[1];
         const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DDevice7Object | null;
         if (!obj) return D3D_OK;
-        if (!lpViewport || !isValidAddress(mem, lpViewport, 28)) return D3DERR_INVALIDCALL;
+        // D3DVIEWPORT7 is six fields / 24 bytes and, unlike the legacy
+        // D3DVIEWPORT and D3DVIEWPORT2 structures, has no dwSize member.
+        if (!lpViewport || !isValidAddress(mem, lpViewport, 24)) return D3DERR_INVALIDCALL;
         const view = getDataView(mem); // OPTIMIZED: Use cached DataView
-        const dwSize = Math.min(view.getUint32(lpViewport, true), 28);
-        const x = dwSize >= 8 ? view.getUint32(lpViewport + 4, true) : 0;
-        const y = dwSize >= 12 ? view.getUint32(lpViewport + 8, true) : 0;
-        const w = dwSize >= 16 ? view.getUint32(lpViewport + 12, true) : 0;
-        const h = dwSize >= 20 ? view.getUint32(lpViewport + 16, true) : 0;
-        const minZ = dwSize >= 24 ? view.getFloat32(lpViewport + 20, true) : 0;
-        const maxZ = dwSize >= 28 ? view.getFloat32(lpViewport + 24, true) : 1;
+        const x = view.getUint32(lpViewport, true);
+        const y = view.getUint32(lpViewport + 4, true);
+        const w = view.getUint32(lpViewport + 8, true);
+        const h = view.getUint32(lpViewport + 12, true);
+        const minZ = view.getFloat32(lpViewport + 16, true);
+        const maxZ = view.getFloat32(lpViewport + 20, true);
         obj.setViewportData({ x, y, width: w, height: h, minZ, maxZ });
         Logger.verboseLazy(LogCategory.DDRAW, () => `IDirect3DDevice7_SetViewport: x=${x} y=${y} w=${w} h=${h}`);
         return D3D_OK;
@@ -295,18 +296,17 @@ export const createDeviceExports = (
         const lpViewport = args[1];
         const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DDevice7Object | null;
         if (!obj) return D3DERR_INVALIDCALL;
-        if (!lpViewport || !isValidAddress(mem, lpViewport, 28)) return D3DERR_INVALIDCALL;
+        if (!lpViewport || !isValidAddress(mem, lpViewport, 24)) return D3DERR_INVALIDCALL;
         const vp = obj.getViewportData();
         const x = vp?.x ?? 0, y = vp?.y ?? 0, w = vp?.width ?? 640, h = vp?.height ?? 480;
         const minZ = vp?.minZ ?? 0, maxZ = vp?.maxZ ?? 1;
         const view = getDataView(mem); // OPTIMIZED: Use cached DataView
-        view.setUint32(lpViewport, 28, true);
-        view.setUint32(lpViewport + 4, x, true);
-        view.setUint32(lpViewport + 8, y, true);
-        view.setUint32(lpViewport + 12, w, true);
-        view.setUint32(lpViewport + 16, h, true);
-        view.setFloat32(lpViewport + 20, minZ, true);
-        view.setFloat32(lpViewport + 24, maxZ, true);
+        view.setUint32(lpViewport, x, true);
+        view.setUint32(lpViewport + 4, y, true);
+        view.setUint32(lpViewport + 8, w, true);
+        view.setUint32(lpViewport + 12, h, true);
+        view.setFloat32(lpViewport + 16, minZ, true);
+        view.setFloat32(lpViewport + 20, maxZ, true);
         return D3D_OK;
     };
 
@@ -695,27 +695,10 @@ export const createDeviceExports = (
     exports["IDirect3DDevice7_EndScene"] = (ctx, mem, args) => {
         const thisPtr = args[0];
         Logger.log(LogCategory.SYSTEM, `IDirect3DDevice7_EndScene: this=0x${thisPtr.toString(16)} - ending frame and resetting ring buffers`);
-        // If the game later calls Lock() on the RT (screenshots/postprocess on CPU), surface-sync must perform GPU->CPU sync so CPU reads current framebuffer.
-
-        // Mark render target as GPU dirty BEFORE endFrame to prevent next BeginScene from overwriting
-        const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DDevice7Object | null;
-        if (obj) {
-            const rtAddr = obj.getRenderTarget() || context.surfaces.backBuffer || context.surfaces.primary;
-            if (rtAddr) {
-                const rtObj = resourceProvider.getComObjectByAddress(rtAddr) as DirectDrawSurfaceObject | null;
-                const state = rtObj?.getState();
-                if (state) {
-                    setAuthorityGpu(state, true);
-                    Logger.log(LogCategory.DDRAW, `IDirect3DDevice7_EndScene: Marked RT 0x${rtAddr.toString(16)} modeStr=gpu`);
-                } else {
-                    Logger.warn(LogCategory.DDRAW, `IDirect3DDevice7_EndScene: RT 0x${rtAddr.toString(16)} has no state!`);
-                }
-            } else {
-                Logger.warn(LogCategory.DDRAW, `IDirect3DDevice7_EndScene: No RT found! getRenderTarget=${obj.getRenderTarget()} backBuffer=${context.surfaces.backBuffer} primary=${context.surfaces.primary}`);
-            }
-        } else {
-            Logger.warn(LogCategory.DDRAW, `IDirect3DDevice7_EndScene: Device object not found for this=0x${thisPtr.toString(16)}`);
-        }
+        // Draw/clear/copy operations mark the render target at the point where they
+        // actually write it. EndScene itself does not write pixels. Marking the RT as
+        // GPU-authored here discards CPU BltFast writes made later in the same scene
+        // (Midtown Madness 2 composes its menus that way).
 
         if (context.executor) {
             context.executor.endFrame();
@@ -1335,21 +1318,8 @@ export const createDeviceExports = (
     exports["IDirect3DDevice3_EndScene"] = (ctx, mem, args) => {
         const thisPtr = args[0];
         Logger.log(LogCategory.SYSTEM, `IDirect3DDevice3_EndScene: this=0x${thisPtr.toString(16)} - ending frame and resetting ring buffers`);
-        // If the game later calls Lock() on the RT (screenshots/postprocess on CPU), surface-sync must perform GPU->CPU sync so CPU reads current framebuffer.
-
-        // Mark render target as GPU dirty BEFORE endFrame to prevent next BeginScene from overwriting
-        const obj = resourceProvider.getComObjectByAddress(thisPtr) as Direct3DDevice3Object | null;
-        if (obj) {
-            const rtAddr = obj.getRenderTarget() || context.surfaces.backBuffer || context.surfaces.primary;
-            if (rtAddr) {
-                const rtObj = resourceProvider.getComObjectByAddress(rtAddr) as DirectDrawSurfaceObject | null;
-                const state = rtObj?.getState();
-                if (state) {
-                    setAuthorityGpu(state, true);
-                    Logger.verbose(LogCategory.DDRAW, `IDirect3DDevice3_EndScene: Marked RT 0x${rtAddr.toString(16)} modeStr=gpu`);
-                }
-            }
-        }
+        // EndScene does not modify the target; individual draw/clear/copy paths own
+        // the authority transition. Preserve any CPU blits issued during the scene.
 
         if (context.executor) {
             context.executor.endFrame();

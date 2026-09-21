@@ -51,6 +51,15 @@ export class MemoryManager {
 
     private bucketState: Map<RegionKind, BucketState> = new Map();
     private reservedAddresses: Set<number> = new Set();
+    private trackSurfaceRegions = true;
+    private readonly registeredRegions = new Set<number>();
+
+    /** Title-scoped optimization: the SURFACE layout bucket already covers all
+     * suballocations, so a renderer with high surface churn does not need one
+     * address-space region and fastmem generation bump per surface. */
+    setSurfaceRegionTracking(enabled: boolean): void {
+        this.trackSurfaceRegions = enabled;
+    }
 
     // [DIAG] Large-allocation (≥64KB) lifecycle log. VirtualAlloc-class blocks are
     // rare, so a long ring spans the whole session — unlike the 4K generic
@@ -161,11 +170,16 @@ export class MemoryManager {
                 `live allocations → use-after-free.`);
         }
 
-        // Only register regions for non-HEAP kinds (surfaces, thunk memory, etc.).
-        // Individual HEAP sub-allocations (HeapAlloc etc.) are already covered by the
-        // HEAP layout bucket — registering each one bloats regions[] to 200K+ entries,
-        // making findBlockingRegion and releaseRegion O(n) and killing performance.
-        if (finalKind !== 'HEAP') {
+        // Only register regions for individually address-sensitive kinds. Individual
+        // HEAP and THUNK_DATA allocations are already covered by their layout buckets;
+        // registering each one bloats regions[] and makes every free invalidate the
+        // fast-memory address map. Surfaces and executable thunk regions still need
+        // their own lifetimes and permissions.
+        if (
+            finalKind !== 'HEAP'
+            && finalKind !== 'THUNK_DATA'
+            && (finalKind !== 'SURFACE' || this.trackSurfaceRegions)
+        ) {
             this.addressSpace.registerRegion({
                 base: addr,
                 size: aligned,
@@ -174,6 +188,7 @@ export class MemoryManager {
                 owner: 'MemoryManager',
                 skipOverlapCheck: true,
             });
+            this.registeredRegions.add(addr);
         }
 
         this.recordAllocation(addr, aligned);
@@ -245,14 +260,21 @@ export class MemoryManager {
             return addr;
         }
 
-        this.addressSpace.registerRegion({
-            base: addr,
-            size: aligned,
-            perms: finalPerms,
-            kind: finalKind,
-            owner: 'MemoryManager',
-            skipOverlapCheck: true,
-        });
+        if (
+            finalKind !== 'HEAP'
+            && finalKind !== 'THUNK_DATA'
+            && (finalKind !== 'SURFACE' || this.trackSurfaceRegions)
+        ) {
+            this.addressSpace.registerRegion({
+                base: addr,
+                size: aligned,
+                perms: finalPerms,
+                kind: finalKind,
+                owner: 'MemoryManager',
+                skipOverlapCheck: true,
+            });
+            this.registeredRegions.add(addr);
+        }
 
         bucket.next = Math.max(bucket.next, addr + aligned);
         this.recordAllocation(addr, aligned);
@@ -268,11 +290,13 @@ export class MemoryManager {
         const size = this.allocations.get(ptr);
         if (size === undefined) return;
 
-        // HEAP allocs are not registered in addressSpace.regions (skipped in alloc),
-        // so skip releaseRegion for them to avoid O(n) scan of a non-existent entry.
+        // HEAP and THUNK_DATA allocations are not registered in addressSpace.regions
+        // (they are covered by layout buckets), so skip releaseRegion for them to
+        // avoid an O(n) scan and a needless fastmem generation bump.
         const bucketKind = this.allocBucket.get(ptr);
-        if (bucketKind !== 'HEAP') {
+        if (this.registeredRegions.has(ptr)) {
             this.addressSpace.releaseRegion(ptr);
+            this.registeredRegions.delete(ptr);
         }
         this.currentBytes -= size;
         this.allocations.delete(ptr);
@@ -466,6 +490,8 @@ export class MemoryManager {
         this.freeBlocks.clear();
         this.allocBucket.clear();
         this.reservedAddresses.clear();
+        this.registeredRegions.clear();
+        this.trackSurfaceRegions = true;
         this.totalAllocated = 0;
         this.currentBytes = 0;
         this.peakBytes = 0;

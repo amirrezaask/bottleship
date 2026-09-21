@@ -201,13 +201,18 @@ export class FfpStagesState {
             const sampleable = s < MAX_FFP_SAMPLED_STAGES;
             if (s === 0) {
                 // Stage 0 always runs. Sampling matches the legacy useTexture rules:
-                // DISABLE and SELECTARG2(non-texture) never sample; otherwise sample when
-                // UVs exist, a view is bindable (real, or the 1×1 dummy fallback so the
+                // COLOROP=DISABLE never samples. A color-only SELECTARG2 still
+                // needs the texture when the independent alpha operation reads it.
+                // Sample when UVs exist, a view is bindable (real, or the 1×1 dummy fallback so the
                 // pipeline layout stays satisfiable), and args still reference TEXTURE
                 // after the missing-texture remap (i.e. a real texture is present).
                 const argsRequireTexture = wantsTexture && hasRealTexture;
+                const alphaRequiresTexture = alphaOp !== D3DTOP_DISABLE && (
+                    (alphaOp !== D3DTOP_SELECTARG2 && (alphaArg1 & D3DTA_SELECTMASK) === D3DTA_TEXTURE) ||
+                    (alphaOp !== D3DTOP_SELECTARG1 && (alphaArg2 & D3DTA_SELECTMASK) === D3DTA_TEXTURE)
+                );
                 if (!active || (colorOp === D3DTOP_SELECTARG2 &&
-                    (colorArg2 & D3DTA_SELECTMASK) !== D3DTA_TEXTURE)) {
+                    (colorArg2 & D3DTA_SELECTMASK) !== D3DTA_TEXTURE && !alphaRequiresTexture)) {
                     samples = false;
                 } else {
                     samples = hasTexCoords && (hasRealTexture || hasDummyTexture) && argsRequireTexture;

@@ -41,11 +41,6 @@ export class DeferredUploadManager {
      * Upload will be deferred until flushAll() at Present/Flip.
      */
     markDirty(surface: DirectDrawSurfaceState, immediate = false): void {
-        // GPU-First Mode: Skip GPU_ONLY surfaces (GPU is authoritative, no CPU→GPU sync needed)
-        if (isRenderSurface(surface) && surface.mode === "GPU_ONLY") {
-            return;
-        }
-
         // Skip if already up-to-date
         if (isRenderSurface(surface)) {
             // Optimization: Skip if version hasn't changed since last upload
@@ -74,10 +69,9 @@ export class DeferredUploadManager {
      */
     needsImmediateUpload(surface: DirectDrawSurfaceState): boolean {
         if (isRenderSurface(surface)) {
-            // GPU-First Mode: GPU_ONLY surfaces don't need CPU→GPU upload (GPU is authoritative)
-            if (surface.mode === "GPU_ONLY") {
-                return false;
-            }
+            // A GPU_ONLY render target can still receive a CPU Blt/BltFast. In that
+            // case setAuthorityCpu marks gpuDirty and the CPU copy is authoritative;
+            // skipping solely because of the mode leaves the visible texture stale.
             return surface.gpuDirty && surface.lastUploadVersion !== surface.version;
         } else if (isBitmapTexture(surface)) {
             return surface.gpuNeedsUpload;

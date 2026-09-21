@@ -17,6 +17,7 @@ import { HarnessError, HarnessErrorCode } from "../rpc";
 import { getModule, serializeSurfaces } from "../serialize";
 import { bytesToBase64 } from "./screen";
 import { devices as d3d9Devices } from "../../modules/d3d9/shared-state";
+import { devices as d3d8Devices } from "../../modules/d3d8/shared-state";
 import { startCapture as frameCaptureStart } from "../../modules/ddraw/frame-capture";
 import { asArrayBufferView } from "../../../dom-buffer";
 
@@ -52,7 +53,87 @@ export function registerTextureCommands(svc: HarnessService): void {
             const info = (dev as any).getTexturesDebugInfo?.() ?? [];
             for (const t of info) d3d9.push({ ...t, backend: "d3d9", device: ptr >>> 0 });
         }
-        return { ddraw: ddrawSurfaces, d3d9 };
+        const d3d8: unknown[] = [];
+        for (const [ptr, device] of d3d8Devices) {
+            for (const [texturePtr, surfaceValue] of device.texSurfaces) {
+                const surface: any = surfaceValue;
+                const rgba = surface.rgbaScratch as Uint8Array | undefined;
+                d3d8.push({
+                    backend: "d3d8-all",
+                    device: ptr >>> 0,
+                    stage: null,
+                    ptr: texturePtr >>> 0,
+                    surfacePtr: surface.surfacePtr >>> 0,
+                    width: surface.width,
+                    height: surface.height,
+                    d3dFormat: surface.d3dFormat ?? null,
+                    rgbaScratchPresent: !!rgba,
+                });
+            }
+            for (let stage = 0; stage < device.textures.length; stage++) {
+                const surface: any = device.textures[stage];
+                if (!surface) continue;
+                const rgba = surface.rgbaScratch as Uint8Array | undefined;
+                let bright = 0;
+                let max = 0;
+                if (rgba) {
+                    for (let i = 0; i < rgba.length; i += 4) {
+                        const luma = Math.max(rgba[i] ?? 0, rgba[i + 1] ?? 0, rgba[i + 2] ?? 0);
+                        if (luma > 80) bright++;
+                        if (luma > max) max = luma;
+                    }
+                }
+                let ascii: string[] | null = null;
+                if (rgba && surface.width === 256 && surface.height === 64) {
+                    ascii = [];
+                    for (let gy = 0; gy < 16; gy++) {
+                        let row = "";
+                        for (let gx = 0; gx < 64; gx++) {
+                            let count = 0;
+                            for (let y = gy * 4; y < (gy + 1) * 4; y++) {
+                                for (let x = gx * 4; x < (gx + 1) * 4; x++) {
+                                    const off = (y * surface.width + x) * 4;
+                                    if (Math.max(rgba[off] ?? 0, rgba[off + 1] ?? 0, rgba[off + 2] ?? 0) > 90) count++;
+                                }
+                            }
+                            row += count >= 4 ? "#" : count > 0 ? "." : " ";
+                        }
+                        ascii.push(row);
+                    }
+                }
+                d3d8.push({
+                    backend: "d3d8",
+                    device: ptr >>> 0,
+                    stage,
+                    ptr: surface.surfacePtr >>> 0,
+                    width: surface.width,
+                    height: surface.height,
+                    d3dFormat: surface.d3dFormat ?? null,
+                    rgbaScratchPresent: !!rgba,
+                    brightPct: rgba ? (bright / Math.max(1, rgba.length / 4)) * 100 : null,
+                    maxLuma: max,
+                    sample: rgba ? Array.from(rgba.subarray(0, Math.min(64, rgba.length))) : null,
+                    ascii,
+                });
+            }
+        }
+        return { ddraw: ddrawSurfaces, d3d8, d3d9 };
+    });
+
+    svc.register("d3d8TexturePng", async (args) => {
+        const stage = typeof args[0] === "number" ? args[0] : 0;
+        for (const device of d3d8Devices.values()) {
+            const surface: any = device.textures[stage];
+            if (surface?.rgbaScratch && surface.width && surface.height) {
+                return {
+                    stage,
+                    width: surface.width,
+                    height: surface.height,
+                    base64: await encodePngBase64(surface.rgbaScratch, surface.width, surface.height),
+                };
+            }
+        }
+        throw new HarnessError("no bound D3D8 texture", HarnessErrorCode.NOT_FOUND);
     });
 
     /** dumpSurface(sel, {save?}) — DDraw surface -> PNG. */

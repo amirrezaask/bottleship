@@ -38,6 +38,20 @@ function formatForBpp(bpp: number): number {
     return bpp <= 16 ? D3DFMT_R5G6B5 : D3DFMT_X8R8G8B8;
 }
 
+function syncFullscreenDisplayMode(mem: Uint8Array, parameters: number): void {
+    if (!parameters) return;
+    const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+    if (view.getUint32(parameters + PP_WINDOWED, true)) return;
+    const width = view.getUint32(parameters + PP_BACKBUFFER_WIDTH, true);
+    const height = view.getUint32(parameters + PP_BACKBUFFER_HEIGHT, true);
+    if (!width || !height) return;
+
+    const mode = EmulatorConfig.getInstance().screenResolution;
+    mode.width = width;
+    mode.height = height;
+    mode.bpp = view.getUint32(parameters + 8, true) === D3DFMT_R5G6B5 ? 16 : 32;
+}
+
 /**
  * Faithful auto depth-stencil: a device created (or Reset) with
  * EnableAutoDepthStencil=TRUE gets an IMPLICIT depth-stencil surface that
@@ -197,6 +211,7 @@ export function createDeviceExports(): Record<string, ThunkImplementation> {
                 // requested display mode. Keep the user32 client rect in sync with
                 // the host canvas: RenderWare rejects camera rasters larger than it.
                 if (!ppView.getUint32(pPresentationParameters + PP_WINDOWED, true)) {
+                    syncFullscreenDisplayMode(mem, pPresentationParameters);
                     const hDeviceWindow = ppView.getUint32(
                         pPresentationParameters + PP_DEVICE_WINDOW,
                         true,
@@ -272,6 +287,7 @@ export function createDeviceExports(): Record<string, ThunkImplementation> {
         if (pPresentationParameters) {
             const ppView = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
             if (!ppView.getUint32(pPresentationParameters + PP_WINDOWED, true)) {
+                syncFullscreenDisplayMode(mem, pPresentationParameters);
                 resizeFullscreenDeviceWindow(
                     ppView.getUint32(pPresentationParameters + PP_DEVICE_WINDOW, true) >>> 0,
                     ppView.getUint32(pPresentationParameters + PP_BACKBUFFER_WIDTH, true) >>> 0,

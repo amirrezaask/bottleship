@@ -81,7 +81,7 @@ import {
 import { createDirectDrawExports } from './directdraw';
 import { createSurfaceExports, registerFastPathSurfaceFunctions } from './surface';
 import { createD3DExports, registerFastPathD3DFunctions } from './d3d/index';
-import { createGPUTexture, convertRGBAToSurface, FormatInfo, readSurfaceStateRGBA } from './gpu-texture-utils';
+import { createGPUTexture, convertRGBAToSurface, convertSurfaceToRGBA, FormatInfo, readSurfaceStateRGBA } from './gpu-texture-utils';
 import { resolveBitmapRgba, bitmapHasPixelSource } from '../gdi32/bitmap-resolve';
 import { setAuthorityCpu } from './surface-sync';
 import { startCapture as frameCaptureStart } from './frame-capture';
@@ -455,11 +455,15 @@ export class DDraw implements IModule {
             const s = getState.call(obj);
             if (!s || typeof s.surfacePtr !== "number" || typeof s.width !== "number") continue;
             out.push({
+                address: this.context.resourceProvider.getAddressForHandle(obj.handle),
+                handle: obj.handle,
                 ptr: `0x${(s.surfacePtr >>> 0).toString(16)}`,
                 w: s.width, h: s.height, bpp: s.format?.bpp,
                 caps: `0x${((s.caps ?? 0) >>> 0).toString(16)}`,
+                attached: `0x${((s.attachedSurfaceAddr ?? 0) >>> 0).toString(16)}`,
+                owner: s.ownerDirectDrawHandle ?? null,
                 mode: s.mode ?? null, ver: s.version ?? null, gpuVer: s.gpuWrittenVersion ?? null,
-                gpuTex: !!s.gpuTexture, gpuDirty: s.gpuDirty ?? null,
+                gpuTex: !!s.gpuTexture, gpuView: !!s.gpuTextureView, gpuDirty: s.gpuDirty ?? null,
                 fmt: s.gpuTextureFormat ?? null,
                 isPrimary: s.surfacePtr === this.context.surfaces.primary || undefined,
             });
@@ -482,6 +486,33 @@ export class DDraw implements IModule {
             if (s && (s.surfacePtr >>> 0) === want) { state = s; break; }
         }
         if (!state) return { err: `surface 0x${want.toString(16)} not found` };
+        if (!state.gpuTexture && isRenderSurface(state) && state.surfacePtr) {
+            const rgba = convertSurfaceToRGBA(
+                this.getMemory(), state.surfacePtr, state.width, state.height, state.pitch, state.format,
+            );
+            let min = 255, max = 0, nonBlack = 0, sum = 0, samples = 0;
+            for (let y = 0; y < state.height; y += 7) {
+                for (let x = 0; x < state.width; x += 7) {
+                    const o = (y * state.width + x) * 4;
+                    const lum = (rgba[o] + rgba[o + 1] + rgba[o + 2]) / 3;
+                    min = Math.min(min, lum);
+                    max = Math.max(max, lum);
+                    sum += lum;
+                    if (lum > 2) nonBlack++;
+                    samples++;
+                }
+            }
+            return {
+                ptr: `0x${want.toString(16)}`,
+                w: state.width,
+                h: state.height,
+                fmt: "cpu",
+                min: Math.round(min),
+                max: Math.round(max),
+                avg: +(sum / Math.max(1, samples)).toFixed(2),
+                nonBlackPct: +((nonBlack / Math.max(1, samples)) * 100).toFixed(1),
+            };
+        }
         if (!state.gpuTexture) return { err: "no gpuTexture", mode: (state as any).mode };
         const device = this.context.backend.getDevice();
         const queue = this.context.backend.getQueue();
@@ -556,6 +587,17 @@ export class DDraw implements IModule {
             if (s && (s.surfacePtr >>> 0) === want) { state = s; break; }
         }
         if (!state) return { err: `surface 0x${want.toString(16)} not found` };
+        if (!state.gpuTexture && isRenderSurface(state) && state.surfacePtr) {
+            const rgba = convertSurfaceToRGBA(
+                this.getMemory(),
+                state.surfacePtr,
+                state.width,
+                state.height,
+                state.pitch,
+                state.format,
+            );
+            return { w: state.width, h: state.height, rgba, source: "cpu" };
+        }
         return readSurfaceStateRGBA(state, this.context.backend ?? null, () => this.context.executor?.flush());
     }
 

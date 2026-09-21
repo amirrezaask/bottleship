@@ -806,6 +806,7 @@ export class CallbackManager {
     private releaseFrame(slot: number): void {
         if (slot < 0 || slot >= SUSPENDED_FRAME_RING_SIZE) return;
         if (this.frameActive[slot] !== 1) return;
+        const ownerThreadId = this.frameThreadId[slot] >>> 0;
 
         for (let i = 0; i < this.frameStackDepth; i++) {
             if (this.frameStack[i] === slot) {
@@ -827,9 +828,12 @@ export class CallbackManager {
         this.frameCallbackId[slot] = 0;
         this.frameSource[slot] = '';
 
-        // Unpin the thread (balanced with pin in allocateSuspendedFrame)
+        // Unpin the frame owner (balanced with pin in allocateSuspendedFrame).
+        // The callback return can be processed after a scheduler handoff, so
+        // unpinning the current thread can leak the owner's pin and permanently
+        // starve its READY peer.
         try {
-            System.getInstance().scheduler.unpinCurrentThread();
+            System.getInstance().scheduler.unpinThread(ownerThreadId);
         } catch { /* scheduler not ready yet */ }
 
         this.notifyIdleIfReady();
@@ -841,7 +845,7 @@ export class CallbackManager {
             const scheduler = System.getInstance().scheduler;
             for (let i = 0; i < SUSPENDED_FRAME_RING_SIZE; i++) {
                 if (this.frameActive[i] === 1) {
-                    scheduler.unpinCurrentThread();
+                    scheduler.unpinThread(this.frameThreadId[i] >>> 0);
                 }
             }
         } catch { /* scheduler not ready */ }
@@ -1334,6 +1338,14 @@ export class CallbackManager {
 
     hasSavedThunkContext(): boolean {
         return this.frameStackDepth > 0;
+    }
+
+    /** Ensure a host-side callback pump resumes on the thread that owns frameId. */
+    prepareSuspendedFrameDispatch(frameId: number): boolean {
+        const frameIndex = this.findFrameIndexById(frameId >>> 0);
+        if (frameIndex < 0) return false;
+        const ownerThreadId = this.frameThreadId[frameIndex] >>> 0;
+        return System.getInstance().scheduler.prepareThreadForCallbackDispatch(ownerThreadId);
     }
 
     getStubPoolRange(): { base: number; end: number } {

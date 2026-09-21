@@ -18,6 +18,9 @@ import { normalizeDllBaseName, resolveThunkedDllAlias } from './dll-aliases';
 import { installCw3220Stdio } from '../modules/cw3220/cw3220-stdio';
 import { writeHeapSlabStubs } from '../modules/kernel32/heap-slab-stubs';
 import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs';
+import { applyDeltaForce2CallbackGuard, applyDeltaForce2MemcpyGuard, applyDeltaForce2ParserGuard, applyDeltaForce2StreamGuard } from './game-fixes/delta-force-2';
+import { applyDeltaForce3ImageLoopFix } from './game-fixes/delta-force-3';
+import { applyMidtownMadness2AllocatorGuard } from './game-fixes/midtown-madness-2';
 
 function isD3dx9VersionedDll(dllNameLower: string): boolean {
     return resolveThunkedDllAlias(normalizeDllBaseName(dllNameLower)) === 'd3dx9';
@@ -32,6 +35,8 @@ export interface LoadedModule {
 
 export interface PeImageSource {
   readonly size: number;
+  /** SHA-256 of the exact source object, when the caller has verified it. */
+  readonly sourceHash?: string;
   readRange(offset: number, length: number): Promise<Uint8Array>;
 }
 
@@ -320,7 +325,7 @@ export class PELoader {
         return new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     }
 
-    async loadExecutable(peData: Uint8Array): Promise<LoadedModule> {
+    async loadExecutable(peData: Uint8Array, sourceHash?: string): Promise<LoadedModule> {
         const peView = new DataView(peData.buffer, peData.byteOffset, peData.byteLength);
 
         // Verify DOS Header
@@ -387,6 +392,7 @@ export class PELoader {
             sections,
             exports,
             ordinals,
+            sourceHash,
         );
     }
 
@@ -411,7 +417,7 @@ export class PELoader {
    */
   async loadSourceExecutable(source: PeImageSource): Promise<LoadedModule> {
     const header = await this.readPreparedHeader(source);
-    const descriptor = this.descriptorFromHeader(source, header);
+    const descriptor = this.descriptorFromHeader(source, header, source.sourceHash);
     this.validatePreparedDescriptor(source, descriptor, header, true);
     const mapped = await this.mapPreparedImage(source, descriptor, header, 'image');
     return this.finishPreparedExecutable(descriptor, header, mapped.baseAddress, mapped.sections);
@@ -557,12 +563,20 @@ export class PELoader {
       if (rawSize > 0 && (rawOffset > source.size || rawSize > source.size - rawOffset)) {
         throw new Error(`Prepared PE section ${name} raw range is outside the source`);
       }
-      const mappedSize = Math.max(virtualSize, rawSize);
+      if (virtualAddress > sizeOfImage) {
+        throw new Error(`Prepared PE section ${name} is outside SizeOfImage`);
+      }
+      const availableImageBytes = sizeOfImage - virtualAddress;
+      // Windows tolerates the final section's file-alignment padding extending
+      // just beyond an unaligned SizeOfImage (Warrior Within's patched POP2.EXE
+      // has this shape). The loader cannot map that padding: validate the real
+      // virtual span and clamp only the raw tail to the allocated image.
+      if (virtualSize > availableImageBytes) {
+        throw new Error(`Prepared PE section ${name} is outside SizeOfImage`);
+      }
+      const mappedSize = Math.min(Math.max(virtualSize, rawSize), availableImageBytes);
       if (mappedSize > 0 && virtualAddress < sizeOfHeaders) {
         throw new Error(`Prepared PE section ${name} overlaps the mapped headers`);
-      }
-      if (virtualAddress > sizeOfImage || mappedSize > sizeOfImage - virtualAddress) {
-        throw new Error(`Prepared PE section ${name} is outside SizeOfImage`);
       }
       sections.push({
         name,
@@ -578,7 +592,10 @@ export class PELoader {
       .filter(section => Math.max(section.virtualSize, section.rawSize) > 0)
       .map(section => ({
         start: section.virtualAddress,
-        end: section.virtualAddress + Math.max(section.virtualSize, section.rawSize),
+        end: section.virtualAddress + Math.min(
+          Math.max(section.virtualSize, section.rawSize),
+          sizeOfImage - section.virtualAddress,
+        ),
         name: section.name,
       }))
       .sort((a, b) => a.start - b.start);
@@ -617,9 +634,10 @@ export class PELoader {
   private descriptorFromHeader(
     source: PeImageSource,
     header: PreparedPeHeader,
+    sourceHash = source.sourceHash ?? '',
   ): PreparedPeDescriptor {
     return {
-      sourceHash: '',
+      sourceHash,
       sourceBytes: source.size,
       preferredBase: header.imageBase,
       entrypointRva: header.entryPointRva,
@@ -725,8 +743,12 @@ export class PELoader {
       const sections: import('./module-registry').PESection[] = [];
       for (const section of descriptor.sections) {
         const target = baseAddress + section.virtualAddress;
-        for (let offset = 0; offset < section.rawSize;) {
-          const length = Math.min(MAX_PREPARED_READ, section.rawSize - offset);
+        const mappedRawSize = Math.min(
+          section.rawSize,
+          descriptor.imageSize - section.virtualAddress,
+        );
+        for (let offset = 0; offset < mappedRawSize;) {
+          const length = Math.min(MAX_PREPARED_READ, mappedRawSize - offset);
           const bytes = await this.readExactSource(source, section.rawOffset + offset, length);
           this.memory.set(bytes, target + offset);
           offset += length;
@@ -839,6 +861,33 @@ export class PELoader {
     if (applySanAndreasGraphicsDefault(module, this.memory, v86?.cpu ?? v86?.v86?.cpu ?? null,
         EmulatorConfig.getInstance().lowestGraphics)) {
       Logger.info(LogCategory.SYSTEM, '[San Andreas] Native default FX quality set to Low');
+    }
+    const deltaCpu = v86?.cpu ?? v86?.v86?.cpu ?? null;
+    if (applyDeltaForce2MemcpyGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Delta Force 2] Guarded invalid optional-stream memcpy');
+    }
+    if (applyDeltaForce2StreamGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Delta Force 2] Guarded invalid optional-stream EOF');
+    }
+    if (applyDeltaForce2ParserGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Delta Force 2] Guarded invalid optional-stream parser');
+    }
+    if (applyDeltaForce2CallbackGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
+        Logger.info(LogCategory.SYSTEM, '[Delta Force 2] Guarded invalid low callback');
+    }
+    if (applyDeltaForce3ImageLoopFix(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Delta Force 3] Lowered title-local image accumulator loop');
+    }
+    if (applyMidtownMadness2AllocatorGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
+        Logger.info(LogCategory.SYSTEM, '[Midtown Madness 2] Guarded stale private-heap free');
+    }
+    if (
+      module.isExecutable
+      && (module.sourceHash === '992c53c9250cf822b44bf4a4013bd5805229bbbeb7b478a4c2556531bc5340f3'
+        || module.name.toLowerCase() === 'midtown2')
+    ) {
+      System.getInstance().process?.memory.setSurfaceRegionTracking(false);
+      Logger.info(LogCategory.SYSTEM, '[Midtown Madness 2] Using layout-owned surface regions');
     }
     try {
       libHleManager.onModuleLoaded(module);

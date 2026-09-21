@@ -209,7 +209,7 @@ const BATCH_TIMEOUT_MS = 16; // One frame at 60fps
 
 class LoggerImpl {
     private buffer: LogEntry[] = [];
-    private bufferSize = 50;
+    private bufferSize = 50000;
     private globalLevel: LogLevel = LogLevel.NORMAL;
     private categoryLevels: Map<LogCategory, LogLevel> = new Map();
     private writeIndex = 0;

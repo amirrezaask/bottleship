@@ -101,6 +101,7 @@ import { registerDirectDraw2Exports } from "./directdraw-v2";
 import { windows as sharedWindows } from "../user32/shared-state";
 import type { WindowInfo } from "../user32/shared-state";
 import { repaintDialogOverlayIfVisible, requestGuestDialogPaint } from "../user32/dialog";
+import { normalizeDeltaForce2DisplayMode } from "../../core/game-fixes/delta-force-2";
 
 type DDEnumCallback = (lpGUID: number, lpDriverDescription: number, lpDriverName: number, lpContext: number) => number;
 
@@ -214,6 +215,20 @@ function applySetDisplayMode(
     bpp: number,
     refresh: number
 ): void {
+    const configured = EmulatorConfig.getInstance().screenResolution;
+    const mode = normalizeDeltaForce2DisplayMode(
+        system.process?.moduleRegistry.getExecutableModule(),
+        { width, height },
+        configured,
+    );
+    if (mode.width !== width || mode.height !== height) {
+        Logger.log(
+            LogCategory.DDRAW,
+            `[Delta Force 2] normalized SetDisplayMode ${width}x${height} -> ${mode.width}x${mode.height}`,
+        );
+    }
+    width = mode.width;
+    height = mode.height;
     const prevW = ddrawCtx.display.width;
     const prevH = ddrawCtx.display.height;
     const prevBpp = ddrawCtx.display.bpp;
@@ -355,7 +370,7 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
         lpDesc: number, 
         lplpSurf: number, 
         vtableName: string,
-        options?: { threadId?: number; enableDiagnostics?: boolean; surfaceIid?: string }
+        options?: { threadId?: number; enableDiagnostics?: boolean; surfaceIid?: string; ownerDirectDrawAddress?: number }
     ): number => {
         const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
         const threadId = options?.threadId ?? 0;
@@ -670,6 +685,9 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
             surfacePtrAllocated: didAllocateSurface,
             format: normalizedDesc.pixelFormat!,
             attachedSurfaceAddr: 0,
+            ownerDirectDrawHandle: options?.ownerDirectDrawAddress
+                ? context.resourceProvider.getComObjectByAddress(options.ownerDirectDrawAddress)?.handle
+                : undefined,
             // CPU-First fields
             mode: initialMode,
             version: 0,
@@ -849,6 +867,9 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
         const objAddr = allocateComObject(context.process.memory, mem, vtableAddr);
         view.setUint32(lplpSurf, objAddr, true);
         context.resourceProvider.mapAddressToHandle(objAddr, obj.handle);
+        if (surfaceState.ownerDirectDrawHandle !== undefined) {
+            context.resourceProvider.getComObject(surfaceState.ownerDirectDrawHandle)?.addRef();
+        }
 
         // OPTIMIZATION: Register surfacePtr for fast lookup in ReleaseDC and other hot paths
         if (surfacePtr > 0) {
@@ -955,6 +976,9 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
 
                 const mipAddr = allocateComObject(context.process.memory, mem, vtableAddr);
                 context.resourceProvider.mapAddressToHandle(mipAddr, mipObj.handle);
+                if (mipState.ownerDirectDrawHandle !== undefined) {
+                    context.resourceProvider.getComObject(mipState.ownerDirectDrawHandle)?.addRef();
+                }
                 context.resourceProvider.registerSurfacePtr(mipObj.handle, mipSurfacePtr);
 
                 const prevObj = context.resourceProvider.getComObjectByAddress(prevAddr) as DirectDrawSurfaceObject | null;
@@ -1056,6 +1080,12 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
                 if (backbufferObj) {
                     const backbufferAddr = allocateComObject(context.process.memory, mem, vtableAddr);
                     context.resourceProvider.mapAddressToHandle(backbufferAddr, backbufferObj.handle);
+                    // Include chain members in the surface-pointer alias index;
+                    // they are separate COM aliases of render surfaces.
+                    context.resourceProvider.registerSurfacePtr(backbufferObj.handle, backbufferState.surfacePtr);
+                    if (backbufferState.ownerDirectDrawHandle !== undefined) {
+                        context.resourceProvider.getComObject(backbufferState.ownerDirectDrawHandle)?.addRef();
+                    }
 
                     const prevObj = context.resourceProvider.getComObjectByAddress(lastAddr) as DirectDrawSurfaceObject | null;
                     if (prevObj) {
@@ -1305,7 +1335,8 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
         return internalCreateSurface(mem, lpDDSurfaceDesc, lplpDDSurface, "IDirectDrawSurface", {
             threadId,
             enableDiagnostics: true,
-            surfaceIid: IID_IDirectDrawSurface
+            surfaceIid: IID_IDirectDrawSurface,
+            ownerDirectDrawAddress: args[0]
         });
     };
 
@@ -1403,7 +1434,8 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
         return internalCreateSurface(mem, lpDDSurfaceDesc, lplpDDSurface, "IDirectDrawSurface4", {
             threadId,
             enableDiagnostics: false,
-            surfaceIid: IID_IDirectDrawSurface4
+            surfaceIid: IID_IDirectDrawSurface4,
+            ownerDirectDrawAddress: args[0]
         });
     };
 
@@ -1616,7 +1648,8 @@ export const createDirectDrawExports = (context: DDrawContext): Record<string, T
         return internalCreateSurface(mem, lpDDSurfaceDesc, lplpDDSurface, "IDirectDrawSurface7", {
             threadId,
             enableDiagnostics: false,
-            surfaceIid: IID_IDirectDrawSurface7
+            surfaceIid: IID_IDirectDrawSurface7,
+            ownerDirectDrawAddress: args[0]
         });
     };
 

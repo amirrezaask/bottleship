@@ -1671,7 +1671,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3u) {
 
             profiler.end("TextureConverter.convertFromTexture");
 
-            Logger.log(LogCategory.DDRAW,
+            Logger.verboseLazy(LogCategory.DDRAW, () =>
                 `TextureConverter.convertFromTexture: ${width}x${height} ${textureFormat} → ` +
                 `format=${targetFormat} (${readbackSize} bytes)`);
 

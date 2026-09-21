@@ -58,6 +58,7 @@ import { getLastGetDIBitsBuffer } from "../gdi32/painting";
 import { clipRect } from "./surface-helpers";
 import { createSurfaceStubsExports } from "./surface-stubs";
 import { createSurfaceBltFlipExports } from "./surface-blt-flip";
+import { repairDeltaForce3FlipChain } from "./delta-force-3-present";
 
 // Performance: Texture diagnostics are expensive (scan 1000+ pixels per Unlock).
 // Enable only when debugging texture corruption issues.
@@ -163,6 +164,16 @@ function resolveGetAttachedSurfaceTarget(
 ): number {
     const obj = lookup(thisPtr);
     if (!obj) return 0;
+
+    // Repair the exact DF3 primary/backbuffer relation before D3D receives the
+    // target. Without this, a stale alias can make the primary its own RT.
+    if ((requestedCaps & DDSCAPS_BACKBUFFER) !== 0) {
+        const state = obj.getState();
+        if ((state.caps & DDSCAPS_PRIMARYSURFACE) && (state.caps & DDSCAPS_FLIP)) {
+            const repaired = repairDeltaForce3FlipChain(context, thisPtr, obj);
+            if (repaired) return repaired.address;
+        }
+    }
 
     let currentAddr = obj.getState().attachedSurfaceAddr;
     const visited = new Set<number>();

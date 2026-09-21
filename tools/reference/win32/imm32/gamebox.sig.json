@@ -1,0 +1,18 @@
+{
+  "module": "imm32",
+  "functions": [
+    { "name": "ImmAssociateContext", "argCount": 2 },
+    { "name": "ImmCreateContext", "argCount": 0 },
+    { "name": "ImmDestroyContext", "argCount": 1 },
+    { "name": "ImmGetCandidateListW", "argCount": 4 },
+    { "name": "ImmGetCompositionStringW", "argCount": 4 },
+    { "name": "ImmGetContext", "argCount": 1 },
+    { "name": "ImmGetDefaultIMEWnd", "argCount": 1 },
+    { "name": "ImmGetIMEFileNameA", "argCount": 3 },
+    { "name": "ImmNotifyIME", "argCount": 4 },
+    { "name": "ImmReleaseContext", "argCount": 2 },
+    { "name": "ImmSetCandidateWindow", "argCount": 2 },
+    { "name": "ImmSetCompositionStringW", "argCount": 6 },
+    { "name": "ImmSetCompositionWindow", "argCount": 2 }
+  ]
+}

@@ -271,7 +271,7 @@ export function faultSnapshot(): unknown {
     const stack: string[] = [];
     if (mem && c?.reg32 && esp >= 16 && esp + 32 <= mem.length) {
         const dv = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
-        for (let i = -2; i < 6; i++) stack.push(`[ESP${i < 0 ? i * 4 : "+" + i * 4}]=0x${(dv.getUint32(esp + i * 4, true) >>> 0).toString(16)}`);
+        for (let i = -2; i < 20; i++) stack.push(`[ESP${i < 0 ? i * 4 : "+" + i * 4}]=0x${(dv.getUint32(esp + i * 4, true) >>> 0).toString(16)}`);
     }
     const dispatcher: any = proc()?.dispatcher as any;
     const recent = dispatcher?.getLastWinApiCalls?.(30) ?? [];

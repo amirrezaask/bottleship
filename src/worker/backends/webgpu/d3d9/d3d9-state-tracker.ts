@@ -92,6 +92,7 @@ export class D3D9StateTracker {
         this.renderStates[207] = D3DBLEND_ONE;   // D3DRS_SRCBLENDALPHA
         this.renderStates[208] = D3DBLEND_ZERO;  // D3DRS_DESTBLENDALPHA
         this.renderStates[209] = D3DBLENDOP_ADD; // D3DRS_BLENDOPALPHA
+        this.renderStates[60] = -1;              // D3DRS_TEXTUREFACTOR = 0xffffffff
         this.renderStates[168] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE
         this.renderStates[190] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE1
         this.renderStates[191] = ALL_CHANNELS;   // D3DRS_COLORWRITEENABLE2
