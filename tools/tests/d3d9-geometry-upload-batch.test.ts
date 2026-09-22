@@ -6,7 +6,7 @@ function fixture() {
     let writes = 0, submits = 0;
     const allocations: any[] = [];
     const queue = {
-        writeBuffer(buffer: any, offset: number, data: Uint8Array, start: number, size: number) {
+        writeBuffer(buffer: any, offset: number, data: Uint8Array, start = 0, size = data.byteLength) {
             writes++; buffer.bytes.set(data.subarray(start, start + size), offset);
         },
         submit(commands: Array<Array<() => void>>) { submits++; for (const batch of commands) for (const copy of batch) copy(); },
@@ -47,6 +47,31 @@ test("staging reuse across the cap preserves every chunk and later batches", () 
     expect(f.allocations).toHaveLength(1);
     f.pool.resetStats(); expect(f.pool.getStats().geometryUploadBatches).toBe(0);
     f.pool.dispose(); expect(f.allocations[0].destroyed).toBe(true);
+});
+
+test("one independent upload writes directly without allocating staging or submitting a copy", () => {
+    const f = fixture();
+    const source = new Uint8Array(64).fill(12);
+    const target = { bytes: new Uint8Array(80).fill(4) };
+    f.pool.upload(f.queue, [target] as never, [source], [8]);
+    expect(f.writes()).toBe(1); expect(f.submits()).toBe(0);
+    expect(f.allocations).toHaveLength(0);
+    expect(target.bytes.slice(0, 8)).toEqual(new Uint8Array(8).fill(4));
+    expect(target.bytes.slice(8, 72)).toEqual(source);
+    source.fill(99);
+    expect(target.bytes.slice(8, 72)).toEqual(new Uint8Array(64).fill(12));
+    expect(f.pool.getStats().geometryUploadBytes).toBe(64);
+});
+
+test("one inherited upload retains the ordered copy before its partial write", () => {
+    const f = fixture();
+    const source = { bytes: new Uint8Array(32).fill(3) };
+    const target = { bytes: new Uint8Array(32).fill(99) };
+    f.pool.upload(f.queue, [target] as never, [new Uint8Array(4).fill(7)], [4], [source] as never, [32]);
+    const expected = source.bytes.slice(); expected.fill(7, 4, 8);
+    expect(target.bytes).toEqual(expected);
+    expect(f.writes()).toBe(1); expect(f.submits()).toBe(1);
+    expect(f.allocations).toHaveLength(1);
 });
 
 test("partial updates inherit earlier versions without changing earlier draws", () => {

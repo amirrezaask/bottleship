@@ -12,6 +12,18 @@ export class GeometryUploadBatch {
 
     upload(queue: GPUQueue, buffers: readonly GPUBuffer[], data: readonly Uint8Array[], offsets: readonly number[] = [],
         sources: readonly (GPUBuffer | null)[] = [], copySizes: readonly number[] = []): void {
+        // A lone independent upload needs neither a staging copy nor a command
+        // encoder/submit. The frame owns a snapshot, and writeBuffer captures it
+        // synchronously before any later guest write or frame reuse.
+        if (data.length === 1 && !sources[0] && data[0].byteLength <= GeometryUploadBatch.MAX_BYTES) {
+            const bytes = data[0];
+            if (bytes.byteLength % 4 !== 0) throw new Error("Geometry upload must be four-byte aligned");
+            if (!bytes.byteLength) return;
+            queue.writeBuffer(buffers[0], offsets[0] ?? 0, bytes);
+            this.uploadCalls = Math.min(Number.MAX_SAFE_INTEGER, this.uploadCalls + 1);
+            this.uploadBytes = Math.min(Number.MAX_SAFE_INTEGER, this.uploadBytes + bytes.byteLength);
+            return;
+        }
         let required = 0;
         for (const bytes of data) required = Math.min(GeometryUploadBatch.MAX_BYTES, required + bytes.byteLength);
         if (!required) return;

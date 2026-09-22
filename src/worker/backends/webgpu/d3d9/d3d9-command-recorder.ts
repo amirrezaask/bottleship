@@ -52,6 +52,10 @@ export class D3D9CommandRecorder {
      *  differ per pipeline) and at finalize (executor bind caches reset per pass/frame). */
     private currentBindStateIndex: number | null = null;
     private drawCount = 0;
+    // WebGPU retains vertex/index bindings across draws and pipeline changes.
+    // These mirrors describe commands emitted in the current render pass only.
+    private readonly vertexBindings: ({ buffer: GPUBuffer; offset: number; size: number } | null)[] = [];
+    private indexBinding: { buffer: GPUBuffer; format: "uint16" | "uint32" } | null = null;
 
     constructor(private framePool: RenderFramePool) {
         this.frame = framePool.acquire();
@@ -85,11 +89,9 @@ export class D3D9CommandRecorder {
             this.frame.pushBindProgrammable(cmd.bindStateIndex);
             this.currentBindStateIndex = cmd.bindStateIndex;
         }
-        this.frame.pushSetVertexBuffer(cmd.gpuBuffer, cmd.bufferOffset, cmd.bufferSize);
+        this.bindVertex(0, cmd.gpuBuffer, cmd.bufferOffset, cmd.bufferSize);
         if (cmd.extraStreams) {
-            for (const s of cmd.extraStreams) {
-                this.frame.pushSetVertexBuffer(s.buffer, s.offset, s.size, s.slot);
-            }
+            for (const s of cmd.extraStreams) this.bindVertex(s.slot, s.buffer, s.offset, s.size);
         }
         this.frame.pushDraw(cmd.vertexCount, cmd.startVertex);
         this.drawCount++;
@@ -109,15 +111,23 @@ export class D3D9CommandRecorder {
             this.frame.pushBindProgrammable(cmd.bindStateIndex);
             this.currentBindStateIndex = cmd.bindStateIndex;
         }
-        this.frame.pushSetVertexBuffer(cmd.vbGpuBuffer, cmd.vbOffset, cmd.vbSize);
+        this.bindVertex(0, cmd.vbGpuBuffer, cmd.vbOffset, cmd.vbSize);
         if (cmd.extraStreams) {
-            for (const s of cmd.extraStreams) {
-                this.frame.pushSetVertexBuffer(s.buffer, s.offset, s.size, s.slot);
-            }
+            for (const s of cmd.extraStreams) this.bindVertex(s.slot, s.buffer, s.offset, s.size);
         }
-        this.frame.pushSetIndexBuffer(cmd.ibGpuBuffer, cmd.ibFormat);
+        if (this.indexBinding?.buffer !== cmd.ibGpuBuffer || this.indexBinding.format !== cmd.ibFormat) {
+            this.frame.pushSetIndexBuffer(cmd.ibGpuBuffer, cmd.ibFormat);
+            this.indexBinding = { buffer: cmd.ibGpuBuffer, format: cmd.ibFormat };
+        }
         this.frame.pushDrawIndexed(cmd.indexCount, cmd.startIndex, cmd.baseVertex);
         this.drawCount++;
+    }
+
+    private bindVertex(slot: number, buffer: GPUBuffer, offset: number, size: number): void {
+        const bound = this.vertexBindings[slot];
+        if (bound?.buffer === buffer && bound.offset === offset && bound.size === size) return;
+        this.frame.pushSetVertexBuffer(buffer, offset, size, slot);
+        this.vertexBindings[slot] = { buffer, offset, size };
     }
 
     /**
@@ -128,6 +138,8 @@ export class D3D9CommandRecorder {
         this.frame = this.framePool.acquire();
         this.currentPipelineId = null;
         this.currentBindStateIndex = null;
+        this.vertexBindings.length = 0;
+        this.indexBinding = null;
         return completedFrame;
     }
 
