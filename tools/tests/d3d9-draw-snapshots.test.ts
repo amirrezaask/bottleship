@@ -3,6 +3,7 @@ import { D3D9Device } from "../../src/worker/backends/webgpu/d3d9/d3d9-device";
 import { System } from "../../src/worker/core/system";
 import { RenderFrame } from "../../src/worker/backends/webgpu/render-frame";
 import { DynamicVbPool } from "../../src/worker/backends/webgpu/d3d9/dynamic-vb-pool";
+import { compileVertexShader, compilePixelShader } from "../../src/worker/backends/webgpu/d3d9/shader";
 
 let device: D3D9Device;
 let internal: any;
@@ -138,6 +139,51 @@ test("UP draws use their explicit stride and preserve disabled depth testing", (
     device.drawPrimitiveUP(4, 1, 0x200, 20);
     expect(builtPipelines.map(p => p.vertex.buffers[0].arrayStride)).toEqual([16, 20]);
     expect(builtPipelines[0].depthStencil).toMatchObject({ depthWriteEnabled: false, depthCompare: "always" });
+});
+
+test("D3D9 depth comparison and writes follow render state across cached pipelines", () => {
+    const declaration = device.createVertexDeclaration([{ stream: 0, offset: 0, type: 2, usage: 0, usageIndex: 0 }]);
+    device.setVertexDeclaration(declaration.handle);
+    delete internal.getPipelineId;
+    const draw = () => { device.drawPrimitive(4, 0, 1); return builtPipelines.at(-1)?.depthStencil; };
+    expect(draw()).toMatchObject({ depthCompare: "less-equal", depthWriteEnabled: true });
+    device.setRenderState(23, 5); // GREATER
+    expect(draw()).toMatchObject({ depthCompare: "greater", depthWriteEnabled: true });
+    device.setRenderState(23, 1); // NEVER
+    expect(draw()).toMatchObject({ depthCompare: "never", depthWriteEnabled: true });
+    device.setRenderState(7, 0);
+    expect(draw()).toMatchObject({ depthCompare: "always", depthWriteEnabled: false });
+    device.setRenderState(23, 2); // LESS, not previously cached
+    device.setRenderState(7, 1);
+    expect(draw()).toMatchObject({ depthCompare: "less", depthWriteEnabled: true });
+    device.setRenderState(14, 0);
+    expect(draw()).toMatchObject({ depthCompare: "less", depthWriteEnabled: false });
+});
+
+test("programmable depth comparison participates in the last-resolve and string-cache keys", () => {
+    const vs = compileVertexShader(new Uint32Array([
+        0xfffe0101, 1, 0x400f0000, 0x10e40000, 0xffff, // mov oPos, v0
+    ]));
+    const ps = compilePixelShader(new Uint32Array([
+        0xffff0101, 1, 0x800f0000, 0x10e40000, 0xffff, // mov oC0, v0
+    ]));
+    internal.vsShaderRegistry.set(1, vs);
+    internal.psShaderRegistry.set(1, ps);
+    internal.activeVertexShader = 1;
+    internal.activePixelShader = 1;
+    internal.backendExecutor.getProgrammableLayout = () => ({ pipelineLayout: "auto" });
+    device.setFVF(0x42);
+    const resolve = () => internal.resolveProgrammablePipeline("triangle-list", false);
+    const first = resolve();
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(builtPipelines.at(-1).depthStencil.depthCompare).toBe("less-equal");
+    device.setRenderState(23, 5);
+    const second = resolve();
+    expect(second).not.toBe(first);
+    expect(builtPipelines.at(-1).depthStencil.depthCompare).toBe("greater");
+    device.setRenderState(23, 4);
+    expect(resolve()).toBe(first);
+    expect(builtPipelines).toHaveLength(2);
 });
 
 test("RenderWare split color and position streams retain separate GPU layouts and uploads", () => {

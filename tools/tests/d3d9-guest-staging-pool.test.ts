@@ -32,10 +32,38 @@ test("idle scratch stays bounded and large buffers are freed immediately", () =>
     for (const pointer of pointers) pool.release(pointer);
     expect(pool.getStats().idleBytes).toBe(GuestStagingPool.MAX_IDLE_BYTES);
     expect(heap.freed).toHaveLength(4);
-    const large = pool.acquire(1024 * 1024 + 16);
+    const large = pool.acquire(GuestStagingPool.MAX_POOLED_ALLOCATION + 1);
     pool.release(large);
     expect(heap.allocated.has(large)).toBe(false);
     pool.dispose(); expect(heap.allocated.size).toBe(0);
+});
+
+test("repeated 1–2 MiB dynamic locks reuse guest memory within the idle budget", () => {
+    const heap = allocator(), pool = new GuestStagingPool(heap);
+    const bytes = 1_620_016; // POP2.EXE's observed dynamic geometry lock
+    const first = pool.acquire(bytes);
+    pool.release(first);
+    for (let i = 0; i < 100; i++) {
+        const pointer = pool.acquire(bytes);
+        expect(pointer).toBe(first);
+        pool.release(pointer);
+    }
+    expect(pool.getStats()).toMatchObject({ allocations: 1, reuses: 100, idleBytes: 2 * 1024 * 1024 });
+    expect(heap.allocated.size).toBe(1);
+    pool.dispose();
+    expect(heap.allocated.size).toBe(0);
+});
+
+test("simultaneous large locks cannot alias and the shared idle budget still applies", () => {
+    const heap = allocator(), pool = new GuestStagingPool(heap);
+    const pointers = Array.from({ length: 3 }, () => pool.acquire(1_620_016));
+    expect(new Set(pointers).size).toBe(3);
+    expect(pool.getStats()).toMatchObject({ activeBytes: 6 * 1024 * 1024, idleBytes: 0 });
+    for (const pointer of pointers) pool.release(pointer);
+    expect(pool.getStats()).toMatchObject({ activeBytes: 0, idleBytes: 4 * 1024 * 1024 });
+    expect(heap.allocated.size).toBe(2);
+    pool.dispose();
+    expect(heap.allocated.size).toBe(0);
 });
 
 test("failed allocation never becomes an active lock", () => {

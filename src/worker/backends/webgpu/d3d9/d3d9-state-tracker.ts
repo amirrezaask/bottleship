@@ -9,6 +9,7 @@ const D3DRS_LIGHTING = 137;
 const D3DRS_CULLMODE = 22;
 const D3DRS_ZENABLE = 7;
 const D3DRS_ZWRITEENABLE = 14;
+const D3DRS_ZFUNC = 23;
 const D3DCULL_NONE = 1;
 
 const D3DTS_WORLD = 0x100;
@@ -79,13 +80,16 @@ export class D3D9StateTracker {
      * Seed the non-zero D3D9 default render states the blend/lighting pipelines depend on.
      * The render-state array is zero-filled, but several defaults are non-zero (notably
      * COLORWRITEENABLE = all channels, and the FFP material-colour sources). None of the
-     * seeded states are part of the FFP pipeline key (cull/z/lighting), so the key is
-     * unaffected; the lighting *enable* default is intentionally left at 0 (games set it
+     * ZENABLE/ZWRITEENABLE seed the FFP key; the key starts dirty so its first
+     * computation reflects these defaults. Lighting *enable* remains 0 (games set it
      * explicitly — same choice as the D3D8 adapter) to avoid darkening titles that draw
      * pre-coloured FFP geometry without ever touching lighting state.
      */
     private seedRenderStateDefaults(): void {
         const D3DBLEND_ONE = 2, D3DBLEND_ZERO = 1, D3DBLENDOP_ADD = 1, ALL_CHANNELS = 0xf;
+        this.renderStates[D3DRS_ZENABLE] = 1;
+        this.renderStates[D3DRS_ZWRITEENABLE] = 1;
+        this.renderStates[D3DRS_ZFUNC] = 4; // D3DCMP_LESSEQUAL
         this.renderStates[19] = D3DBLEND_ONE;    // D3DRS_SRCBLEND
         this.renderStates[20] = D3DBLEND_ZERO;   // D3DRS_DESTBLEND
         this.renderStates[171] = D3DBLENDOP_ADD; // D3DRS_BLENDOP

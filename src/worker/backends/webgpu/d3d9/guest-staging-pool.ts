@@ -7,7 +7,9 @@ export interface GuestStagingAllocator {
 
 export class GuestStagingPool {
     static readonly MAX_IDLE_BYTES = 4 * 1024 * 1024;
-    static readonly MAX_POOLED_ALLOCATION = 1024 * 1024;
+    // Dynamic geometry locks can exceed 1 MiB (Warrior Within's ship scene).
+    // Keep at most 4 MiB idle in total, including these larger allocations.
+    static readonly MAX_POOLED_ALLOCATION = 2 * 1024 * 1024;
     private idle = new Map<number, number[]>();
     private active = new Map<number, number>();
     private idleBytes = 0;

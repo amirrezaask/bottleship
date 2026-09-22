@@ -86,6 +86,14 @@ const D3DRS_ALPHAREF = 24;
 const D3DRS_ALPHAFUNC = 25;
 const D3DRS_ALPHATESTENABLE = 15;
 const D3DCMP_ALWAYS = 8;
+const D3DRS_ZFUNC = 23;
+const D3D9_DEPTH_COMPARE: readonly GPUCompareFunction[] = [
+    "less-equal", "never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always",
+];
+
+function depthCompare(zEnabled: boolean, zFunc: number): GPUCompareFunction {
+    return zEnabled ? (D3D9_DEPTH_COMPARE[zFunc] ?? "less-equal") : "always";
+}
 
 // D3DTSS_TEXTURETRANSFORMFLAGS: low bits are the coordinate count (D3DTTFF_COUNT1..4);
 // the D3DTTFF_PROJECTED bit requests a projective divide by the last coordinate component
@@ -477,7 +485,7 @@ export class D3D9Device {
     private lastCaptureIndex = -1;
     private _lrVs = 0; private _lrPs = 0; private _lrDecl = 0; private _lrFvf = 0; private _lrStride: number | null = null;
     private _lrStateBits = 0; private _lrTopo = ""; private _lrForceCull = false;
-    private _lrBlend = ""; private _lrAlpha = ""; private _lrCube = 0; private _lrProj = 0; private _lrPipelineId = -1;
+    private _lrBlend = ""; private _lrAlpha = ""; private _lrCube = 0; private _lrProj = 0; private _lrZFunc = 0; private _lrPipelineId = -1;
 
     // Vertex declaration registry — stores raw D3DVERTEXELEMENT9 data
     private vsDeclRegistry = new Map<number, RawVertexElement[]>();
@@ -3003,9 +3011,9 @@ export class D3D9Device {
         return at ? `a${at.func}.${at.ref}` : "a0";
     }
 
-    /** Pipeline cache key = numeric state/decl/VS key + current blend + alpha test. */
+    /** Pipeline cache key = numeric state/decl/VS key + blend, alpha test and depth compare. */
     private blendCacheKey(numericKey: number): string {
-        return `${numericKey}|${computeBlendKey(this.getRS)}|${this.alphaTestKey()}`;
+        return `${numericKey}|${computeBlendKey(this.getRS)}|${this.alphaTestKey()}|z${this.getRS(D3DRS_ZFUNC)}`;
     }
 
     private getPipelineId(): number {
@@ -3140,8 +3148,8 @@ export class D3D9Device {
             },
             depthStencil: {
                 format: "depth24plus",
-                depthWriteEnabled: zWrite !== 0,
-                depthCompare: zEnable !== 0 ? "less-equal" : "always",
+                depthWriteEnabled: zEnable !== 0 && zWrite !== 0,
+                depthCompare: depthCompare(zEnable !== 0, this.getRS(D3DRS_ZFUNC)),
             },
         });
 
@@ -3194,6 +3202,7 @@ export class D3D9Device {
         const projKey = this.projectedStageKey();
         const blendKey = computeBlendKey(this.getRS);
         const alphaKey = this.alphaTestKey();
+        const zFunc = this.getRS(D3DRS_ZFUNC);
 
         // Fast path: identical pipeline identity as the previous draw → return without building the
         // key string or touching the Map (the dominant case within a batch). Shared by both the
@@ -3203,7 +3212,8 @@ export class D3D9Device {
             && this._lrDecl === this.activeVertexDecl && this._lrFvf === fvf && this._lrStride === stride
             && this._lrStateBits === stateBits && this._lrTopo === topology
             && this._lrForceCull === forceCullNone && this._lrBlend === blendKey
-            && this._lrAlpha === alphaKey && this._lrCube === cubeMask && this._lrProj === projKey) {
+            && this._lrAlpha === alphaKey && this._lrCube === cubeMask && this._lrProj === projKey
+            && this._lrZFunc === zFunc) {
             d3d9PerfBackendInc("progPipelineCacheHits");
             if (this.frameSnapshot.frameCounters) this.frameSnapshot.frameCounters.cacheHits++;
             return this._lrPipelineId;
@@ -3217,7 +3227,8 @@ export class D3D9Device {
         // with the legacy key space via dual-run cross-checking
         // BEFORE this fast path is ever taken; falls through to the legacy path below whenever
         // bypass is off, the arena declined this draw, or the arena isn't initialized.
-        if (!transformed && arenaKey !== undefined && arenaKey >= 0 && isWasmPathEnabled()) {
+        // The arena key does not encode ZFUNC; only use it for the default compare.
+        if (!transformed && zFunc === 4 && arenaKey !== undefined && arenaKey >= 0 && isWasmPathEnabled()) {
             const cachedViaArena = this.arenaPipelineCache.get(arenaKey);
             if (cachedViaArena !== undefined) {
                 d3d9PerfBackendInc("progPipelineCacheHits");
@@ -3233,7 +3244,7 @@ export class D3D9Device {
             return built;
         }
 
-        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${fvf}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:cm${cubeMask}:pj${projKey}:ff${fixedStageKey}:${this.streamLayoutKey}:vp${transformed ? Object.values(this.viewport).join(",") : ""}`;
+        const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${fvf}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:z${zFunc}:cm${cubeMask}:pj${projKey}:ff${fixedStageKey}:${this.streamLayoutKey}:vp${transformed ? Object.values(this.viewport).join(",") : ""}`;
         const cached = this.progPipelineCache.get(cacheKey);
         if (cached !== undefined) {
             d3d9PerfBackendInc("progPipelineCacheHits");
@@ -3285,8 +3296,6 @@ export class D3D9Device {
             }
             const zEnable = (stateBits >> 25) & 1;
             const zWrite = (stateBits >> 26) & 1;
-            const usePopwwDepthTest = zEnable !== 0
-                && System.getInstance().executableName.toLowerCase() === "pop2.exe";
 
             const pipeline = gpuDevice.createRenderPipeline({
                 layout: pipelineLayout,
@@ -3299,8 +3308,8 @@ export class D3D9Device {
                 primitive: { topology, frontFace: "cw", cullMode },
                 depthStencil: {
                     format: "depth24plus",
-                    depthWriteEnabled: zWrite !== 0,
-                    depthCompare: usePopwwDepthTest ? "less-equal" : "always",
+                    depthWriteEnabled: zEnable !== 0 && zWrite !== 0,
+                    depthCompare: depthCompare(zEnable !== 0, this.getRS(D3DRS_ZFUNC)),
                 },
             });
             return this.backendExecutor.registerPipeline(pipeline, link.hasTexture, true);
@@ -3317,7 +3326,8 @@ export class D3D9Device {
         this._lrVs = this.activeVertexShader; this._lrPs = this.activePixelShader; this._lrDecl = this.activeVertexDecl;
         this._lrFvf = this.stateTracker.getFVF();
         this._lrStride = stride; this._lrStateBits = stateBits; this._lrTopo = topo; this._lrForceCull = forceCull;
-        this._lrBlend = blend; this._lrAlpha = alpha; this._lrCube = cube; this._lrProj = proj; this._lrPipelineId = id; this._lrValid = true;
+        this._lrBlend = blend; this._lrAlpha = alpha; this._lrCube = cube; this._lrProj = proj;
+        this._lrZFunc = this.getRS(D3DRS_ZFUNC); this._lrPipelineId = id; this._lrValid = true;
     }
 
     /** Bitmask of stages that currently have a CUBE texture bound. D3D9 ps_1_x / FFP have no

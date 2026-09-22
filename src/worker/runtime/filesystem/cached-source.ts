@@ -91,12 +91,10 @@ export class CachedSource implements ZipSource {
     private readonly prefetchDepthRuns: number;
     /** Number of prefetch runs currently in flight (bounded by prefetchDepthRuns). */
     private prefetchInflightCount = 0;
-    /** Next block index the prefetcher will consider — everything below is
-     *  resident or already scheduled. Advances with the read cursor; re-anchored
-     *  forward on a cold sync fault (a seek / new file the prefetch didn't cover). */
+    private readonly prefetchBlocks = new Set<number>();
+    /** Next block considered in the current read cursor's prefetch window. */
     private prefetchFrontier = 0;
-    /** Highest block the guest requested via the SYNC path — the prefetch window
-     *  is kept `prefetchAhead * prefetchDepthRuns` blocks ahead of this. */
+    /** Last block requested via the synchronous path, including backward seeks. */
     private readCursorBlock = -1;
     private readonly name: string;
 
@@ -174,10 +172,12 @@ export class CachedSource implements ZipSource {
             this.copyBlockInto(out, s, e, b, data);
         }
         this._syncHits++;
-        // Advance the read cursor and top the prefetch pipeline back up — done on
-        // resident HITS too, so a sequential scan through already-prefetched blocks
-        // keeps the window full instead of draining until the next cold fault.
-        if (last > this.readCursorBlock) this.readCursorBlock = last;
+        // Re-anchor on seeks as well as hits; ZIP directory reads commonly visit
+        // EOF before the loader returns to files near the start of the archive.
+        if (last < this.readCursorBlock || last >= this.prefetchFrontier) {
+            this.prefetchFrontier = last + 1;
+        }
+        this.readCursorBlock = last;
         this.pumpPrefetch();
         return out;
     }
@@ -247,6 +247,7 @@ export class CachedSource implements ZipSource {
             try { inner.close(); } catch { /* best-effort */ }
         }
         this.inflight.clear();
+        this.prefetchBlocks.clear();
         this.blocks.clear();
         this.lru.length = 0;
         this.residentBytes = 0;
@@ -316,13 +317,6 @@ export class CachedSource implements ZipSource {
         this._faults++;
         this._blockingFaults++;
 
-        // Re-anchor the prefetch frontier past this run. A cold sync fault means
-        // the guest is reading HERE now (a forward seek / new file the prefetch
-        // window didn't cover); Math.max keeps the frontier from being yanked
-        // backward by a re-read of an evicted block still behind it. pumpPrefetch
-        // itself is driven from readRangeSync after the whole read resolves.
-        if (endBlock + 1 > this.prefetchFrontier) this.prefetchFrontier = endBlock + 1;
-
         if (endBlock === b) {
             this.insert(b, buf);
             return buf;
@@ -334,7 +328,7 @@ export class CachedSource implements ZipSource {
      *  Slices (not subarrays) so evicting one block frees its bytes instead of
      *  pinning the whole run's backing buffer in the LRU. Returns the first
      *  block's bytes. */
-    private insertRun(b: number, endBlock: number, buf: Uint8Array): Uint8Array | null {
+    private insertRun(b: number, endBlock: number, buf: Uint8Array, speculative = false): Uint8Array | null {
         let firstData: Uint8Array | null = null;
         for (let rb = b; rb <= endBlock; rb++) {
             const off = (rb - b) * this.blockSize;
@@ -344,7 +338,7 @@ export class CachedSource implements ZipSource {
             const chunk = buf.slice(off, off + want);
             if (rb === b) firstData = chunk;
             if (chunk.length < want) break; // short inner read: don't cache ahead of it
-            this.insert(rb, chunk);
+            this.insert(rb, chunk, speculative);
         }
         return firstData;
     }
@@ -362,11 +356,13 @@ export class CachedSource implements ZipSource {
     private pumpPrefetch(): void {
         if (this.closed || !this.prefetchAhead || this.size === 0) return;
         const lastBlock = Math.floor((this.size - 1) / this.blockSize);
-        const windowEnd = this.readCursorBlock + this.prefetchAhead * this.prefetchDepthRuns;
+        const windowEnd = this.prefetchWindowEnd();
 
         while (this.prefetchInflightCount < this.prefetchDepthRuns) {
             // Skip blocks already resident (readahead / a prior prefetch covered them).
-            while (this.prefetchFrontier <= lastBlock && this.blocks.has(this.prefetchFrontier)) {
+            while (this.prefetchFrontier <= windowEnd && this.prefetchFrontier <= lastBlock &&
+                (this.blocks.has(this.prefetchFrontier) || this.prefetchBlocks.has(this.prefetchFrontier) ||
+                    this.inflight.has(this.prefetchFrontier))) {
                 this.prefetchFrontier++;
             }
             if (this.prefetchFrontier > lastBlock || this.prefetchFrontier > windowEnd) return;
@@ -377,7 +373,9 @@ export class CachedSource implements ZipSource {
                 endBlock - b + 1 < this.prefetchAhead &&
                 endBlock < lastBlock &&
                 endBlock + 1 <= windowEnd &&
-                !this.blocks.has(endBlock + 1)
+                !this.blocks.has(endBlock + 1) &&
+                !this.prefetchBlocks.has(endBlock + 1) &&
+                !this.inflight.has(endBlock + 1)
             ) {
                 endBlock++;
             }
@@ -386,13 +384,20 @@ export class CachedSource implements ZipSource {
             const runEnd = Math.min(this.size, (endBlock + 1) * this.blockSize);
             this.prefetchFrontier = endBlock + 1;
             this.prefetchInflightCount++;
+            for (let block = b; block <= endBlock; block++) this.prefetchBlocks.add(block);
             this._faults++;
             this._prefetchRuns++;
             this.inner.readRange(runStart, runEnd)
-                .then((buf) => { this.insertRun(b, endBlock, buf); })
+                .then((buf) => {
+                    if (this.closed) return;
+                    // A seek may have moved the active window while this read ran.
+                    if (endBlock <= this.readCursorBlock || b > this.prefetchWindowEnd()) return;
+                    this.insertRun(b, endBlock, buf, true);
+                })
                 .catch(() => { /* re-fault on demand */ })
                 .finally(() => {
                     this.prefetchInflightCount--;
+                    for (let block = b; block <= endBlock; block++) this.prefetchBlocks.delete(block);
                     this.pumpPrefetch();
                 });
         }
@@ -423,7 +428,15 @@ export class CachedSource implements ZipSource {
         return p;
     }
 
-    private insert(b: number, data: Uint8Array): void {
+    private prefetchWindowEnd(): number {
+        // Reserve the demanded block rather than prefetching more than can fit.
+        return this.readCursorBlock + Math.min(
+            this.prefetchAhead * this.prefetchDepthRuns,
+            Math.floor(this.maxBytes / this.blockSize) - 1,
+        );
+    }
+
+    private insert(b: number, data: Uint8Array, speculative = false): void {
         if (this.closed) return;
         const [start, end] = this.blockBounds(b);
         if (data.byteLength !== end - start) throw new Error("Incomplete cache block");
@@ -437,7 +450,7 @@ export class CachedSource implements ZipSource {
         this.blocks.set(b, data);
         this.lru.push(b);
         this.residentBytes += data.byteLength;
-        this.evictIfNeeded();
+        this.evictIfNeeded(speculative);
     }
 
     private touch(b: number): void {
@@ -448,9 +461,13 @@ export class CachedSource implements ZipSource {
         }
     }
 
-    private evictIfNeeded(): void {
+    private evictIfNeeded(protectReadAhead = false): void {
         while (this.residentBytes > this.maxBytes && this.lru.length > 1) {
-            const victim = this.lru.shift()!;
+            // Prefetched blocks have not been touched yet, so plain LRU would
+            // evict the next unread block rather than already-consumed history.
+            const outside = protectReadAhead ? this.lru.findIndex(block =>
+                block < this.readCursorBlock || block > this.prefetchWindowEnd()) : -1;
+            const victim = this.lru.splice(Math.max(0, outside), 1)[0]!;
             const data = this.blocks.get(victim);
             if (data) {
                 this.residentBytes -= data.byteLength;
