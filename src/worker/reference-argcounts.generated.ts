@@ -87,6 +87,12 @@ export const REFERENCE_ARG_COUNTS: ReferenceArgCountMap = {
     "ail_mmx_available": 0
   },
   "msacm32": {
+    "acmdriverclose": 2,
+    "acmdriverdetailsa": 3,
+    "acmdriverenum": 3,
+    "acmdriveropen": 3,
+    "acmformatsuggest": 5,
+    "acmmetrics": 3,
     "acmstreamsize": 4,
     "acmstreamclose": 2,
     "acmstreamunprepareheader": 3,

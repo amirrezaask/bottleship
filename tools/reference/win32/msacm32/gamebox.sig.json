@@ -1,6 +1,12 @@
 {
   "module": "msacm32",
   "functions": [
+    { "name": "acmDriverClose", "argCount": 2 },
+    { "name": "acmDriverDetailsA", "argCount": 3 },
+    { "name": "acmDriverEnum", "argCount": 3 },
+    { "name": "acmDriverOpen", "argCount": 3 },
+    { "name": "acmFormatSuggest", "argCount": 5 },
+    { "name": "acmMetrics", "argCount": 3 },
     { "name": "acmStreamSize", "argCount": 4 },
     { "name": "acmStreamClose", "argCount": 2 },
     { "name": "acmStreamUnprepareHeader", "argCount": 3 },
