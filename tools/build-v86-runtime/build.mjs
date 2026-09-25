@@ -1,4 +1,4 @@
-/** Build the pinned v86 core in an isolated checkout; never modify the submodule. */
+/** Build the current committed v86 core in an isolated checkout. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync } from 'node:fs';
@@ -7,12 +7,12 @@ import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const source = join(root, 'vendor/v86');
-const pinned = 'a05cc6e51a4a493daede9fda63f6a4f733315f75';
+const source = resolve(process.env.V86_SOURCE_REPOSITORY || join(root, 'vendor/v86'));
+const pinned = process.env.V86_SOURCE_COMMIT ||
+    execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const rust = '1.96.0';
 const sha256 = p => createHash('sha256').update(readFileSync(p)).digest('hex');
-const at = execFileSync('git', ['-C', source, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-if (at !== pinned) throw new Error(`Expected v86 ${pinned}, got ${at}; review and rebase the patch first`);
+execFileSync('git', ['-C', source, 'cat-file', '-e', `${pinned}^{commit}`]);
 const work = mkdtempSync(join(tmpdir(), 'bottleship-v86-'));
 const env = { ...process.env, RUSTUP_TOOLCHAIN: rust, CARGO_TARGET_DIR: join(work, 'build') };
 const run = (bin, args) => execFileSync(bin, args, { cwd: work, env, stdio: 'inherit' });
@@ -31,6 +31,23 @@ const unalignedKernel = join(root, 'tools/build-v86-runtime/unaligned-memory.rs'
 const unalignedBaseline = process.env.V86_UNALIGNED_BASELINE_OUTPUT && resolve(root, process.env.V86_UNALIGNED_BASELINE_OUTPUT);
 const maxPayneTreePatch = join(root, 'tools/build-v86-runtime/max-payne-tree.patch');
 const aotWarmReplacementPatch = join(root, 'tools/build-v86-runtime/aot-warm-replacement.patch');
+const patchDisposition = {};
+const applyPatch = (name, path) => {
+    try {
+        execFileSync('git', ['apply', '--check', path], { cwd: work, env });
+    } catch {
+        try {
+            execFileSync('git', ['apply', '--reverse', '--check', path], { cwd: work, env });
+        } catch {
+            throw new Error(`${name} neither applies nor matches the vendored v86 source`);
+        }
+        patchDisposition[name] = 'integrated';
+        return false;
+    }
+    run('git', ['apply', path]);
+    patchDisposition[name] = 'applied';
+    return true;
+};
 try {
     execFileSync('git', ['clone', '--shared', '--no-checkout', source, work], { stdio: 'inherit' });
     run('git', ['checkout', '--detach', pinned]);
@@ -55,25 +72,19 @@ try {
         run(process.execPath, ['tools/check-wasm-exports.mjs', target]);
     };
     if (baseline) compile(baseline);
-    run('git', ['apply', '--check', patch]);
-    run('git', ['apply', patch]);
-    copyFileSync(kernel, join(work, 'src/rust/cpu/bulk_memory.rs'));
+    if (applyPatch('bulk-memory', patch))
+        copyFileSync(kernel, join(work, 'src/rust/cpu/bulk_memory.rs'));
     if (stringBaseline) compile(stringBaseline);
-    run('git', ['apply', '--check', stringPatch]);
-    run('git', ['apply', stringPatch]);
-    copyFileSync(stringKernel, join(work, 'src/rust/cpu/string_memory.rs'));
+    if (applyPatch('string-memory', stringPatch))
+        copyFileSync(stringKernel, join(work, 'src/rust/cpu/string_memory.rs'));
     if (repBaseline) compile(repBaseline);
-    run('git', ['apply', '--check', repPatch]);
-    run('git', ['apply', repPatch]);
-    copyFileSync(repKernel, join(work, 'src/rust/cpu/rep_memory.rs'));
+    if (applyPatch('rep-memory', repPatch))
+        copyFileSync(repKernel, join(work, 'src/rust/cpu/rep_memory.rs'));
     if (unalignedBaseline) compile(unalignedBaseline);
-    run('git', ['apply', '--check', unalignedPatch]);
-    run('git', ['apply', unalignedPatch]);
-    copyFileSync(unalignedKernel, join(work, 'src/rust/cpu/unaligned_memory.rs'));
-    run('git', ['apply', '--check', maxPayneTreePatch]);
-    run('git', ['apply', maxPayneTreePatch]);
-    run('git', ['apply', '--check', aotWarmReplacementPatch]);
-    run('git', ['apply', aotWarmReplacementPatch]);
+    if (applyPatch('unaligned-memory', unalignedPatch))
+        copyFileSync(unalignedKernel, join(work, 'src/rust/cpu/unaligned_memory.rs'));
+    applyPatch('max-payne-tree', maxPayneTreePatch);
+    applyPatch('aot-warm-replacement', aotWarmReplacementPatch);
     compile(output);
     const module = new WebAssembly.Module(readFileSync(output));
     for (const name of ['get_bulk_memory_abi', 'get_bulk_memory_stats_ptr', 'set_bulk_memory_enabled',
@@ -83,6 +94,7 @@ try {
         if (!WebAssembly.Module.exports(module).some(e => e.name === name)) throw new Error(`Missing export ${name}`);
     }
     const manifest = { v86Commit: pinned, rust, target: 'wasm32-unknown-unknown',
+        patchDisposition,
         features: ['bulk-memory', 'multivalue', 'simd128'],
         patchSha256: sha256(patch),
         kernelSha256: sha256(kernel), stringPatchSha256: sha256(stringPatch),

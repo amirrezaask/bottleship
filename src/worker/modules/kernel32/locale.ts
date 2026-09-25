@@ -1322,6 +1322,11 @@ export const exports: Record<string, ThunkImplementation> = {
     },
 };
 
+// KERNEL32 exports undecorated ANSI names as well as A/W names. Older loaders
+// resolve them with GetProcAddress, so keep both names on the same implementation.
+for (const name of ['lstrlen', 'lstrcpy', 'lstrcat', 'lstrcmp', 'lstrcmpi', 'lstrcpyn'])
+    exports[name] = exports[`${name}A`];
+
 // ============================================================================
 // Pre-built fast-path caches (built once at module load time)
 // ============================================================================

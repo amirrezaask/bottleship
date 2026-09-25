@@ -374,6 +374,7 @@ export const kernel32Module: ModuleDescriptor = {
         makeFunc("QueryDosDeviceA", 3),
         makeFunc("QueryDosDeviceW", 3),
         makeFunc("lstrlenA", 1),
+        makeFunc("lstrlen", 1),
         makeFunc("lstrlenW", 1),
         // Global heap (often used by legacy apps)
         makeFunc("GlobalLock", 1),
@@ -410,12 +411,16 @@ export const kernel32Module: ModuleDescriptor = {
         makeFunc("SetErrorMode", 1),
         makeFunc("DisableThreadLibraryCalls", 1),
         makeFunc("lstrcpyA", 2),
+        makeFunc("lstrcpy", 2),
         makeFunc("lstrcpyW", 2),
         makeFunc("lstrcatA", 2),
+        makeFunc("lstrcat", 2),
         makeFunc("lstrcatW", 2),
         makeFunc("lstrcmpA", 2),
+        makeFunc("lstrcmp", 2),
         makeFunc("lstrcmpW", 2),
         makeFunc("lstrcmpiA", 2),
+        makeFunc("lstrcmpi", 2),
         makeFunc("lstrcmpiW", 2),
         // Profile (INI file) functions
         makeFunc("GetProfileIntA", 3),
@@ -429,6 +434,7 @@ export const kernel32Module: ModuleDescriptor = {
         makeFunc("GetStringTypeExA", 5),
         makeFunc("GetStringTypeExW", 5),
         makeFunc("lstrcpynA", 3),
+        makeFunc("lstrcpyn", 3),
         makeFunc("lstrcpynW", 3),
         // Atom functions
         makeFunc("AddAtomA", 1),
