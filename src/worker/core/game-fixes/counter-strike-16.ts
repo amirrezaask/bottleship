@@ -21,8 +21,10 @@ export function guardCounterStrikeBuildDialog(
     cpu: { jit_dirty_cache?: (start: number, end: number) => void } | null,
     codeAllocator: { allocateRawCodeArea(sizeBytes: number): number },
 ): boolean {
-    if (module.sourceHash !== COUNTER_STRIKE_16_CLIENT_SHA256 ||
-        module.name.toLowerCase() !== 'client' ||
+    // Raw ZIP-backed DLL loads do not always carry a sourceHash. In that case,
+    // require the exact PE file size, path, call bytes, and KeyValues argument.
+    if ((module.sourceHash && module.sourceHash !== COUNTER_STRIKE_16_CLIENT_SHA256) ||
+        module.fileSize !== 1_074_496 || module.name.toLowerCase() !== 'client' ||
         !/\\cstrike\\cl_dlls\\client(?:\.dll)?$/.test(module.path.toLowerCase().replaceAll('/', '\\'))) return false;
     const call = module.baseAddress + BUILD_DIALOG_CONSTRUCTOR_CALL_RVA;
     const preceding = call - 15;

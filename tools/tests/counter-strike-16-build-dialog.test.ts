@@ -4,7 +4,7 @@ import type { LoadedPEModule } from '../../src/worker/core/module-registry';
 
 const module = (hash = COUNTER_STRIKE_16_CLIENT_SHA256): LoadedPEModule => ({
     name: 'client', path: 'c:\\cstrike\\cl_dlls\\client.dll', baseAddress: 0x100000,
-    size: 0x160000, entryPoint: 0, exports: new Map(), ordinalExports: new Map(),
+    size: 0x160000, fileSize: 1_074_496, entryPoint: 0, exports: new Map(), ordinalExports: new Map(),
     isRealDll: true, initialized: true, sourceHash: hash,
 });
 
@@ -35,6 +35,7 @@ describe('Counter-Strike optional VGUI build editor guard', () => {
         memory.set([0xe8, 0x47, 0x08, 0x02, 0x00], call);
         const allocate = () => { throw new Error('must not allocate'); };
         expect(guardCounterStrikeBuildDialog(module('other'), memory, null, { allocateRawCodeArea: allocate })).toBe(false);
+        expect(guardCounterStrikeBuildDialog({ ...module(), fileSize: 1 }, memory, null, { allocateRawCodeArea: allocate })).toBe(false);
         memory[call + 1] = 0;
         expect(guardCounterStrikeBuildDialog(module(), memory, null, { allocateRawCodeArea: allocate })).toBe(false);
     });
