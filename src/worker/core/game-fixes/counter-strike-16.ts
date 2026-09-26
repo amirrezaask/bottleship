@@ -5,7 +5,7 @@ export const COUNTER_STRIKE_16_CLIENT_SHA256 = '733d4b48a64991d2cd2a60c20d99f72b
 const BUILD_DIALOG_CONSTRUCTOR_CALL_RVA = 0x76054;
 const BUILD_DIALOG_CONSTRUCTOR_RVA = 0x968a0;
 const ORIGINAL_CALL = new Uint8Array([0xe8, 0x47, 0x08, 0x02, 0x00]);
-const GET_BUILD_GROUP_PTR = new Uint8Array([0x6a, 0x00, 0x68, 0x5c, 0xa2, 0x9e, 0x01]);
+const BUILD_GROUP_PTR_STRING_RVA = 0xea25c;
 
 /**
  * This supplied DLL's VGUI BuildDialog handler calls its editor constructor with
@@ -31,8 +31,10 @@ export function guardCounterStrikeBuildDialog(
     if (preceding < 0 || call + 5 > memory.length) return false;
     for (let i = 0; i < ORIGINAL_CALL.length; i++) if (memory[call + i] !== ORIGINAL_CALL[i]) return false;
     // The reviewed caller must still fetch BuildGroupPtr with a null default.
-    for (let i = 0; i < GET_BUILD_GROUP_PTR.length; i++)
-        if (memory[preceding + i] !== GET_BUILD_GROUP_PTR[i]) return false;
+    const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+    if (memory[preceding] !== 0x6a || memory[preceding + 1] !== 0 ||
+        memory[preceding + 2] !== 0x68 ||
+        view.getUint32(preceding + 3, true) !== ((module.baseAddress + BUILD_GROUP_PTR_STRING_RVA) >>> 0)) return false;
 
     const trampoline = codeAllocator.allocateRawCodeArea(32);
     if (!trampoline || trampoline + 17 > memory.length) return false;
@@ -47,7 +49,7 @@ export function guardCounterStrikeBuildDialog(
     memory.set(code, trampoline);
     const rel = (trampoline - (call + 5)) | 0;
     memory[call] = 0xe8;
-    new DataView(memory.buffer, memory.byteOffset, memory.byteLength).setInt32(call + 1, rel, true);
+    view.setInt32(call + 1, rel, true);
     cpu?.jit_dirty_cache?.(trampoline, trampoline + code.length);
     cpu?.jit_dirty_cache?.(call, call + 5);
     return true;

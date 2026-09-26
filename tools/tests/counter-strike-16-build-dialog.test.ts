@@ -12,7 +12,8 @@ describe('Counter-Strike optional VGUI build editor guard', () => {
     test('patches only reviewed client bytes and preserves original constructor branch', () => {
         const memory = new Uint8Array(0x400000);
         const call = 0x100000 + 0x76054;
-        memory.set([0x6a, 0x00, 0x68, 0x5c, 0xa2, 0x9e, 0x01], call - 15);
+        memory.set([0x6a, 0x00, 0x68], call - 15);
+        new DataView(memory.buffer).setUint32(call - 12, 0x100000 + 0xea25c, true);
         memory.set([0xe8, 0x47, 0x08, 0x02, 0x00], call);
         const dirty: number[][] = [];
         const patched = guardCounterStrikeBuildDialog(module(), memory,
@@ -31,7 +32,8 @@ describe('Counter-Strike optional VGUI build editor guard', () => {
     test('does not touch a different DLL identity or modified caller', () => {
         const memory = new Uint8Array(0x400000);
         const call = 0x100000 + 0x76054;
-        memory.set([0x6a, 0x00, 0x68, 0x5c, 0xa2, 0x9e, 0x01], call - 15);
+        memory.set([0x6a, 0x00, 0x68], call - 15);
+        new DataView(memory.buffer).setUint32(call - 12, 0x100000 + 0xea25c, true);
         memory.set([0xe8, 0x47, 0x08, 0x02, 0x00], call);
         const allocate = () => { throw new Error('must not allocate'); };
         expect(guardCounterStrikeBuildDialog(module('other'), memory, null, { allocateRawCodeArea: allocate })).toBe(false);

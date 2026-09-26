@@ -913,6 +913,9 @@ export class PELoader {
     if (applyMidtownMadness2AllocatorGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
         Logger.info(LogCategory.SYSTEM, '[Midtown Madness 2] Guarded stale private-heap free');
     }
+    if (module.name.toLowerCase() === 'client' && module.path.toLowerCase().includes('cstrike')) {
+      Logger.info(LogCategory.SYSTEM, `[Counter-Strike 1.6] Client identity path=${module.path} size=${module.fileSize ?? 'unknown'} sourceHash=${module.sourceHash ?? 'none'}`);
+    }
     if (guardCounterStrikeBuildDialog(module, this.memory, deltaCpu, this.thunkGenerator)) {
       Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional VGUI build editor');
     }
