@@ -21,6 +21,7 @@ import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs
 import { applyDeltaForce2CallbackGuard, applyDeltaForce2MemcpyGuard, applyDeltaForce2ParserGuard, applyDeltaForce2StreamGuard } from './game-fixes/delta-force-2';
 import { applyDeltaForce3ImageLoopFix } from './game-fixes/delta-force-3';
 import { applyMidtownMadness2AllocatorGuard } from './game-fixes/midtown-madness-2';
+import { guardCounterStrikeBuildDialog } from './game-fixes/counter-strike-16';
 
 function isD3dx9VersionedDll(dllNameLower: string): boolean {
     return resolveThunkedDllAlias(normalizeDllBaseName(dllNameLower)) === 'd3dx9';
@@ -911,6 +912,9 @@ export class PELoader {
     }
     if (applyMidtownMadness2AllocatorGuard(module, this.memory, deltaCpu, this.thunkGenerator)) {
         Logger.info(LogCategory.SYSTEM, '[Midtown Madness 2] Guarded stale private-heap free');
+    }
+    if (guardCounterStrikeBuildDialog(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional VGUI build editor');
     }
     if (
       module.isExecutable

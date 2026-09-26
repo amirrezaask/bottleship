@@ -38,13 +38,15 @@ describe("room UDP guest socket contract", () => {
         view.setUint32(600, 1, true);
         view.setUint32(604, socket, true);
         const select = makeSelect(table, (code) => { lastError = code; });
-        expect(invoke(select, [0, 600, 0, 0, 0])).toBe(0);
+        view.setInt32(1000, 0, true);
+        view.setInt32(1004, 0, true);
+        expect(invoke(select, [0, 600, 0, 0, 1000])).toBe(0);
         expect(view.getUint32(600, true)).toBe(0);
         roomUdpTransport.receive("epoch-a", 1, ROOM_UDP_CHANNEL,
             new Uint8Array([0x69, 0x88, 0x69, 0x87, 9, 8, 7]));
         view.setUint32(600, 1, true);
         view.setUint32(604, socket, true);
-        expect(invoke(select, [0, 600, 0, 0, 0])).toBe(1);
+        expect(invoke(select, [0, 600, 0, 0, 1000])).toBe(1);
         view.setUint32(800, 16, true);
         expect(invoke(api.recvfrom, [socket, 400, 16, 0, 700, 800])).toBe(3);
         expect(Array.from(mem.subarray(400, 403))).toEqual([9, 8, 7]);

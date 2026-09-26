@@ -474,7 +474,7 @@ function writeFdSetSockets(mem: Uint8Array, ptr: number, sockets: number[]): boo
  * that isn't valid in any supplied set is a WSAENOTSOCK error for the whole call, per spec.
  */
 export function makeSelect(table: WsaSocketTable, setLastError: (code: number) => void): ThunkImplementation {
-    return (_ctx, mem, args) => {
+    return (_ctx, mem, args): number | Promise<number> => {
         if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
         const readfdsPtr = args[1] >>> 0;
         const writefdsPtr = args[2] >>> 0;
@@ -484,6 +484,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         const writeSockets = parseFdSet(mem, writefdsPtr);
         const exceptSockets = parseFdSet(mem, exceptfdsPtr);
         if (!readSockets || !writeSockets || !exceptSockets) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+        if (!readfdsPtr && !writefdsPtr && !exceptfdsPtr) { setLastError(10022); return SOCKET_ERROR; }
 
         for (const s of [...readSockets, ...writeSockets, ...exceptSockets]) {
             if (!table.isValid(s)) {
@@ -492,18 +493,34 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
             }
         }
 
-        const readyRead = readSockets.filter((s) => table.isReadable(s));
-        const readyWrite = writeSockets.filter((s) => table.isWritable(s));
-
-        if (!writeFdSetSockets(mem, readfdsPtr, readyRead) ||
-            !writeFdSetSockets(mem, writefdsPtr, readyWrite) ||
-            !writeFdSetSockets(mem, exceptfdsPtr, [])) {
-            setLastError(WSAEFAULT);
-            return SOCKET_ERROR;
+        const complete = (): number => {
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            const readyRead = readSockets.filter((s) => table.isReadable(s));
+            const readyWrite = writeSockets.filter((s) => table.isWritable(s));
+            if (!writeFdSetSockets(mem, readfdsPtr, readyRead) ||
+                !writeFdSetSockets(mem, writefdsPtr, readyWrite) ||
+                !writeFdSetSockets(mem, exceptfdsPtr, [])) {
+                setLastError(WSAEFAULT);
+                return SOCKET_ERROR;
+            }
+            setLastError(0);
+            return readyRead.length + readyWrite.length;
+        };
+        if (table.roomConnected && readSockets.length > 0 && !readSockets.some((s) => table.isReadable(s)) &&
+            !writeSockets.some((s) => table.isWritable(s))) {
+            const timeoutPtr = args[4] >>> 0;
+            if (!timeoutPtr) return table.waitForRead(null).then(complete);
+            if (timeoutPtr + 8 > mem.length) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
+            const seconds = view.getInt32(timeoutPtr, true);
+            const microseconds = view.getInt32(timeoutPtr + 4, true);
+            if (seconds < 0 || microseconds < 0 || microseconds >= 1_000_000) {
+                setLastError(10022); return SOCKET_ERROR;
+            }
+            const delayMs = Math.min(2_147_483_647, seconds * 1000 + Math.ceil(microseconds / 1000));
+            if (delayMs > 0) return table.waitForRead(delayMs).then(complete);
         }
-
-        setLastError(0);
-        return readyRead.length + readyWrite.length;
+        return complete();
     };
 }
 
@@ -823,12 +840,14 @@ export class WsaSocketTable {
     private nextPort = 49152;
     private droppedPackets = 0;
     private roomWasConnected = false;
+    private readWaiters = new Set<() => void>();
 
     constructor() {
         roomUdpTransport.onPacket((packet) => this.receiveRoomPacket(packet));
         roomUdpTransport.onDisconnect(() => {
             this.roomWasConnected = true;
             for (const socket of this.sockets.values()) { socket.queue.length = 0; socket.queuedBytes = 0; }
+            this.wakeReaders();
         });
     }
 
@@ -838,6 +857,7 @@ export class WsaSocketTable {
     get drops(): number { return this.droppedPackets; }
 
     private receiveRoomPacket(packet: RoomUdpPacket): void {
+        let delivered = false;
         for (const socket of this.sockets.values()) {
             if (socket.type !== 2 || socket.localPort !== packet.destinationPort) continue;
             if (socket.queuedBytes + packet.payload.length > ROOM_UDP_MAX_QUEUE_BYTES || socket.queue.length >= 64) {
@@ -846,7 +866,23 @@ export class WsaSocketTable {
             }
             socket.queue.push(packet);
             socket.queuedBytes += packet.payload.length;
+            delivered = true;
         }
+        if (delivered) this.wakeReaders();
+    }
+
+    private wakeReaders(): void { for (const wake of this.readWaiters) wake(); }
+    waitForRead(timeoutMs: number | null): Promise<void> {
+        return new Promise((resolve) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const wake = () => {
+                if (timer) clearTimeout(timer);
+                this.readWaiters.delete(wake);
+                resolve();
+            };
+            this.readWaiters.add(wake);
+            if (timeoutMs !== null) timer = setTimeout(wake, timeoutMs);
+        });
     }
 
     private allocatePort(): number {
@@ -859,6 +895,7 @@ export class WsaSocketTable {
     }
 
     reset(): void {
+        this.wakeReaders();
         this.nextId = 1;
         this.sockets.clear();
         this.nextPort = 49152;
@@ -874,6 +911,7 @@ export class WsaSocketTable {
 
     closesocket(s: number): number {
         if (!this.sockets.delete(s >>> 0)) return SOCKET_ERROR;
+        this.wakeReaders();
         return 0;
     }
 
