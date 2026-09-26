@@ -33,7 +33,7 @@ const WSA_WAIT_FAILED = 0xffffffff;
 export class Ws2_32 implements IModule {
     name = "ws2_32";
     exports: Record<string, ThunkImplementation> = {};
-    private socketTable = new WsaSocketTable();
+    constructor(private socketTable = new WsaSocketTable()) {}
     private wsaStarted = false;
 
     initialize(process: Process): void {

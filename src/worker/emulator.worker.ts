@@ -13,6 +13,8 @@ import {
 import { ThunkGenerator } from './core/thunking/thunk-generator';
 import { Process } from './core/process';
 import { System } from './core/system';
+import { roomUdpTransport } from './modules/room-udp';
+import { WsaSocketTable } from './modules/wsa-stub-shared';
 import { APIRegistry } from './core/api-registry';
 import { memoryWatch } from './core/memory/memory-watch';
 import { Kernel32 } from './modules/kernel32';
@@ -2469,7 +2471,8 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       const glide2x = new Glide2x();
       const opengl32 = new OpenGL32();
       const glu32 = new Glu32();
-      const wsock32 = new Wsock32();
+      const winsockTable = new WsaSocketTable();
+      const wsock32 = new Wsock32(winsockTable);
       const shell32 = new Shell32();
       const shlwapi = new Shlwapi();
       const comdlg32 = new Comdlg32();
@@ -2489,7 +2492,7 @@ const initV86 = async (canvas: OffscreenCanvas, ramOverride?: number) => {
       const uxtheme = new Uxtheme();
       const wintrust = new Wintrust();
       const crypt32 = new Crypt32();
-      const ws2_32 = new Ws2_32();
+      const ws2_32 = new Ws2_32(winsockTable);
       const iphlpapi = new Iphlpapi();
       const tapi32 = new Tapi32();
       const setupapi = new Setupapi();
@@ -3260,6 +3263,25 @@ async function gameboxStop(id: string) {
 
 self.onmessage = (event: MessageEvent) => {
   const message = event.data;
+  if (message?.type === 'room_network_open') {
+    const epoch = typeof message.epoch === 'string' ? message.epoch : '';
+    const seat = Number(message.seat);
+    const ok = roomUdpTransport.open(epoch, seat, (destinationSeat, channel, payload) => {
+      self.postMessage({ type: 'room_network_send', epoch, destinationSeat, channel, payload });
+    });
+    self.postMessage({ type: 'room_network_opened', epoch, ok, seat });
+    return;
+  }
+  if (message?.type === 'room_network_packet') {
+    if (message.payload instanceof Uint8Array) roomUdpTransport.receive(
+      String(message.epoch ?? ''), Number(message.sourceSeat), Number(message.channel), message.payload,
+    );
+    return;
+  }
+  if (message?.type === 'room_network_close') {
+    roomUdpTransport.close(typeof message.epoch === 'string' ? message.epoch : undefined);
+    return;
+  }
   if (message?.type === 'gamebox_profile') {
     const id = typeof message.id === 'string' && message.id.length <= 128 ? message.id : '';
     const reply = (result?: unknown, error?: unknown) =>

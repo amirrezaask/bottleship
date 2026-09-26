@@ -7,6 +7,7 @@ import { Marshaler } from "../core/memory/marshaler";
 import { ThunkImplementation } from "../core/thunking/thunk-dispatcher";
 import { Process } from "../core/process";
 import { System } from "../core/system";
+import { roomUdpTransport, roomAddress, ROOM_UDP_MAX_PAYLOAD, ROOM_UDP_MAX_QUEUE_BYTES, type RoomUdpPacket } from "./room-udp";
 
 /**
  * Faithful `inet_addr` (winsock 1.1 / 2). Parses a dotted-address string into an in_addr.s_addr
@@ -193,7 +194,11 @@ export function createDnsStubs(process: Process, setLastError: (code: number) =>
         const nameBytes = new TextEncoder().encode(`${LOOPBACK_HOST_NAME}\0`);
         if (Mem.writeBytes(hNameAddr, nameBytes) !== nameBytes.length) { setLastError(WSAENETDOWN); return 0; }
         if (!Mem.writeUint32(hAliasesAddr, 0)) { setLastError(WSAENETDOWN); return 0; }
-        if (Mem.writeBytes(hAddrBytesAddr, LOOPBACK_ADDR_BYTES) !== LOOPBACK_ADDR_BYTES.length) {
+        const localAddress = roomUdpTransport.localAddress;
+        const hostBytes = roomUdpTransport.connected
+            ? new Uint8Array([localAddress & 0xff, localAddress >>> 8 & 0xff, localAddress >>> 16 & 0xff, localAddress >>> 24])
+            : LOOPBACK_ADDR_BYTES;
+        if (Mem.writeBytes(hAddrBytesAddr, hostBytes) !== hostBytes.length) {
             setLastError(WSAENETDOWN);
             return 0;
         }
@@ -439,10 +444,12 @@ export function createProtoServStubs(process: Process, setLastError: (code: numb
 }
 
 /** fd_set: +0 fd_count(u_int) +4 fd_array[fd_count] (SOCKET, 4 bytes each on 32-bit). */
-function parseFdSet(mem: Uint8Array, ptr: number): number[] {
+function parseFdSet(mem: Uint8Array, ptr: number): number[] | null {
     if (!ptr) return [];
+    if (ptr + 4 > mem.length) return null;
     const view = new DataView(mem.buffer, mem.byteOffset, mem.byteLength);
     const count = view.getUint32(ptr, true);
+    if (count > 64 || ptr + 4 + count * 4 > mem.length) return null;
     const out: number[] = [];
     for (let i = 0; i < count; i++) {
         out.push(view.getUint32(ptr + 4 + i * 4, true) >>> 0);
@@ -468,6 +475,7 @@ function writeFdSetSockets(mem: Uint8Array, ptr: number, sockets: number[]): boo
  */
 export function makeSelect(table: WsaSocketTable, setLastError: (code: number) => void): ThunkImplementation {
     return (_ctx, mem, args) => {
+        if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
         const readfdsPtr = args[1] >>> 0;
         const writefdsPtr = args[2] >>> 0;
         const exceptfdsPtr = args[3] >>> 0;
@@ -475,6 +483,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         const readSockets = parseFdSet(mem, readfdsPtr);
         const writeSockets = parseFdSet(mem, writefdsPtr);
         const exceptSockets = parseFdSet(mem, exceptfdsPtr);
+        if (!readSockets || !writeSockets || !exceptSockets) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
 
         for (const s of [...readSockets, ...writeSockets, ...exceptSockets]) {
             if (!table.isValid(s)) {
@@ -483,9 +492,10 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
             }
         }
 
-        const readyWrite = writeSockets.filter((s) => table.isConnected(s));
+        const readyRead = readSockets.filter((s) => table.isReadable(s));
+        const readyWrite = writeSockets.filter((s) => table.isWritable(s));
 
-        if (!writeFdSetSockets(mem, readfdsPtr, []) ||
+        if (!writeFdSetSockets(mem, readfdsPtr, readyRead) ||
             !writeFdSetSockets(mem, writefdsPtr, readyWrite) ||
             !writeFdSetSockets(mem, exceptfdsPtr, [])) {
             setLastError(WSAEFAULT);
@@ -493,7 +503,7 @@ export function makeSelect(table: WsaSocketTable, setLastError: (code: number) =
         }
 
         setLastError(0);
-        return readyWrite.length;
+        return readyRead.length + readyWrite.length;
     };
 }
 
@@ -502,7 +512,7 @@ export function makeFdIsSet(): ThunkImplementation {
     return (_ctx, mem, args) => {
         const s = args[0] >>> 0;
         const setPtr = args[1] >>> 0;
-        return parseFdSet(mem, setPtr).includes(s) ? 1 : 0;
+        return parseFdSet(mem, setPtr)?.includes(s) ? 1 : 0;
     };
 }
 
@@ -770,25 +780,95 @@ export const WSAENOTCONN = 10057;
 export const WSAEWOULDBLOCK = 10035;
 export const WSAEFAULT = 10014;
 export const WSAENOBUFS = 10055;
+export const WSAEADDRINUSE = 10048;
+export const WSAEAFNOSUPPORT = 10047;
+export const WSAEMSGSIZE = 10040;
+export const WSAEACCES = 10013;
+
+interface SocketAddress { address: number; port: number }
+function readSockaddr(ptr: number, len: number, mem: Uint8Array | null): SocketAddress | null {
+    if (!ptr || len < 16) return null;
+    const bytes = mem ? mem.subarray(ptr, ptr + 16) : Mem.readBytes(ptr, 16);
+    if (!bytes || bytes.length !== 16 || bytes[0] !== 2 || bytes[1] !== 0) return null;
+    return { port: (bytes[2]! << 8) | bytes[3]!, address: (bytes[4]! | bytes[5]! << 8 | bytes[6]! << 16 | bytes[7]! << 24) >>> 0 };
+}
+function writeSockaddr(ptr: number, address: number, port: number, mem: Uint8Array | null): boolean {
+    const bytes = new Uint8Array(16);
+    bytes[0] = 2; bytes[2] = port >>> 8; bytes[3] = port & 0xff;
+    bytes[4] = address & 0xff; bytes[5] = address >>> 8 & 0xff;
+    bytes[6] = address >>> 16 & 0xff; bytes[7] = address >>> 24;
+    return writeBytes(mem, ptr, bytes);
+}
+function readGuestBytes(ptr: number, len: number, mem: Uint8Array | null): Uint8Array | null {
+    if (!ptr || len < 0 || len > ROOM_UDP_MAX_PAYLOAD) return null;
+    if (mem) return ptr + len <= mem.length ? mem.slice(ptr, ptr + len) : null;
+    const bytes = Mem.readBytes(ptr, len);
+    return bytes?.length === len ? bytes : null;
+}
 
 interface StubSocket {
     connected: boolean;
     nonBlocking: boolean;
+    type: number;
+    localPort: number;
+    peer: SocketAddress | null;
+    queue: RoomUdpPacket[];
+    queuedBytes: number;
 }
 
 /** Deterministic offline socket table — connect succeeds, I/O is no-network safe. */
 export class WsaSocketTable {
     private nextId = 1;
     private sockets = new Map<number, StubSocket>();
+    private nextPort = 49152;
+    private droppedPackets = 0;
+    private roomWasConnected = false;
+
+    constructor() {
+        roomUdpTransport.onPacket((packet) => this.receiveRoomPacket(packet));
+        roomUdpTransport.onDisconnect(() => {
+            this.roomWasConnected = true;
+            for (const socket of this.sockets.values()) { socket.queue.length = 0; socket.queuedBytes = 0; }
+        });
+    }
+
+    get roomConnected(): boolean { return roomUdpTransport.connected; }
+    get roomUnavailable(): boolean { return this.roomWasConnected && !roomUdpTransport.connected; }
+    get localAddress(): number { return roomUdpTransport.localAddress; }
+    get drops(): number { return this.droppedPackets; }
+
+    private receiveRoomPacket(packet: RoomUdpPacket): void {
+        for (const socket of this.sockets.values()) {
+            if (socket.type !== 2 || socket.localPort !== packet.destinationPort) continue;
+            if (socket.queuedBytes + packet.payload.length > ROOM_UDP_MAX_QUEUE_BYTES || socket.queue.length >= 64) {
+                this.droppedPackets++;
+                continue;
+            }
+            socket.queue.push(packet);
+            socket.queuedBytes += packet.payload.length;
+        }
+    }
+
+    private allocatePort(): number {
+        for (let i = 0; i < 16384; i++) {
+            const port = this.nextPort++;
+            if (this.nextPort > 65535) this.nextPort = 49152;
+            if (![...this.sockets.values()].some((socket) => socket.localPort === port)) return port;
+        }
+        return 0;
+    }
 
     reset(): void {
         this.nextId = 1;
         this.sockets.clear();
+        this.nextPort = 49152;
+        this.roomWasConnected = roomUdpTransport.connected;
     }
 
-    socket(): number {
+    socket(type = 2): number {
+        if (this.sockets.size >= 256) return INVALID_SOCKET;
         const id = this.nextId++;
-        this.sockets.set(id, { connected: false, nonBlocking: true });
+        this.sockets.set(id, { connected: false, nonBlocking: true, type, localPort: 0, peer: null, queue: [], queuedBytes: 0 });
         return id;
     }
 
@@ -797,15 +877,50 @@ export class WsaSocketTable {
         return 0;
     }
 
-    connect(s: number): number {
+    connect(s: number, peer?: SocketAddress): number {
         const sock = this.sockets.get(s >>> 0);
         if (!sock) return SOCKET_ERROR;
         sock.connected = true;
+        if (peer) sock.peer = peer;
+        if (this.roomConnected && !sock.localPort) sock.localPort = this.allocatePort();
         return 0;
     }
 
-    bind(_s: number): number {
+    bind(s: number, address?: SocketAddress): number {
+        const socket = this.sockets.get(s >>> 0);
+        if (!socket) return SOCKET_ERROR;
+        if (!this.roomConnected) return 0;
+        const port = address?.port || this.allocatePort();
+        if (!port || [...this.sockets.values()].some((other) => other !== socket && other.localPort === port)) return SOCKET_ERROR;
+        socket.localPort = port;
         return 0;
+    }
+
+    localPort(s: number): number { return this.sockets.get(s >>> 0)?.localPort ?? 0; }
+    peerAddress(s: number): SocketAddress | null { return this.sockets.get(s >>> 0)?.peer ?? null; }
+    isReadable(s: number): boolean { return (this.sockets.get(s >>> 0)?.queue.length ?? 0) > 0; }
+    isWritable(s: number): boolean { const sock = this.sockets.get(s >>> 0); return !!sock && (sock.type === 2 || sock.connected); }
+    available(s: number): number { return this.sockets.get(s >>> 0)?.queue[0]?.payload.length ?? 0; }
+    receive(s: number, maxLength: number, peek = false): RoomUdpPacket | null {
+        const socket = this.sockets.get(s >>> 0);
+        if (!socket || !socket.queue.length || maxLength < 0) return null;
+        const packet = socket.queue[0]!;
+        if (!peek) { socket.queue.shift(); socket.queuedBytes -= packet.payload.length; }
+        return packet;
+    }
+    sendRoom(s: number, destination: SocketAddress, payload: Uint8Array): boolean {
+        const socket = this.sockets.get(s >>> 0);
+        if (!socket || socket.type !== 2 || !this.roomConnected) return false;
+        if (!socket.localPort) socket.localPort = this.allocatePort();
+        if (!socket.localPort || !destination.port) return false;
+        const local = destination.address === 0x0100007f || destination.address === this.localAddress;
+        const broadcast = destination.address === 0xffffffff || destination.address === 0xff004d0a;
+        if (local || broadcast) {
+            this.receiveRoomPacket({ sourceSeat: roomUdpTransport.localSeat!, sourcePort: socket.localPort,
+                destinationPort: destination.port, payload: payload.slice() });
+            if (local) return true;
+        }
+        return roomUdpTransport.send(destination.address, socket.localPort, destination.port, payload);
     }
 
     listen(_s: number): number {
@@ -895,9 +1010,14 @@ export function makeSocketExports(
     };
 
     return {
-        socket: () => {
-            const id = table.socket();
-            setLastError(0);
+        socket: (_ctx, _mem, args) => {
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return INVALID_SOCKET; }
+            const family = args[0] | 0;
+            const type = args[1] | 0;
+            if (table.roomConnected && family !== 2) { setLastError(WSAEAFNOSUPPORT); return INVALID_SOCKET; }
+            if (table.roomConnected && type !== 2) { setLastError(WSAEAFNOSUPPORT); return INVALID_SOCKET; }
+            const id = table.socket(type);
+            setLastError(id === INVALID_SOCKET ? WSAENOBUFS : 0);
             return id;
         },
         closesocket: (_ctx, _mem, args) => {
@@ -906,18 +1026,28 @@ export function makeSocketExports(
             setLastError(ret === 0 ? 0 : WSAENOTSOCK);
             return ret;
         },
-        connect: (_ctx, _mem, args) => {
+        connect: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            const ret = table.connect(s);
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            const peer = table.roomConnected ? readSockaddr(args[1] >>> 0, args[2] | 0, mem) : undefined;
+            if (table.roomConnected && !peer) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            const ret = table.connect(s, peer ?? undefined);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        bind: (_ctx, _mem, args) => {
+        bind: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
-            setLastError(0);
-            return table.bind(s);
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            const address = table.roomConnected ? readSockaddr(args[1] >>> 0, args[2] | 0, mem) : undefined;
+            if (table.roomConnected && !address) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+            if (table.roomConnected && address!.address !== 0 && address!.address !== table.localAddress) {
+                setLastError(WSAEADDRINUSE); return SOCKET_ERROR;
+            }
+            const ret = table.bind(s, address ?? undefined);
+            setLastError(ret === SOCKET_ERROR ? WSAEADDRINUSE : 0);
+            return ret;
         },
         listen: (_ctx, _mem, args) => {
             const s = args[0] >>> 0;
@@ -931,32 +1061,79 @@ export function makeSocketExports(
             setLastError(0);
             return table.accept(s);
         },
-        send: (_ctx, _mem, args) => {
+        send: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            const peer = table.peerAddress(s);
+            if (table.roomConnected && peer) {
+                if (len > ROOM_UDP_MAX_PAYLOAD) { setLastError(WSAEMSGSIZE); return SOCKET_ERROR; }
+                const bytes = readGuestBytes(args[1] >>> 0, len, mem);
+                if (!bytes) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+                const sent = table.sendRoom(s, peer, bytes);
+                setLastError(sent ? 0 : WSAENETDOWN);
+                return sent ? len : SOCKET_ERROR;
+            }
             const ret = table.send(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
         },
-        recv: (_ctx, _mem, args) => {
+        recv: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            if (table.roomConnected) {
+                const len = args[2] | 0;
+                const packet = table.receive(s, len, !!(args[3] & 2));
+                if (!packet) { setLastError(WSAEWOULDBLOCK); return SOCKET_ERROR; }
+                const bytes = packet.payload.subarray(0, len);
+                if (!writeBytes(mem, args[1] >>> 0, bytes)) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+                setLastError(packet.payload.length > len ? WSAEMSGSIZE : 0);
+                return packet.payload.length > len ? SOCKET_ERROR : bytes.length;
+            }
             const ret = table.recv(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        recvfrom: (_ctx, _mem, args) => {
+        recvfrom: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            if (table.roomConnected) {
+                const len = args[2] | 0;
+                const packet = table.receive(s, len, !!(args[3] & 2));
+                if (!packet) { setLastError(WSAEWOULDBLOCK); return SOCKET_ERROR; }
+                const fromPtr = args[4] >>> 0;
+                const fromLenPtr = args[5] >>> 0;
+                if (fromPtr && fromLenPtr) {
+                    const available = mem ? new DataView(mem.buffer, mem.byteOffset, mem.byteLength).getInt32(fromLenPtr, true) : (Mem.readInt32(fromLenPtr) ?? 0);
+                    if (available < 16 || !writeSockaddr(fromPtr, roomAddress(packet.sourceSeat), packet.sourcePort, mem) ||
+                        !writeU32(mem, fromLenPtr, 16)) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+                }
+                const bytes = packet.payload.subarray(0, len);
+                if (!writeBytes(mem, args[1] >>> 0, bytes)) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+                setLastError(packet.payload.length > len ? WSAEMSGSIZE : 0);
+                return packet.payload.length > len ? SOCKET_ERROR : bytes.length;
+            }
             const ret = table.recvfrom(s);
             setLastError(ret === SOCKET_ERROR ? WSAEWOULDBLOCK : 0);
             return ret;
         },
-        sendto: (_ctx, _mem, args) => {
+        sendto: (_ctx, mem, args) => {
             const s = args[0] >>> 0;
             const len = args[2] >>> 0;
             if (!requireSocket(s)) return SOCKET_ERROR;
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return SOCKET_ERROR; }
+            if (table.roomConnected) {
+                if (len > ROOM_UDP_MAX_PAYLOAD) { setLastError(WSAEMSGSIZE); return SOCKET_ERROR; }
+                const address = readSockaddr(args[4] >>> 0, args[5] | 0, mem);
+                const bytes = readGuestBytes(args[1] >>> 0, len, mem);
+                if (!address || !bytes) { setLastError(WSAEFAULT); return SOCKET_ERROR; }
+                const sent = table.sendRoom(s, address, bytes);
+                setLastError(sent ? 0 : WSAENETDOWN);
+                return sent ? len : SOCKET_ERROR;
+            }
             const ret = table.sendto(s, len);
             setLastError(ret === SOCKET_ERROR ? WSAENOTCONN : 0);
             return ret;
@@ -1006,7 +1183,8 @@ export function makeSocketExports(
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
-            if (!writeSockaddrInLoopback(name, 0, mem)) {
+            const peer = table.peerAddress(s);
+            if (!(table.roomConnected && peer ? writeSockaddr(name, peer.address, peer.port, mem) : writeSockaddrInLoopback(name, 0, mem))) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
@@ -1035,7 +1213,7 @@ export function makeSocketExports(
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
-            if (!writeSockaddrInLoopback(name, 0, mem)) {
+            if (!(table.roomConnected ? writeSockaddr(name, table.localAddress, table.localPort(s), mem) : writeSockaddrInLoopback(name, 0, mem))) {
                 setLastError(WSAEFAULT);
                 return SOCKET_ERROR;
             }
@@ -1064,7 +1242,7 @@ export function makeSocketExports(
             if (code === FIONBIO && inBuf) {
                 table.ioctl(s, FIONBIO, inBuf, mem);
             } else if (code === FIONREAD && outBuf && outLen >= 4) {
-                if (!writeU32(mem, outBuf, 0)) {
+                if (!writeU32(mem, outBuf, table.available(s))) {
                     setLastError(WSAEFAULT);
                     return SOCKET_ERROR;
                 }
@@ -1092,9 +1270,13 @@ export function makeSocketExports(
             setLastError(0);
             return 0;
         },
-        WSASocketA: () => {
-            const id = table.socket();
-            setLastError(0);
+        WSASocketA: (_ctx, _mem, args) => {
+            if (table.roomUnavailable) { setLastError(WSAENETDOWN); return INVALID_SOCKET; }
+            const family = args[0] | 0;
+            const type = args[1] | 0;
+            if (table.roomConnected && (family !== 2 || type !== 2)) { setLastError(WSAEAFNOSUPPORT); return INVALID_SOCKET; }
+            const id = table.socket(type);
+            setLastError(id === INVALID_SOCKET ? WSAENOBUFS : 0);
             return id;
         },
     };

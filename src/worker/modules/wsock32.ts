@@ -25,7 +25,7 @@ const SOCKET_ERROR = -1;
 export class Wsock32 implements IModule {
     name = "wsock32";
     exports: Record<string, ThunkImplementation> = {};
-    private socketTable = new WsaSocketTable();
+    constructor(private socketTable = new WsaSocketTable()) {}
 
     initialize(process: Process): void {
         let wsaLastError = 0;
