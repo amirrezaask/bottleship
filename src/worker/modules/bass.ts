@@ -97,12 +97,70 @@ export class Bass implements IModule {
     private samplePayloadCache = new Map<string, DetectedAudioPayload>();
     private defaultFreq = 44100;
     private globalPaused = false;
+    private cleo3DFactors = new Float32Array([1, 1, 1]);
+    private cleo3DListener = new Float32Array(12);
 
     private allocId(): number { return this.nextId++; }
 
     initialize(process: Process): void {
         this.process = process;
         const self = this;
+
+        const calledByCleo444 = (ctx: Parameters<ThunkImplementation>[0], memory: Uint8Array): boolean => {
+            const returnAddress = ctx.esp + 4 <= memory.byteLength
+                ? new DataView(memory.buffer, memory.byteOffset + ctx.esp, 4).getUint32(0, true)
+                : 0;
+            const caller = this.process.moduleRegistry.getModuleContainingAddress(returnAddress);
+            return caller?.sourceHash === '748ea0b36a1580652146c8b443066bdd81ef14556431805b2102f0f1f44caa08';
+        };
+        // CLEO checks the BASS 2.4 API version before starting scripts. Its
+        // Airport Sprint package uses listener setup but no custom BASS streams.
+        // Keep the old unsupported result for callers outside this exact binary.
+        this.exports["BASS_GetVersion"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0x02040000 : 0;
+        this.exports["BASS_GetDeviceInfo"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0 : 50;
+        this.exports["BASS_Set3DFactors"] = (ctx, memory, args) => {
+            if (!calledByCleo444(ctx, memory)) return 50;
+            const bits = new DataView(new ArrayBuffer(4));
+            const values: number[] = [];
+            for (let i = 0; i < 3; i++) {
+                bits.setUint32(0, args[i] >>> 0, true);
+                const value = bits.getFloat32(0, true);
+                if (!Number.isFinite(value)) return 0;
+                values.push(value);
+            }
+            this.cleo3DFactors.set(values);
+            return 1;
+        };
+        this.exports["BASS_Set3DPosition"] = (ctx, memory, args) => {
+            if (!calledByCleo444(ctx, memory)) return 50;
+            const view = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+            for (let vector = 0; vector < 4; vector++) {
+                const address = args[vector] >>> 0;
+                if (!address) continue;
+                if (address > memory.byteLength - 12) return 0;
+                for (let component = 0; component < 3; component++) {
+                    const value = view.getFloat32(address + component * 4, true);
+                    if (!Number.isFinite(value)) return 0;
+                }
+            }
+            for (let vector = 0; vector < 4; vector++) {
+                const address = args[vector] >>> 0;
+                if (!address) continue;
+                for (let component = 0; component < 3; component++)
+                    this.cleo3DListener[vector * 3 + component] = view.getFloat32(address + component * 4, true);
+            }
+            return 1;
+        };
+        this.exports["BASS_Apply3D"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0 : 50;
+        this.exports["BASS_StreamCreate"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0 : 50;
+        this.exports["BASS_GetInfo"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0 : 50;
+        this.exports["BASS_ErrorGetCode"] = (ctx, memory) =>
+            calledByCleo444(ctx, memory) ? 0 : 50;
 
         const setQwordReturn = (value: number): number => {
             const low = value >>> 0;

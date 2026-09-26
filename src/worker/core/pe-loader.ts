@@ -26,6 +26,37 @@ function isD3dx9VersionedDll(dllNameLower: string): boolean {
     return resolveThunkedDllAlias(normalizeDllBaseName(dllNameLower)) === 'd3dx9';
 }
 
+// CLEO 4.4.4 imports BASS 2.x with several signatures that differ from the
+// existing BASS 1.x HLE descriptors. Counts are 32-bit stack slots, so QWORD
+// arguments occupy two. Source: CLEO4 v4.4.4 third-party/bass/bass.h.
+const CLEO_444_SHA256 = '748ea0b36a1580652146c8b443066bdd81ef14556431805b2102f0f1f44caa08';
+const CLEO_BASS_2_ARG_COUNTS: Record<string, number> = {
+    bass_set3dposition: 4,
+    bass_channelpause: 1,
+    bass_streamcreate: 5,
+    bass_channelplay: 2,
+    bass_channelflags: 3,
+    bass_streamcreateurl: 5,
+    bass_channelsetposition: 4,
+    bass_streamcreatefile: 7,
+    bass_channelset3dposition: 4,
+    bass_channelsetattribute: 3,
+    bass_channelisactive: 1,
+    bass_streamfree: 1,
+    bass_getversion: 0,
+    bass_set3dfactors: 3,
+    bass_channelbytes2seconds: 3,
+    bass_getdeviceinfo: 2,
+    bass_channelgetattribute: 3,
+    bass_errorgetcode: 0,
+    bass_channelgetlength: 2,
+    bass_init: 5,
+    bass_getinfo: 1,
+    bass_channelset3dattributes: 7,
+    bass_apply3d: 0,
+    bass_free: 0,
+};
+
 export interface LoadedModule {
     baseAddress: number;
     entryPoint: number;
@@ -1786,8 +1817,11 @@ export class PELoader {
 
             // Check if this DLL is thunked (has API registry entries).
             // Video DLLs are excluded when native loading is enabled — they fall through to VFS.
+            const cleoBass2 = dllName === 'bass' &&
+                this.moduleRegistry?.getByBase(baseAddress)?.sourceHash === CLEO_444_SHA256;
             const isThunked = this.apiRegistry.hasModule(dllName) &&
                 !(EMU_NATIVE_VIDEO_DLLS && VIDEO_DLL_NAMES.has(dllName));
+            if (cleoBass2) Logger.info(LogCategory.SYSTEM, '[PE] CLEO 4.4.4: BASS 2.x import ABI');
 
             // Log ALL DLLs and their functions
             const importedNames = functions.map(f => f.name || `ord_${f.ordinal}`);
@@ -1819,6 +1853,14 @@ export class PELoader {
                         argCount = this.apiRegistry.getArgCount(dllName, f.name);
                         stackCleanupBytes = this.apiRegistry.getStackCleanupBytes(dllName, f.name);
                         callingConvention = this.apiRegistry.getCallingConvention(dllName, f.name);
+                        if (cleoBass2) {
+                            const count = CLEO_BASS_2_ARG_COUNTS[f.name.toLowerCase()];
+                            if (count !== undefined) {
+                                argCount = count;
+                                stackCleanupBytes = count * 4;
+                                callingConvention = 'stdcall';
+                            }
+                        }
                     } else if (f.ordinal !== undefined) {
                         argCount = this.apiRegistry.getArgCountByOrdinal(dllName, f.ordinal);
                         stackCleanupBytes = argCount !== undefined ? argCount * 4 : undefined;
