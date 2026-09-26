@@ -3183,7 +3183,11 @@ export class D3D9Device {
             alphaArg2: this.getTextureStageState(0, 6),
             textureFactor: this.getRS(60),
         };
-        const fixedStageKey = fixedFunctionStage ? Object.values(fixedFunctionStage).join(".") : "ps";
+        // fixedStageKey is deliberately NOT built here. It is read only by the string cacheKey
+        // far below, so computing it up front cost an Object.values() array plus a join() string
+        // on every draw that missed the last-resolve fast path, the arena bypass, or the Map
+        // hit — i.e. the overwhelming majority of draws, which never look at it. Built at the
+        // point of use instead.
         const fvf = this.stateTracker.getFVF();
         const declElements = this.activeVertexDecl > 0
             ? (this.vsDeclRegistry.get(this.activeVertexDecl) ?? null)
@@ -3244,6 +3248,7 @@ export class D3D9Device {
             return built;
         }
 
+        const fixedStageKey = fixedFunctionStage ? Object.values(fixedFunctionStage).join(".") : "ps";
         const cacheKey = `${this.activeVertexShader}:${this.activePixelShader}:${this.activeVertexDecl}:${fvf}:${stride}:${stateBits}:${topology}:${forceCullNone ? 1 : 0}:${blendKey}:${alphaKey}:z${zFunc}:cm${cubeMask}:pj${projKey}:ff${fixedStageKey}:${this.streamLayoutKey}:vp${transformed ? Object.values(this.viewport).join(",") : ""}`;
         const cached = this.progPipelineCache.get(cacheKey);
         if (cached !== undefined) {
