@@ -21,7 +21,7 @@ import { writeCrtSlabStubs, writeCaseFoldStubs } from '../modules/crt-slab-stubs
 import { applyDeltaForce2CallbackGuard, applyDeltaForce2MemcpyGuard, applyDeltaForce2ParserGuard, applyDeltaForce2StreamGuard } from './game-fixes/delta-force-2';
 import { applyDeltaForce3ImageLoopFix } from './game-fixes/delta-force-3';
 import { applyMidtownMadness2AllocatorGuard } from './game-fixes/midtown-madness-2';
-import { guardCounterStrikeBuildDialog } from './game-fixes/counter-strike-16';
+import { guardCounterStrikeBuildDialog, guardCounterStrikeGameUiCount, guardCounterStrikeGameUiItem } from './game-fixes/counter-strike-16';
 
 function isD3dx9VersionedDll(dllNameLower: string): boolean {
     return resolveThunkedDllAlias(normalizeDllBaseName(dllNameLower)) === 'd3dx9';
@@ -919,6 +919,12 @@ export class PELoader {
     if (guardCounterStrikeBuildDialog(module, this.memory, deltaCpu, this.thunkGenerator)) {
       Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional VGUI build editor');
     }
+    if (guardCounterStrikeGameUiCount(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional GameUI list');
+    }
+    if (guardCounterStrikeGameUiItem(module, this.memory, deltaCpu, this.thunkGenerator)) {
+      Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional GameUI item');
+    }
     if (
       module.isExecutable
       && (module.sourceHash === '992c53c9250cf822b44bf4a4013bd5805229bbbeb7b478a4c2556531bc5340f3'
@@ -1234,6 +1240,22 @@ export class PELoader {
                 sections
             };
             this.moduleRegistry.register(module);
+
+            // Raw ZIP-backed DLLs use this loader path rather than loadPreparedDll.
+            // Apply the same exact client.dll guard before its imports and entry point run.
+            if (/c:\\cstrike\\cl_dlls\\(?:client|gameui)(?:\.dll)?$/.test(dllNameLower)) {
+                const v86 = System.getInstance().process?.v86;
+                const cpu = v86?.cpu ?? v86?.v86?.cpu ?? null;
+                if (guardCounterStrikeBuildDialog(module, this.memory, cpu, this.thunkGenerator)) {
+                    Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional VGUI build editor');
+                }
+                if (guardCounterStrikeGameUiCount(module, this.memory, cpu, this.thunkGenerator)) {
+                    Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional GameUI list');
+                }
+                if (guardCounterStrikeGameUiItem(module, this.memory, cpu, this.thunkGenerator)) {
+                    Logger.info(LogCategory.SYSTEM, '[Counter-Strike 1.6] Guarded absent optional GameUI item');
+                }
+            }
 
             // Static Library HLE detection for this DLL's image (same reason as EXE path).
             try {

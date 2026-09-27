@@ -329,6 +329,7 @@ export class System {
         const cpu = serializeCpu() as CrashFaultPayload["cpu"];
         const esp = (cpu?.regs?.esp ?? 0) >>> 0;
         const eip = (cpu?.eip ?? 0) >>> 0;
+        const recentFault = faultRecorder.last();
         let threadId: number | null = null;
         try {
             threadId = (this.scheduler as { getCurrentThreadId?: () => number })?.getCurrentThreadId?.() ?? null;
@@ -343,8 +344,8 @@ export class System {
             lastThunk: "",
             regs: null,
             recentCalls: [],
-            gameEsp: esp,
-            stackDump: [],
+            gameEsp: recentFault?.kind === 'unhandled' ? recentFault.gameEsp : esp,
+            stackDump: recentFault?.kind === 'unhandled' ? recentFault.stackDump : [],
         };
         this.enrichFaultReport(fault);
         return fault;

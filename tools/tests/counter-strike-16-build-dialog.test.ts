@@ -1,11 +1,41 @@
 import { describe, expect, test } from 'bun:test';
-import { COUNTER_STRIKE_16_CLIENT_SHA256, guardCounterStrikeBuildDialog } from '../../src/worker/core/game-fixes/counter-strike-16';
+import { COUNTER_STRIKE_16_CLIENT_SHA256, COUNTER_STRIKE_16_GAMEUI_SHA256, guardCounterStrikeBuildDialog, guardCounterStrikeGameUiCount, guardCounterStrikeGameUiItem } from '../../src/worker/core/game-fixes/counter-strike-16';
 import type { LoadedPEModule } from '../../src/worker/core/module-registry';
 
 const module = (hash = COUNTER_STRIKE_16_CLIENT_SHA256): LoadedPEModule => ({
-    name: 'client', path: 'c:\\cstrike\\cl_dlls\\client.dll', baseAddress: 0x100000,
+    name: 'c:\\cstrike\\cl_dlls\\client', path: 'c:\\cstrike\\cl_dlls\\client.dll', baseAddress: 0x100000,
     size: 0x160000, fileSize: 1_074_496, entryPoint: 0, exports: new Map(), ordinalExports: new Map(),
     isRealDll: true, initialized: true, sourceHash: hash,
+});
+
+describe('Counter-Strike optional GameUI list guard', () => {
+    test('returns zero only for a null receiver and preserves the exact original getter', () => {
+        const memory = new Uint8Array(0x400000);
+        const entry = 0x100000 + 0x519a0;
+        memory.set([0x8b, 0x81, 0xc4, 0, 0, 0, 0xc3], entry);
+        const gameUi = { ...module(COUNTER_STRIKE_16_GAMEUI_SHA256),
+            name: 'c:\\cstrike\\cl_dlls\\gameui', path: 'c:\\cstrike\\cl_dlls\\GameUI.dll', fileSize: 845_112 };
+        expect(guardCounterStrikeGameUiCount(gameUi, memory, null,
+            { allocateRawCodeArea: () => 0x300000 })).toBe(true);
+        expect(Array.from(memory.subarray(0x300000, 0x30000e))).toEqual([
+            0x85, 0xc9, 0x75, 0x03, 0x31, 0xc0, 0xc3, 0x8b, 0x81, 0xc4, 0, 0, 0, 0xc3,
+        ]);
+        expect(memory[entry]).toBe(0xe9);
+    });
+    test('guards the exact item call and jumps to the original getter for a real receiver', () => {
+        const memory = new Uint8Array(0x400000);
+        const call = 0x100000 + 0x77279;
+        memory.set([0x8b, 0x8e, 0x20, 0x01, 0, 0, 0xe8, 0x02, 0xb0, 0xfd, 0xff], call - 6);
+        const gameUi = { ...module(COUNTER_STRIKE_16_GAMEUI_SHA256),
+            name: 'c:\\cstrike\\cl_dlls\\gameui', path: 'c:\\cstrike\\cl_dlls\\GameUI.dll', fileSize: 845_112 };
+        expect(guardCounterStrikeGameUiItem(gameUi, memory, null,
+            { allocateRawCodeArea: () => 0x300000 })).toBe(true);
+        expect(Array.from(memory.subarray(0x300000, 0x300008))).toEqual([
+            0x85, 0xc9, 0x75, 0x03, 0x31, 0xc0, 0xc3, 0xe9,
+        ]);
+        expect(0x300000 + 12 + new DataView(memory.buffer).getInt32(0x300008, true))
+            .toBe(0x100000 + 0x52280);
+    });
 });
 
 describe('Counter-Strike optional VGUI build editor guard', () => {

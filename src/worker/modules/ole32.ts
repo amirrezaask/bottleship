@@ -28,6 +28,18 @@ const CO_E_NOTLOADED = 0x800401f0;
 const CLSID_WEB_BROWSER = "8856f961-340a-11d0-a96b-00c04fd705a2";
 const IID_IUNKNOWN = "00000000-0000-0000-c000-000000000046";
 
+// IWebBrowser2 inherits IDispatch, IWebBrowser and IWebBrowserApp. The earlier
+// inert vtable stopped at slot 23, while GoldSrc sets properties through slots
+// 49, 68, 43, 47, 62 and 64. Keep the complete SDK order and x86 stack sizes.
+// Source: Windows SDK ExDisp.h, IWebBrowser2Vtbl (Microsoft, 10.0.14393.0).
+export const WEB_BROWSER2_METHOD_ARITIES = [
+    3, 1, 1, 2, 4, 6, 9, 1, 1, 1, 1, 6, 1, 2, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    1, 3, 6, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 6, 3, 5, 4, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2,
+] as const;
+
 // BLOWFISH.DLL IBlockCipher::Submit_Key — stdcall, max 56-byte key (Ghidra @ 0x11002011)
 const BF_MAX_KEY_LEN = 0x38;
 
@@ -998,7 +1010,7 @@ export class Ole32 implements IModule {
             "7fd52380-4e07-101b-ae2d-08002b2ec713": [2, 1, 2, 3, 2, 1], // IPersistStreamInit
             "b196b284-bab4-101a-b69c-00aa00341d07": [2, 3], // IConnectionPointContainer
             "connection-point": [2, 2, 3, 2, 2], // IConnectionPoint
-            "d30c1661-cdaf-11d0-8a3e-00c04fc9e26e": [2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 6, 1, 1, 1, 2, 2, 2, 2, 2, 2],
+            "d30c1661-cdaf-11d0-8a3e-00c04fc9e26e": WEB_BROWSER2_METHOD_ARITIES.slice(3),
         };
         const arities = interfaceArity[key];
         if (!arities) return 0;
@@ -1023,6 +1035,14 @@ export class Ole32 implements IModule {
             const slot = i + 3;
             const name = `WB_${safeKey}_Slot_${slot}`;
             const handler: ThunkImplementation = (_ctx, mem, args) => {
+                // get_Document: this browser never navigates or creates MSHTML.
+                // Reporting success without an IDispatch* sends callers into a
+                // stale stack pointer (GoldSrc calls QueryInterface on it).
+                if (key === "d30c1661-cdaf-11d0-8a3e-00c04fc9e26e" && slot === 18) {
+                    const documentOut = args[1] >>> 0;
+                    if (documentOut) Mem.writeUint32(documentOut, 0);
+                    return 0x80004005; // E_FAIL
+                }
                 if (key === "00000112-0000-0000-c000-000000000046" && slot === 22) {
                     const statusOut = args[2] >>> 0;
                     if (statusOut) Mem.writeUint32(statusOut, 0);
